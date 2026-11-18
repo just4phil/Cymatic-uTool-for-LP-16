@@ -1,0 +1,5 @@
+/target/
+/out/
+/_private/
+/.claude/
+/lp16-tool.toml

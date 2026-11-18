@@ -1,0 +1,10 @@
+# lp16-tool settings. Copy this file to lp16-tool.toml and adjust the paths.
+# lp16-tool.toml is looked for in the current folder, else next to the exe
+# and in the folders above it. The GUI writes it when settings change.
+
+# base folder: CymaticProjectLib\ = project library, AudioLibrary\ = audio files + import
+library = "E:\LP16_LIBRARY"
+# export target (chosen and remembered in the Export tab)
+stick_root = "F:\"
+# never written to, separated by ; ("" = nothing protected)
+protected_targets = "D:"
