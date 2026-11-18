@@ -19,8 +19,8 @@ use lp16_tool::{
     generate_playlistprj, generate_songprj, import_songs, init_folders,
     library_songs, midi_duration, natural_cmp, newest_version, scan_import, ImportItem, ImportStatus, LibrarySong,
     now_ms, parse_playlist, resolve, save_config,
-    plain_tag, xml_unescape, unresolve, valid_fat32_name, wav_info, Config,
-    PlaylistSong, ProjectTrack, SongProject, WavInfo,
+    plain_tag, xml_unescape, unresolve, valid_fat32_name, Config,
+    PlaylistSong, ProjectTrack, SongProject, WavInfo, STICK_WAV_HEADER_LEN,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -2971,7 +2971,7 @@ impl Lp16App {
                     })
                     .unwrap_or(0);
                 let wav_len = if sr > 0 && bits > 0 {
-                    max_wav.saturating_sub(104) as f64 / (sr as f64 * bits as f64 / 8.0)
+                    max_wav.saturating_sub(STICK_WAV_HEADER_LEN) as f64 / (sr as f64 * bits as f64 / 8.0)
                 } else {
                     0.0
                 };
@@ -3925,7 +3925,7 @@ fn list_audio(folder: &str) -> Vec<AudioEntry> {
             if p.is_dir() {
                 dirs.push(AudioEntry { name, path, dir: true, info: None });
             } else if name.to_lowercase().ends_with(".wav") {
-                let info = wav_info(&path).ok();
+                let info = WavInfo::read(&path).ok();
                 wavs.push(AudioEntry { name, path, dir: false, info });
             }
         }
@@ -4002,7 +4002,7 @@ impl SongEditor {
             .map(|s| {
                 s.as_ref()
                     .filter(|t| !t.audiofile.is_empty())
-                    .and_then(|t| wav_info(&resolve(&t.audiofile, audio_lib)).ok())
+                    .and_then(|t| WavInfo::read(&resolve(&t.audiofile, audio_lib)).ok())
             })
             .collect();
         self.midi_len = if self.midi.is_empty() {
@@ -4028,7 +4028,7 @@ impl SongEditor {
         let mut overflow = 0;
         let mut slot = start;
         for f in files {
-            match wav_info(f) {
+            match WavInfo::read(f) {
                 Ok(i) if self.fits(&i) => {
                     if slot >= SLOTS {
                         overflow += 1;

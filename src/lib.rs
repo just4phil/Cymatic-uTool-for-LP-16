@@ -440,54 +440,96 @@ pub fn generate_play(
 // so that the device always sees the same layout.
 // ---------------------------------------------------------------------------
 
-/// channels, sampling rate, bits, data offset, data length of a RIFF/WAVE file
-pub fn parse_wav(bytes: &[u8]) -> Option<(u16, u32, u16, usize, usize)> {
-    if bytes.len() < 12 || &bytes[0..4] != b"RIFF" || &bytes[8..12] != b"WAVE" {
-        return None;
-    }
-    let mut channels = 0u16;
-    let mut rate = 0u32;
-    let mut bits = 0u16;
-    let mut data_off = 0usize;
-    let mut data_len = 0usize;
-    let mut pos = 12usize;
-    while pos + 8 <= bytes.len() {
-        let id = &bytes[pos..pos + 4];
-        let size = u32::from_le_bytes([
-            bytes[pos + 4],
-            bytes[pos + 5],
-            bytes[pos + 6],
-            bytes[pos + 7],
-        ]) as usize;
-        let body = pos + 8;
-        match id {
-            b"fmt " => {
-                if size >= 16 && body + 16 <= bytes.len() {
-                    channels = u16::from_le_bytes([bytes[body + 2], bytes[body + 3]]);
-                    rate = u32::from_le_bytes([
-                        bytes[body + 4],
-                        bytes[body + 5],
-                        bytes[body + 6],
-                        bytes[body + 7],
-                    ]);
-                    bits = u16::from_le_bytes([bytes[body + 14], bytes[body + 15]]);
-                }
-            }
-            b"data" => {
-                data_off = body;
-                data_len = size;
-                if channels != 0 {
-                    break; // fmt came first, we have everything
-                }
-            }
-            _ => {}
+/// Bytes in front of the payload of a WAV exported to the stick:
+/// RIFF header + JUNK (52) + fmt (16) + data chunk header.
+pub const STICK_WAV_HEADER_LEN: u64 = 104;
+
+/// Format and payload position of a WAV file. The one reader for every
+/// WAV: export, stale-file check, import and song editor.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WavInfo {
+    pub channels: u16,
+    pub rate: u32,
+    pub bits: u16,
+    /// file offset of the PCM payload
+    pub data_off: u64,
+    /// length of the PCM payload in bytes
+    pub data_len: u64,
+}
+
+impl WavInfo {
+    /// Read the chunk headers only (the audio is never read).
+    /// Required: "RIFF"…"WAVE", a "fmt " chunk (at least 16 bytes, channels,
+    /// rate and bits not 0) and a "data" chunk that lies completely inside
+    /// the file, in either order. Other chunks are skipped (padded to even
+    /// sizes). Anything else is `InvalidData`.
+    pub fn read(src: &str) -> std::io::Result<WavInfo> {
+        use std::io::{Read, Seek, SeekFrom};
+        let bad = || {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("{} is not a usable WAV file", src),
+            )
+        };
+        let mut f = fs::File::open(src)?;
+        let file_len = f.metadata()?.len();
+        let mut head = [0u8; 12];
+        f.read_exact(&mut head).map_err(|_| bad())?;
+        if &head[0..4] != b"RIFF" || &head[8..12] != b"WAVE" {
+            return Err(bad());
         }
-        pos = body + size + (size % 2); // chunks are padded to even sizes
+        let mut fmt: Option<(u16, u32, u16)> = None;
+        let mut data: Option<(u64, u64)> = None;
+        let mut pos = 12u64;
+        while pos + 8 <= file_len {
+            f.seek(SeekFrom::Start(pos))?;
+            let mut ch = [0u8; 8];
+            f.read_exact(&mut ch)?;
+            let size = u32::from_le_bytes([ch[4], ch[5], ch[6], ch[7]]) as u64;
+            let body = pos + 8;
+            match &ch[0..4] {
+                b"fmt " if size >= 16 => {
+                    let mut b = [0u8; 16];
+                    f.read_exact(&mut b).map_err(|_| bad())?;
+                    fmt = Some((
+                        u16::from_le_bytes([b[2], b[3]]),
+                        u32::from_le_bytes([b[4], b[5], b[6], b[7]]),
+                        u16::from_le_bytes([b[14], b[15]]),
+                    ));
+                }
+                b"data" => {
+                    if body + size > file_len {
+                        return Err(bad());
+                    }
+                    data = Some((body, size));
+                }
+                _ => {}
+            }
+            if let (Some((channels, rate, bits)), Some((data_off, data_len))) = (fmt, data) {
+                if channels == 0 || rate == 0 || bits == 0 {
+                    return Err(bad());
+                }
+                return Ok(WavInfo { channels, rate, bits, data_off, data_len });
+            }
+            pos = body + size + (size % 2); // chunks are padded to even sizes
+        }
+        Err(bad())
     }
-    if data_off == 0 || data_off + data_len > bytes.len() {
-        return None;
+
+    /// length in seconds
+    pub fn seconds(&self) -> f64 {
+        let frame = self.channels as u64 * (self.bits as u64 / 8);
+        if frame == 0 {
+            return 0.0;
+        }
+        (self.data_len / frame) as f64 / self.rate as f64
     }
-    Some((channels, rate, bits, data_off, data_len))
+
+    /// Size of this WAV after export to the stick: header + payload + pad
+    /// byte for odd payload lengths. Used to detect stale stick files.
+    pub fn stick_size(&self) -> u64 {
+        STICK_WAV_HEADER_LEN + self.data_len + self.data_len % 2
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -554,61 +596,6 @@ pub fn remove_tmp_files(dir: &Path) {
     }
 }
 
-/// Header of a WAV file read from the chunk headers only:
-/// (channels, rate, bits, data offset, data length).
-/// Same rules as parse_wav(): a "fmt " chunk and a "data" chunk that fits
-/// inside the file are required.
-pub fn read_wav_header(src: &str) -> std::io::Result<(u16, u32, u16, u64, u64)> {
-    use std::io::{Read, Seek, SeekFrom};
-    let bad = || {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("{} is not a usable WAV file", src),
-        )
-    };
-    let mut f = fs::File::open(src)?;
-    let file_len = f.metadata()?.len();
-    let mut head = [0u8; 12];
-    f.read_exact(&mut head).map_err(|_| bad())?;
-    if &head[0..4] != b"RIFF" || &head[8..12] != b"WAVE" {
-        return Err(bad());
-    }
-    let (mut channels, mut rate, mut bits) = (0u16, 0u32, 0u16);
-    let (mut data_off, mut data_len) = (0u64, 0u64);
-    let mut pos = 12u64;
-    while pos + 8 <= file_len {
-        f.seek(SeekFrom::Start(pos))?;
-        let mut ch = [0u8; 8];
-        f.read_exact(&mut ch)?;
-        let size = u32::from_le_bytes([ch[4], ch[5], ch[6], ch[7]]) as u64;
-        let body = pos + 8;
-        match &ch[0..4] {
-            b"fmt " => {
-                if size >= 16 && body + 16 <= file_len {
-                    let mut fmt = [0u8; 16];
-                    f.read_exact(&mut fmt)?;
-                    channels = u16::from_le_bytes([fmt[2], fmt[3]]);
-                    rate = u32::from_le_bytes([fmt[4], fmt[5], fmt[6], fmt[7]]);
-                    bits = u16::from_le_bytes([fmt[14], fmt[15]]);
-                }
-            }
-            b"data" => {
-                data_off = body;
-                data_len = size;
-                if channels != 0 {
-                    break; // fmt came first, we have everything
-                }
-            }
-            _ => {}
-        }
-        pos = body + size + (size % 2); // chunks are padded to even sizes
-    }
-    if data_off == 0 || data_off + data_len > file_len {
-        return Err(bad());
-    }
-    Ok((channels, rate, bits, data_off, data_len))
-}
-
 /// Rebuild the WAV like uTool2 does on export:
 /// "RIFF" size "WAVE" + "JUNK " 52 zero bytes + "fmt " 16 + "data" payload,
 /// plus one pad byte if the payload length is odd.
@@ -616,13 +603,13 @@ pub fn read_wav_header(src: &str) -> std::io::Result<(u16, u32, u16, u64, u64)> 
 /// is written atomically.
 pub fn export_wav(src: &str, dest: &str) -> std::io::Result<()> {
     use std::io::{Read, Seek, SeekFrom, Write};
-    let (channels, rate, bits, data_off, data_len) = read_wav_header(src)?;
+    let WavInfo { channels, rate, bits, data_off, data_len } = WavInfo::read(src)?;
     let pad = (data_len % 2) as u32; // pad byte for odd payload lengths
     let block_align = channels * bits / 8;
     let byte_rate = rate * block_align as u32;
     let riff_size = 4u32 + (8 + 52) as u32 + (8 + 16) as u32 + (8 + data_len as u32 + pad);
 
-    let mut header: Vec<u8> = Vec::with_capacity(104);
+    let mut header: Vec<u8> = Vec::with_capacity(STICK_WAV_HEADER_LEN as usize);
     header.extend_from_slice(b"RIFF");
     header.extend_from_slice(&riff_size.to_le_bytes());
     header.extend_from_slice(b"WAVE");
@@ -667,50 +654,6 @@ pub fn stick_wav_name(src: &str, channel: i32) -> String {
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     format!("_{}_{:02}.wav", stem, channel + 1)
-}
-
-/// Expected file size of an exported WAV on the stick:
-/// 104 bytes header + payload + pad byte for odd payload lengths.
-/// Used to detect stale stick files (re-rendered sources).
-pub fn expected_stick_wav_size(src: &str) -> std::io::Result<u64> {
-    let data_len = wav_data_len(src)?;
-    Ok(104 + data_len + (data_len % 2))
-}
-
-/// Length of the "data" payload of a WAV, read from the chunk headers only
-/// (seeks over the chunks instead of reading the whole file). Same rules as
-/// parse_wav(): needs a "data" chunk that fits inside the file.
-pub fn wav_data_len(src: &str) -> std::io::Result<u64> {
-    use std::io::{Read, Seek, SeekFrom};
-    let bad = || {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("{} is not a usable WAV file", src),
-        )
-    };
-    let mut f = fs::File::open(src)?;
-    let file_len = f.metadata()?.len();
-    let mut head = [0u8; 12];
-    f.read_exact(&mut head).map_err(|_| bad())?;
-    if &head[0..4] != b"RIFF" || &head[8..12] != b"WAVE" {
-        return Err(bad());
-    }
-    let mut pos = 12u64;
-    while pos + 8 <= file_len {
-        f.seek(SeekFrom::Start(pos))?;
-        let mut ch = [0u8; 8];
-        f.read_exact(&mut ch)?;
-        let size = u32::from_le_bytes([ch[4], ch[5], ch[6], ch[7]]) as u64;
-        let body = pos + 8;
-        if &ch[0..4] == b"data" {
-            if body + size > file_len {
-                return Err(bad());
-            }
-            return Ok(size);
-        }
-        pos = body + size + (size % 2);
-    }
-    Err(bad())
 }
 
 pub fn now_ms() -> i64 {
@@ -766,7 +709,7 @@ pub fn plan_song(project: &SongProject, songs_root: &str) -> SongPlan {
         let dest = dir.join(stick_wav_name(&src, t.channel));
         // A source WAV that cannot be read would silently corrupt the
         // validation code (mtime 0); count it instead.
-        match expected_stick_wav_size(&src) {
+        match WavInfo::read(&src).map(|i| i.stick_size()) {
             Err(_) => unreadable_source += 1,
             Ok(expected) => {
                 bytes_full += expected;
@@ -879,7 +822,7 @@ pub fn verify_plan(plan: &SongPlan, songs_root: &str) -> Result<(), String> {
         Err(e) => return Err(format!("{}: {}", set_path.display(), e)),
     }
     for (src, dest) in &plan.wav {
-        let expected = expected_stick_wav_size(src).map_err(|e| e.to_string())?;
+        let expected = WavInfo::read(src).map(|i| i.stick_size()).map_err(|e| e.to_string())?;
         match fs::metadata(dest) {
             Ok(m) if m.len() == expected => {}
             Ok(m) => {
@@ -1006,70 +949,6 @@ pub fn generate_songprj(
 // ---------------------------------------------------------------------------
 // Song editor: WAV/MIDI facts and rewriting the tracks of a .songprj.
 // ---------------------------------------------------------------------------
-
-/// Format of a WAV file, read from the chunk headers only.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct WavInfo {
-    pub channels: u16,
-    pub rate: u32,
-    pub bits: u16,
-    pub data_len: u64,
-}
-
-impl WavInfo {
-    /// length in seconds
-    pub fn seconds(&self) -> f64 {
-        let frame = self.channels as u64 * (self.bits as u64 / 8);
-        if frame == 0 || self.rate == 0 {
-            return 0.0;
-        }
-        (self.data_len / frame) as f64 / self.rate as f64
-    }
-}
-
-/// Read "fmt " and the "data" size of a WAV without reading the audio.
-pub fn wav_info(src: &str) -> std::io::Result<WavInfo> {
-    use std::io::{Read, Seek, SeekFrom};
-    let bad = || {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("{} is not a usable WAV file", src),
-        )
-    };
-    let mut f = fs::File::open(src)?;
-    let file_len = f.metadata()?.len();
-    let mut head = [0u8; 12];
-    f.read_exact(&mut head).map_err(|_| bad())?;
-    if &head[0..4] != b"RIFF" || &head[8..12] != b"WAVE" {
-        return Err(bad());
-    }
-    let mut fmt: Option<(u16, u32, u16)> = None;
-    let mut pos = 12u64;
-    while pos + 8 <= file_len {
-        f.seek(SeekFrom::Start(pos))?;
-        let mut ch = [0u8; 8];
-        f.read_exact(&mut ch)?;
-        let size = u32::from_le_bytes([ch[4], ch[5], ch[6], ch[7]]) as u64;
-        let body = pos + 8;
-        if &ch[0..4] == b"fmt " && size >= 16 {
-            let mut b = [0u8; 16];
-            f.read_exact(&mut b)?;
-            fmt = Some((
-                u16::from_le_bytes([b[2], b[3]]),
-                u32::from_le_bytes([b[4], b[5], b[6], b[7]]),
-                u16::from_le_bytes([b[14], b[15]]),
-            ));
-        } else if &ch[0..4] == b"data" {
-            let (channels, rate, bits) = fmt.ok_or_else(bad)?;
-            if body + size > file_len {
-                return Err(bad());
-            }
-            return Ok(WavInfo { channels, rate, bits, data_len: size });
-        }
-        pos = body + size + (size % 2);
-    }
-    Err(bad())
-}
 
 /// Length of a Standard MIDI File in seconds: the last event of all tracks,
 /// converted with the tempo map (default 120 BPM).
@@ -1202,7 +1081,7 @@ pub struct ProjectTrack {
 impl ProjectTrack {
     /// A new track for a WAV file, with uTool2's defaults.
     pub fn new(channel: i32, wav: &str, audio_lib: &str) -> Self {
-        let sr = wav_info(wav).map(|i| sr_code(i.rate)).unwrap_or(6);
+        let sr = WavInfo::read(wav).map(|i| sr_code(i.rate)).unwrap_or(6);
         ProjectTrack {
             channel,
             audiofile: unresolve(wav, audio_lib),
@@ -1757,7 +1636,7 @@ pub fn scan_import(import_lib: &str, library: &[LibrarySong]) -> Result<Vec<Impo
             };
             let mut problems: Vec<String> = Vec::new();
             for w in &item.wavs {
-                match wav_info(w) {
+                match WavInfo::read(w) {
                     Ok(i) => {
                         if item.rate == 0 {
                             item.rate = i.rate;
@@ -2063,7 +1942,7 @@ mod tests {
             // lengths: only where the files are current (vts == mtime)
             let wavs: Vec<String> = tracks.iter().filter(|t| !t.audiofile.is_empty()).map(|t| resolve(&t.audiofile, audio)).collect();
             if !wavs.is_empty() && tracks.iter().all(|t| t.audiofile.is_empty() || (t.vts != 0 && mtime_ms(&resolve(&t.audiofile, audio)) == t.vts)) {
-                let max = wavs.iter().filter_map(|w| wav_info(w).ok()).map(|i| i.seconds()).fold(0.0, f64::max);
+                let max = wavs.iter().filter_map(|w| WavInfo::read(w).ok()).map(|i| i.seconds()).fold(0.0, f64::max);
                 assert_eq!(fmt_seconds(max), dur, "wav length {}", p.display());
                 checked_wav += 1;
             }
@@ -2432,9 +2311,10 @@ mod tests {
         w
     }
 
-    /// The previous in-memory export_wav, kept as the reference.
-    fn export_wav_in_memory(bytes: &[u8]) -> Vec<u8> {
-        let (channels, rate, bits, off, len) = parse_wav(bytes).unwrap();
+    /// The previous in-memory export_wav, kept as the reference. Takes the
+    /// format the test case was built with, so it does not share the reader.
+    fn export_wav_in_memory(channels: u16, rate: u32, bits: u16, payload: &[u8]) -> Vec<u8> {
+        let len = payload.len();
         let pad = (len % 2) as u32;
         let align = channels * bits / 8;
         let riff_size = 4u32 + 60 + 24 + (8 + len as u32 + pad);
@@ -2455,7 +2335,7 @@ mod tests {
         out.extend_from_slice(&bits.to_le_bytes());
         out.extend_from_slice(b"data");
         out.extend_from_slice(&(len as u32).to_le_bytes());
-        out.extend_from_slice(&bytes[off..off + len]);
+        out.extend_from_slice(payload);
         if pad == 1 {
             out.push(0);
         }
@@ -2467,9 +2347,19 @@ mod tests {
         let dir = temp_dir("wav");
         let payload_even: Vec<u8> = (0..30_000u32).map(|i| (i * 7 % 251) as u8).collect();
         let payload_odd: Vec<u8> = (0..30_001u32).map(|i| (i * 13 % 241) as u8).collect();
-        let cases: Vec<(&str, Vec<u8>)> = vec![
-            ("plain", riff(&[chunk(b"fmt ", &fmt_body(1, 48000, 24, 0)), chunk(b"data", &payload_even)])),
-            ("odd", riff(&[chunk(b"fmt ", &fmt_body(1, 44100, 24, 0)), chunk(b"data", &payload_odd)])),
+        let cases: Vec<(&str, Vec<u8>, (u16, u32, u16), &[u8])> = vec![
+            (
+                "plain",
+                riff(&[chunk(b"fmt ", &fmt_body(1, 48000, 24, 0)), chunk(b"data", &payload_even)]),
+                (1, 48000, 24),
+                &payload_even,
+            ),
+            (
+                "odd",
+                riff(&[chunk(b"fmt ", &fmt_body(1, 44100, 24, 0)), chunk(b"data", &payload_odd)]),
+                (1, 44100, 24),
+                &payload_odd,
+            ),
             (
                 "extra_chunks",
                 riff(&[
@@ -2479,27 +2369,89 @@ mod tests {
                     chunk(b"data", &payload_even),
                     chunk(b"LIST", &[2u8; 11]),
                 ]),
+                (1, 48000, 16),
+                &payload_even,
             ),
             (
                 "data_before_fmt",
                 riff(&[chunk(b"data", &payload_odd), chunk(b"fmt ", &fmt_body(1, 96000, 32, 0))]),
+                (1, 96000, 32),
+                &payload_odd,
             ),
         ];
-        for (name, bytes) in cases {
+        for (name, bytes, (channels, rate, bits), payload) in cases {
             let src = dir.join(format!("{}.wav", name));
             let dest = dir.join(format!("{}_out.wav", name));
             fs::write(&src, &bytes).unwrap();
             export_wav(src.to_str().unwrap(), dest.to_str().unwrap()).unwrap();
             let ours = fs::read(&dest).unwrap();
-            assert_eq!(ours, export_wav_in_memory(&bytes), "case {}", name);
+            assert_eq!(ours, export_wav_in_memory(channels, rate, bits, payload), "case {}", name);
             assert_eq!(
                 ours.len() as u64,
-                expected_stick_wav_size(src.to_str().unwrap()).unwrap(),
+                WavInfo::read(src.to_str().unwrap()).unwrap().stick_size(),
                 "case {}",
                 name
             );
             assert!(!tmp_path(&dest).exists(), "tmp file left behind ({})", name);
         }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wav_info_reads_every_layout_and_refuses_broken_files() {
+        let dir = temp_dir("wavinfo");
+        let read = |name: &str, bytes: Vec<u8>| {
+            let p = dir.join(format!("{}.wav", name));
+            fs::write(&p, bytes).unwrap();
+            WavInfo::read(p.to_str().unwrap())
+        };
+        let odd = [7u8; 1001];
+        // fmt before data, with chunks around them; odd chunks are padded
+        let i = read(
+            "fmt_first",
+            riff(&[chunk(b"bext", &[1u8; 5]), chunk(b"fmt ", &fmt_body(1, 48000, 24, 0)), chunk(b"data", &odd)]),
+        )
+        .unwrap();
+        // 12 RIFF + 8+5+1 bext + 8+16 fmt + 8 data header
+        assert_eq!(i, WavInfo { channels: 1, rate: 48000, bits: 24, data_off: 58, data_len: 1001 });
+        assert_eq!(i.stick_size(), STICK_WAV_HEADER_LEN + 1002);
+        // data before fmt: the same file in the other order
+        let i = read("data_first", riff(&[chunk(b"data", &odd), chunk(b"fmt ", &fmt_body(2, 44100, 16, 0))])).unwrap();
+        assert_eq!((i.channels, i.rate, i.bits, i.data_off, i.data_len), (2, 44100, 16, 20, 1001));
+        // WAVE_FORMAT_EXTENSIBLE: longer fmt chunk
+        assert_eq!(read("ext", riff(&[chunk(b"fmt ", &fmt_body(1, 96000, 32, 24)), chunk(b"data", &odd)])).unwrap().bits, 32);
+        // refused: no fmt, no data, empty format, data longer than the file, no RIFF
+        let fmt = || chunk(b"fmt ", &fmt_body(1, 48000, 24, 0));
+        let broken: Vec<(&str, Vec<u8>)> = vec![
+            ("no_fmt", riff(&[chunk(b"data", &odd)])),
+            ("no_data", riff(&[fmt()])),
+            ("zero_channels", riff(&[chunk(b"fmt ", &fmt_body(0, 48000, 24, 0)), chunk(b"data", &odd)])),
+            ("short_fmt", riff(&[chunk(b"fmt ", &[1u8; 14]), chunk(b"data", &odd)])),
+            ("truncated", {
+                let mut b = riff(&[fmt(), chunk(b"data", &odd)]);
+                b.truncate(b.len() - 100);
+                b
+            }),
+            ("not_riff", b"RIFX\0\0\0\0WAVE".to_vec()),
+            ("too_short", b"RIFF".to_vec()),
+        ];
+        for (name, bytes) in broken {
+            let e = read(name, bytes).unwrap_err();
+            assert_eq!(e.kind(), std::io::ErrorKind::InvalidData, "case {}", name);
+        }
+        // a missing file stays a NotFound error
+        assert_eq!(WavInfo::read(dir.join("gone.wav").to_str().unwrap()).unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wav_without_fmt_is_not_exported() {
+        let dir = temp_dir("nofmt");
+        let src = dir.join("nofmt.wav");
+        let dest = dir.join("out.wav");
+        fs::write(&src, riff(&[chunk(b"data", &[5u8; 100])])).unwrap();
+        assert!(export_wav(src.to_str().unwrap(), dest.to_str().unwrap()).is_err());
+        assert!(!dest.exists());
         let _ = fs::remove_dir_all(&dir);
     }
 
