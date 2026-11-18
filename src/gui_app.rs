@@ -1525,10 +1525,6 @@ impl Lp16App {
             self.message("Export", "No target location selected.");
             return;
         }
-        if let Err(e) = sync::check_target(&target, &self.config) {
-            self.message("Export", e);
-            return;
-        }
         let (prjs, pls) = self.export_selection();
         if prjs.is_empty() && pls.is_empty() {
             self.message("Export", "Nothing selected.");
@@ -1552,7 +1548,7 @@ impl Lp16App {
         std::thread::spawn(move || {
             let plan = sync::plan(&target, &config.audio_lib, &prjs, &playlists, mode);
             job.lock().unwrap().total = plan.jobs();
-            let result = sync::run(&plan, &config, |e| {
+            let result = sync::run(&plan, |e| {
                 let mut j = job.lock().unwrap();
                 match e {
                     Progress::Start(name) => j.current = name.to_string(),

@@ -186,11 +186,6 @@ fn cmd_export(
     dry_run: bool,
     force: bool,
 ) {
-    // Never write to a protected target (optional, see README).
-    let config = load_config(&config_path());
-    if let Err(e) = sync::check_target(stick_root, &config) {
-        die(format!("Refusing to export. {}\n(config: {})", e, config_path().display()));
-    }
     // Quick Export writes only new/changed songs; Force Overwrite
     // rewrites everything (uTool2 fnd_23).
     let mode = if force { ExportMode::Force } else { ExportMode::Quick };
@@ -209,7 +204,7 @@ fn cmd_export(
         }
         return;
     }
-    let lines = sync::run(&plan, &config, |e| match e {
+    let lines = sync::run(&plan, |e| match e {
         Progress::Start(_) => true,
         Progress::Done(line) => {
             println!("       {}: {}", line.name, line.message);
@@ -245,7 +240,6 @@ fn usage() -> ! {
     eprintln!("  (like uTool2: missing or changed songs are exported)");
     eprintln!("  --force = Force Overwrite (rewrite everything), default is Quick Export");
     eprintln!("  verify checks a stick read-only and exits 0 only if it is up to date");
-    eprintln!("  export refuses protected targets (optional: protected_targets in lp16-tool.toml)");
     eprintln!("  gui loads/saves paths from/to lp16-tool.toml");
     exit(1);
 }

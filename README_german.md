@@ -76,8 +76,6 @@ im Reiter **Settings** den **Library Folder**; „Initialize Folders“ legt feh
 library = "E:\LP16_LIBRARY"
 # Export-Ziel (wird im Export-Reiter gewählt und gemerkt)
 stick_root = "F:\"
-# optional: wird nie beschrieben, mehrere Ziele mit ; trennen
-protected_targets = ""
 ```
 
 Aufbau des Basisordners:
@@ -95,12 +93,7 @@ Aufbau des Basisordners:
 Ältere Dateien mit getrennten Pfaden (`audio_lib`, `project_lib`, `import_lib`) werden weiter
 gelesen.
 
-### Laufwerk schützen (optional)
-
-Standardmäßig darf lp16-tool auf jedes Ziel schreiben. Mit `protected_targets` lassen sich
-Laufwerke oder Ordner für jeden Export sperren, in der Oberfläche und in der Kommandozeile, zum
-Beispiel `protected_targets = "G:"`, solange man mit einer Kopie des Sticks probiert. Mehrere
-Einträge trennt man mit `;`. Vor dem ersten Export auf einen echten Stick `Recording\` sichern.
+Vor dem ersten Export auf einen echten Stick `Recording\` sichern.
 
 ## Kommandozeile
 
@@ -179,7 +172,7 @@ Dateien auf dem Stick beschädigt sein könnten. Gelöscht wird auf dem Stick ni
 | Datei | Inhalt |
 |---|---|
 | `src/lib.rs` | Dateiformate: `SongProject` (eine `.songprj`, daraus `song.set` und `validationcode`), `.play`, `.playlistprj`, WAV- und MIDI-Lesen, Import, Einstellungen |
-| `src/sync.rs` | Stick Sync: `plan` (was ein Export tun würde), `run` (exportieren und prüfen), `check_target` (gesperrte Ziele). Kommandozeile und Oberfläche nutzen denselben Ablauf. |
+| `src/sync.rs` | Stick Sync: `plan` (was ein Export tun würde), `run` (exportieren und prüfen). Kommandozeile und Oberfläche nutzen denselben Ablauf. |
 | `src/main.rs` | Kommandozeile |
 | `src/gui_app.rs` | Oberfläche (egui 0.27) |
 

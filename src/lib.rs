@@ -1926,12 +1926,7 @@ pub struct Config {
     pub stick_root: String,
     /// "AudioLibrary" for the song import: <Song>\<Date + note>\*.wav + .mid
     pub import_lib: String,
-    /// optional: targets that are never written to, separated by ";"
-    /// (prefix match, case-insensitive). Default: none.
-    pub protected_targets: String,
 }
-
-pub const DEFAULT_PROTECTED_TARGETS: &str = "";
 
 impl Default for Config {
     fn default() -> Self {
@@ -1941,7 +1936,6 @@ impl Default for Config {
             project_lib: String::new(),
             stick_root: String::new(),
             import_lib: String::new(),
-            protected_targets: DEFAULT_PROTECTED_TARGETS.to_string(),
         }
     }
 }
@@ -1966,17 +1960,6 @@ impl Config {
     }
 }
 
-/// Is `target` one of the protected targets (export refused)?
-pub fn is_protected_target(target: &str, config: &Config) -> bool {
-    let t = target.trim().to_lowercase().replace('/', "\\");
-    config
-        .protected_targets
-        .split(';')
-        .map(|p| p.trim().to_lowercase().replace('/', "\\"))
-        .filter(|p| !p.is_empty())
-        .any(|p| t.starts_with(&p))
-}
-
 pub fn load_config(path: &std::path::Path) -> Config {
     let mut config = Config::default();
     if let Ok(text) = fs::read_to_string(path) {
@@ -1993,7 +1976,6 @@ pub fn load_config(path: &std::path::Path) -> Config {
                     "project_lib" => config.project_lib = value,
                     "stick_root" => config.stick_root = value,
                     "import_lib" => config.import_lib = value,
-                    "protected_targets" => config.protected_targets = value,
                     _ => {}
                 }
             }
@@ -2020,10 +2002,7 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
             config.library.trim()
         )
     };
-    let text = format!(
-        "{}stick_root = \"{}\"\r\n# optional: never written to, separated by ;\r\nprotected_targets = \"{}\"\r\n",
-        paths, config.stick_root, config.protected_targets
-    );
+    let text = format!("{}stick_root = \"{}\"\r\n", paths, config.stick_root);
     fs::write(path, text.as_bytes())
 }
 
@@ -2247,7 +2226,7 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // Self-contained tests (no E:/D: needed): streaming WAV export, atomic
-    // writing, protected targets.
+    // writing, config.
     // -----------------------------------------------------------------------
 
     /// Paths of the reference data for the #[ignore]d tests come from
@@ -2564,36 +2543,18 @@ mod tests {
     }
 
     #[test]
-    fn protected_targets() {
-        // by default nothing is protected
-        assert!(!is_protected_target("D:\\", &Config::default()));
-        let custom = Config {
-            protected_targets: "D:; F:\\LP16".to_string(),
-            ..Config::default()
-        };
-        assert!(is_protected_target("D:\\", &custom));
-        assert!(is_protected_target("  d:/Recording", &custom));
-        assert!(!is_protected_target("C:\\stick-copy", &custom));
-        assert!(is_protected_target("f:\\lp16\\x", &custom));
-        assert!(!is_protected_target("F:\\other", &custom));
-        // an empty list protects nothing
-        let none = Config {
-            protected_targets: String::new(),
-            ..Config::default()
-        };
-        assert!(!is_protected_target("D:\\", &none));
-        // missing key in the file: nothing protected
+    fn config_roundtrip() {
         let dir = temp_dir("config");
         let path = dir.join("lp16-tool.toml");
-        fs::write(&path, "audio_lib = \"A\"\r\n").unwrap();
-        assert_eq!(load_config(&path).protected_targets, "");
-        save_config(&path, &custom).unwrap();
-        assert_eq!(load_config(&path).protected_targets, "D:; F:\\LP16");
+        // an old file with protected_targets still loads; the key is dropped
+        fs::write(&path, "audio_lib = \"A\"\r\nprotected_targets = \"G:\"\r\n").unwrap();
+        assert_eq!(load_config(&path).audio_lib, "A");
         let with_import = Config {
             import_lib: "E:\\x\\AKTIVE-SONGS".to_string(),
-            ..custom.clone()
+            ..Config::default()
         };
         save_config(&path, &with_import).unwrap();
+        assert!(!fs::read_to_string(&path).unwrap().contains("protected_targets"));
         assert_eq!(load_config(&path).import_lib, "E:\\x\\AKTIVE-SONGS");
         // base folder: everything else is derived, also after loading
         let mut base = Config { library: "E:\\x\\LIB_2027\\".to_string(), stick_root: "F:\\".into(), ..Config::default() };

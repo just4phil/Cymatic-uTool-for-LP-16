@@ -11,8 +11,8 @@
 //! it ends up in [`SyncPlan::problems`] and [`run`] refuses the whole plan.
 
 use crate::{
-    export_plan, generate_play, is_protected_target, now_ms, plain_tag, plan_song,
-    write_bytes_atomic, Config, PlaylistSong, SongPlan, SongProject,
+    export_plan, generate_play, now_ms, plain_tag, plan_song, write_bytes_atomic,
+    PlaylistSong, SongPlan, SongProject,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -213,18 +213,6 @@ pub fn plan(
     sync
 }
 
-/// Can the export write to `stick_root`? Refuses protected targets
-/// (optional protected_targets in lp16-tool.toml; none by default).
-pub fn check_target(stick_root: &str, config: &Config) -> Result<(), String> {
-    if is_protected_target(stick_root, config) {
-        return Err(format!(
-            "Writing to {} is blocked (protected_targets = \"{}\" in lp16-tool.toml).\nRemove it from protected_targets to export there.",
-            stick_root, config.protected_targets
-        ));
-    }
-    Ok(())
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
     Song,
@@ -251,14 +239,8 @@ pub enum Progress<'a> {
 /// Run a plan: songs (Skip ones are only reported), then every playlist's
 /// .play. Every file is written atomically and checked afterwards.
 /// `progress` returning false stops after the current step (cancel).
-/// Err: the target is protected or song projects are unreadable; then
-/// nothing is written.
-pub fn run(
-    plan: &SyncPlan,
-    config: &Config,
-    mut progress: impl FnMut(Progress) -> bool,
-) -> Result<Vec<SyncLine>, String> {
-    check_target(&plan.stick.root().to_string_lossy(), config)?;
+/// Err: song projects are unreadable; then nothing is written.
+pub fn run(plan: &SyncPlan, mut progress: impl FnMut(Progress) -> bool) -> Result<Vec<SyncLine>, String> {
     if !plan.problems.is_empty() {
         return Err(format!(
             "{} song project(s) cannot be read, nothing exported:\n{}",
@@ -344,10 +326,6 @@ mod tests {
         vec![("Set".to_string(), vec![song])]
     }
 
-    fn open_config() -> Config {
-        Config { protected_targets: String::new(), ..Config::default() }
-    }
-
     #[test]
     fn export_then_up_to_date_then_force() {
         let (root, audio, prj, stick) = setup("sync-roundtrip");
@@ -363,7 +341,7 @@ mod tests {
         assert_eq!(p.bytes_to_copy(), p.songs[0].plan.bytes_full);
 
         let mut seen = Vec::new();
-        let lines = run(&p, &open_config(), |e| {
+        let lines = run(&p, |e| {
             if let Progress::Start(n) = e {
                 seen.push(n.to_string());
             }
@@ -383,7 +361,7 @@ mod tests {
         assert_eq!(again.songs[0].action, Action::Skip);
         assert_eq!(again.bytes_to_copy(), 0);
         assert_eq!((again.playlists[0].action, again.playlists[0].reason.as_str()), (Action::Quick, "up to date"));
-        let lines = run(&again, &open_config(), |_| true).unwrap();
+        let lines = run(&again, |_| true).unwrap();
         assert_eq!(lines[0].message, "OK, up to date");
 
         let force = plan(&stick, &audio, &[], &pls, ExportMode::Force);
@@ -413,19 +391,17 @@ mod tests {
         assert!(p.problems[0].contains("Gone.songprj"), "{:?}", p.problems);
         assert!(!p.playlists[0].up_to_date);
         assert!(!p.is_up_to_date());
-        let err = run(&p, &open_config(), |_| true).unwrap_err();
+        let err = run(&p, |_| true).unwrap_err();
         assert!(err.contains("Gone.songprj"), "{}", err);
         assert!(!Stick::new(&stick).recording().exists(), "nothing may be written");
         let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn protected_target_and_cancel_write_nothing() {
-        let (root, audio, prj, stick) = setup("sync-blocked");
+    fn cancel_writes_nothing() {
+        let (root, audio, prj, stick) = setup("sync-cancel");
         let p = plan(&stick, &audio, &[prj], &[], ExportMode::Quick);
-        let blocked = Config { protected_targets: stick.clone(), ..Config::default() };
-        assert!(run(&p, &blocked, |_| true).unwrap_err().contains("blocked"));
-        let lines = run(&p, &open_config(), |e| !matches!(e, Progress::Start(_))).unwrap();
+        let lines = run(&p, |e| !matches!(e, Progress::Start(_))).unwrap();
         assert!(lines.is_empty());
         assert!(!Stick::new(&stick).recording().exists());
         let _ = fs::remove_dir_all(&root);

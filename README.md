@@ -76,8 +76,6 @@ Folders" creates any missing folders.
 library = "E:\LP16_LIBRARY"
 # export target (chosen and remembered in the Export tab)
 stick_root = "F:\"
-# optional: never written to, separate several targets with ;
-protected_targets = ""
 ```
 
 Layout of the base folder:
@@ -94,12 +92,7 @@ Layout of the base folder:
 
 Older files with separate paths (`audio_lib`, `project_lib`, `import_lib`) are still read.
 
-### Protecting a drive (optional)
-
-By default lp16-tool may write to any target. `protected_targets` can block drives or folders
-for every export, in the user interface and on the command line, e.g.
-`protected_targets = "G:"` while you try things out on a copy of the stick. Several entries are
-separated with `;`. Back up `Recording\` before the first export to a real stick.
+Back up `Recording\` before the first export to a real stick.
 
 ## Command line
 
@@ -177,7 +170,7 @@ damaged. Nothing is deleted on the stick.
 | File | Contents |
 |---|---|
 | `src/lib.rs` | File formats: `SongProject` (one `.songprj`, producing `song.set` and the `validationcode`), `.play`, `.playlistprj`, reading WAV and MIDI, import, settings |
-| `src/sync.rs` | Stick Sync: `plan` (what an export would do), `run` (export and verify), `check_target` (blocked targets). Command line and user interface use the same process. |
+| `src/sync.rs` | Stick Sync: `plan` (what an export would do), `run` (export and verify). Command line and user interface use the same process. |
 | `src/main.rs` | Command line |
 | `src/gui_app.rs` | User interface (egui 0.27) |
 
