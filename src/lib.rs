@@ -10,6 +10,7 @@ use std::fs;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
+pub mod project_lib;
 pub mod sync;
 
 // ---------------------------------------------------------------------------
@@ -1739,8 +1740,8 @@ pub fn import_songs(items: &[&ImportItem], songs_dir: &Path, audio_lib: &str) ->
 
 /// Sub folders of a uTool2 project library (as uTool2 creates them).
 pub const PROJECT_LIB_DIRS: [&str; 5] = [
-    "LP16\\Multitrack Songs",
-    "LP16\\Multitrack Playlists",
+    project_lib::SONGS_SUBDIR,
+    project_lib::PLAYLISTS_SUBDIR,
     "LP16\\Playlists",
     "LP16\\Stereo Playlists",
     "Stereo Songs",

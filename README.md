@@ -170,6 +170,7 @@ damaged. Nothing is deleted on the stick.
 | File | Contents |
 |---|---|
 | `src/lib.rs` | File formats: `SongProject` (one `.songprj`, producing `song.set` and the `validationcode`), `.play`, `.playlistprj`, reading WAV and MIDI, import, settings |
+| `src/project_lib.rs` | Project Library: list, create, rename, copy and delete songs and playlists. Renaming a song keeps the playlists pointing at it; a song that a playlist uses cannot be deleted. |
 | `src/sync.rs` | Stick Sync: `plan` (what an export would do), `run` (export and verify). Command line and user interface use the same process. |
 | `src/main.rs` | Command line |
 | `src/gui_app.rs` | User interface (egui 0.27) |

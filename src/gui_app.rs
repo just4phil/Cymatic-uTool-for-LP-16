@@ -14,11 +14,12 @@ use eframe::egui::{
     self, pos2, vec2, Align, Align2, Color32, FontId, Layout, Margin, Rect, RichText, Sense,
     Stroke, Ui,
 };
+use lp16_tool::project_lib::ProjectLibrary;
 use lp16_tool::sync::{self, Action, ExportMode, Progress};
 use lp16_tool::{
-    generate_playlistprj, generate_songprj, import_songs, init_folders,
+    import_songs, init_folders,
     library_songs, midi_duration, natural_cmp, newest_version, scan_import, ImportItem, ImportStatus, LibrarySong,
-    now_ms, parse_playlist, resolve, save_config,
+    now_ms, resolve, save_config,
     plain_tag, xml_unescape, unresolve, valid_fat32_name, Config,
     PlaylistSong, ProjectTrack, SongProject, WavInfo, STICK_WAV_HEADER_LEN,
 };
@@ -114,7 +115,6 @@ struct PlSong {
 
 struct PlaylistInfo {
     name: String,
-    path: PathBuf,
     songs: Vec<PlSong>,
     size: u64,
     modified: i64,
@@ -332,14 +332,6 @@ pub struct Lp16App {
 // ---------------------------------------------------------------------------
 // helpers: paths, formatting, Windows bits
 // ---------------------------------------------------------------------------
-
-fn playlists_dir(project_lib: &str) -> PathBuf {
-    Path::new(project_lib).join("LP16").join("Multitrack Playlists")
-}
-
-fn songs_dir(project_lib: &str) -> PathBuf {
-    Path::new(project_lib).join("LP16").join("Multitrack Songs")
-}
 
 fn key(path: &str) -> String {
     path.to_lowercase()
@@ -1115,54 +1107,33 @@ impl Lp16App {
         self.open.contains(k)
     }
 
+    /// The project library of the current settings.
+    fn lib(&self) -> ProjectLibrary {
+        ProjectLibrary::new(&self.config.project_lib, &self.config.audio_lib)
+    }
+
     fn refresh(&mut self) {
-        let project_lib = self.config.project_lib.clone();
+        let lib = self.lib();
         let audio_lib = self.config.audio_lib.clone();
-        let list = |dir: PathBuf, ext: &str| -> Vec<PathBuf> {
-            let mut v: Vec<PathBuf> = fs::read_dir(dir)
-                .map(|rd| {
-                    rd.filter_map(|e| e.ok())
-                        .map(|e| e.path())
-                        .filter(|p| {
-                            p.extension()
-                                .map(|x| x.eq_ignore_ascii_case(ext))
-                                .unwrap_or(false)
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-            v.sort_by_key(|p| p.to_string_lossy().to_lowercase());
-            v
-        };
-        self.songs = list(songs_dir(&project_lib), "songprj")
-            .iter()
-            .map(|p| load_song(p, &audio_lib))
-            .collect();
+        self.songs = lib.song_files().iter().map(|p| load_song(p, &audio_lib)).collect();
         self.song_idx = self
             .songs
             .iter()
             .enumerate()
             .map(|(i, s)| (key(&s.path), i))
             .collect();
-        self.playlists = list(playlists_dir(&project_lib), "playlistprj")
+        self.playlists = lib
+            .playlists()
             .into_iter()
-            .map(|p| {
-                let xml = fs::read_to_string(&p).unwrap_or_default();
-                let (_, pls) = parse_playlist(&xml, &project_lib);
-                PlaylistInfo {
-                    name: stem(&p.to_string_lossy()),
-                    songs: pls
-                        .iter()
-                        .map(|s| PlSong {
-                            prj: s.songprj.clone(),
-                            mode: s.mode.clone(),
-                            delay: s.delay.clone(),
-                        })
-                        .collect(),
-                    size: fs::metadata(&p).map(|m| m.len()).unwrap_or(0),
-                    modified: mtime(&p),
-                    path: p,
-                }
+            .map(|pl| PlaylistInfo {
+                name: pl.name,
+                songs: pl
+                    .songs
+                    .iter()
+                    .map(|s| PlSong { prj: s.songprj.clone(), mode: s.mode.clone(), delay: s.delay.clone() })
+                    .collect(),
+                size: fs::metadata(&pl.path).map(|m| m.len()).unwrap_or(0),
+                modified: mtime(&pl.path),
             })
             .collect();
         match self.sel {
@@ -1210,110 +1181,57 @@ impl Lp16App {
         }
     }
 
-    /// write a playlist file and refresh
-    fn write_playlist(&mut self, path: &Path, name: &str, songs: &[PlSong]) -> bool {
-        let xml = generate_playlistprj(name, now_ms(), &self.config.project_lib, &to_pl_songs(songs));
-        // a fresh project library has no "LP16\Multitrack Playlists" yet
-        let dir_ok = path.parent().map(fs::create_dir_all).unwrap_or(Ok(()));
-        if let Err(e) = dir_ok.and_then(|_| fs::write(path, xml.as_bytes())) {
-            self.message("Error", format!("Cannot write {}:\n{}", path.display(), e));
-            return false;
-        }
-        true
-    }
-
-    /// Rename (copy = false) or copy a song project to a new name.
-    fn song_name_change(&mut self, index: usize, new_name: &str, copy: bool) {
-        let old_path = PathBuf::from(&self.songs[index].path);
-        let new_path = old_path.with_file_name(format!("{}.songprj", new_name));
-        // an unreadable project is not renamed (it would be written empty)
-        let saved = SongProject::load(&old_path.to_string_lossy(), &self.config.audio_lib).and_then(|mut prj| {
-            prj.name = new_name.to_string();
-            prj.save_as(&new_path.to_string_lossy())
-        });
-        if let Err(e) = saved {
-            self.message("Error", format!("Cannot write {}:\n{}", new_path.display(), e));
-            return;
-        }
-        if !copy {
-            let _ = fs::remove_file(&old_path);
-            // keep the playlists pointing at the song
-            let old_key = key(&old_path.to_string_lossy());
-            let changed: Vec<(PathBuf, String, Vec<PlSong>)> = self
-                .playlists
-                .iter()
-                .filter(|pl| pl.songs.iter().any(|s| key(&s.prj) == old_key))
-                .map(|pl| {
-                    let songs = pl
-                        .songs
-                        .iter()
-                        .map(|s| {
-                            let mut s = s.clone();
-                            if key(&s.prj) == old_key {
-                                s.prj = new_path.to_string_lossy().into_owned();
-                            }
-                            s
-                        })
-                        .collect();
-                    (pl.path.clone(), pl.name.clone(), songs)
-                })
-                .collect();
-            for (path, name, songs) in changed {
-                self.write_playlist(&path, &name, &songs);
+    /// Show a failed library change; true if it worked.
+    fn lib_ok<T>(&mut self, result: Result<T, String>) -> bool {
+        match result {
+            Ok(_) => true,
+            Err(e) => {
+                self.message("Error", e);
+                false
             }
         }
+    }
+
+    /// Rename (copy = false) or copy a song project to a new name; a rename
+    /// keeps the playlists pointing at the song.
+    fn song_name_change(&mut self, index: usize, new_name: &str, copy: bool) {
+        let lib = self.lib();
+        let old = PathBuf::from(&self.songs[index].path);
+        let result = if copy { lib.copy_song(&old, new_name) } else { lib.rename_song(&old, new_name) };
+        let ok = self.lib_ok(result);
         self.refresh();
-        self.select_song_path(&new_path);
+        if ok {
+            self.select_song_path(&lib.song_path(new_name));
+        }
     }
 
     fn playlist_name_change(&mut self, index: usize, new_name: &str, copy: bool) {
-        let old_path = self.playlists[index].path.clone();
-        let new_path = old_path.with_file_name(format!("{}.playlistprj", new_name));
-        let songs = self.playlists[index].songs.clone();
-        if !self.write_playlist(&new_path, new_name, &songs) {
-            return;
+        let old = self.playlists[index].name.clone();
+        let result = self.lib().rename_playlist(&old, new_name, copy);
+        if self.lib_ok(result) {
+            self.refresh();
+            self.select_playlist_name(new_name);
         }
-        if !copy {
-            let _ = fs::remove_file(&old_path);
-        }
-        self.refresh();
-        self.select_playlist_name(new_name);
     }
 
     fn delete_song(&mut self, index: usize) {
-        let path = self.songs[index].path.clone();
-        let used: Vec<String> = self
-            .playlists
-            .iter()
-            .filter(|pl| pl.songs.iter().any(|s| key(&s.prj) == key(&path)))
-            .map(|pl| pl.name.clone())
-            .collect();
-        if !used.is_empty() {
-            self.message(
-                "Delete Song",
-                format!(
-                    "The Song is used in these Playlists and can't be deleted:\n{}",
-                    used.join(", ")
-                ),
-            );
-            return;
+        let path = PathBuf::from(&self.songs[index].path);
+        match self.lib().delete_song(&path) {
+            Ok(()) => {
+                self.sel = Sel::SongsFolder;
+                self.refresh();
+            }
+            Err(e) => self.message("Delete Song", e),
         }
-        if let Err(e) = fs::remove_file(&path) {
-            self.message("Error", format!("Cannot delete {}:\n{}", path, e));
-            return;
-        }
-        self.sel = Sel::SongsFolder;
-        self.refresh();
     }
 
     fn delete_playlist(&mut self, index: usize) {
-        let path = self.playlists[index].path.clone();
-        if let Err(e) = fs::remove_file(&path) {
-            self.message("Error", format!("Cannot delete {}:\n{}", path.display(), e));
-            return;
+        let name = self.playlists[index].name.clone();
+        let result = self.lib().delete_playlist(&name);
+        if self.lib_ok(result) {
+            self.sel = Sel::PlaylistsFolder;
+            self.refresh();
         }
-        self.sel = Sel::PlaylistsFolder;
-        self.refresh();
     }
 
     fn open_playlist_editor(&mut self, index: Option<usize>) {
@@ -1344,8 +1262,7 @@ impl Lp16App {
             self.message("Playlist Name", "The new Playlist Name contains invalid characters.");
             return;
         }
-        let dir = playlists_dir(&self.config.project_lib);
-        let new_path = dir.join(format!("{}.playlistprj", name));
+        let new_path = self.lib().playlist_path(&name);
         let same_name = index.map(|i| self.playlists[i].name == name).unwrap_or(false);
         if !same_name && new_path.exists() {
             self.message("Playlist Name", format!("A Playlist \"{}\" already exists.", name));
@@ -1359,12 +1276,15 @@ impl Lp16App {
             }
             _ => {}
         }
-        let _ = fs::create_dir_all(&dir);
-        if !self.write_playlist(&new_path, &name, &songs) {
+        let lib = self.lib();
+        let songs = to_pl_songs(&songs);
+        let result = match (index, same_name, copy_or_rename) {
+            (Some(i), false, Some(copy)) => lib.save_playlist_as(&self.playlists[i].name, &name, &songs, copy),
+            (None, _, _) => lib.create_playlist(&name, &songs),
+            _ => lib.save_playlist(&name, &songs),
+        };
+        if !self.lib_ok(result) {
             return;
-        }
-        if let (Some(i), false, Some(false)) = (index, same_name, copy_or_rename) {
-            let _ = fs::remove_file(&self.playlists[i].path); // rename
         }
         self.refresh();
         self.select_playlist_name(&name);
@@ -2437,7 +2357,7 @@ impl Lp16App {
     /// scan the AudioLibrary and compare it with the project library;
     /// missing (importable) folders are checked
     fn import_rescan(&mut self) {
-        let library = library_songs(&songs_dir(&self.config.project_lib), &self.config.audio_lib);
+        let library = library_songs(&self.lib().songs_dir(), &self.config.audio_lib);
         let scan = scan_import(&self.config.import_lib, &library);
         self.import_check = match &scan {
             Ok(items) => items.iter().map(|i| i.is_new()).collect(),
@@ -2459,7 +2379,7 @@ impl Lp16App {
     }
 
     fn import_run(&mut self) {
-        let dir = songs_dir(&self.config.project_lib);
+        let dir = self.lib().songs_dir();
         let result = import_songs(&self.import_selected(), &dir, &self.config.audio_lib);
         self.refresh();
         self.import_rescan();
@@ -2510,7 +2430,7 @@ impl Lp16App {
     /// most songs get a newer version (from `fresh` if given; on a tie the
     /// most recently changed one). Returns false if there is nothing to update.
     fn open_playlist_update(&mut self, source: Option<usize>, fresh: &[String], info: &str) -> bool {
-        let lib = library_songs(&songs_dir(&self.config.project_lib), &self.config.audio_lib);
+        let lib = library_songs(&self.lib().songs_dir(), &self.config.audio_lib);
         let fresh: HashSet<String> = fresh.iter().map(|p| key(p)).collect();
         let source = match source {
             Some(i) => i,
@@ -2672,12 +2592,12 @@ impl Lp16App {
             })
             .collect();
         let name = up.name.trim().to_string();
-        let path = playlists_dir(&self.config.project_lib).join(format!("{}.playlistprj", name));
-        if path.exists() {
+        if self.lib().playlist_path(&name).exists() {
             self.message("Update Playlist", format!("A Playlist \"{}\" already exists.", name));
             return;
         }
-        if self.write_playlist(&path, &name, &songs) {
+        let result = self.lib().create_playlist(&name, &to_pl_songs(&songs));
+        if self.lib_ok(result) {
             self.refresh();
             self.select_playlist_name(&name);
             self.tab = Tab::Home;
@@ -3691,7 +3611,7 @@ impl Lp16App {
     }
 
     fn new_song_dialog(&mut self) {
-        let dir = songs_dir(&self.config.project_lib);
+        let dir = self.lib().songs_dir();
         let mut name = "New Song".to_string();
         let mut n = 2;
         while dir.join(format!("{}.songprj", name)).exists() {
@@ -3703,14 +3623,11 @@ impl Lp16App {
 
     /// write an empty .songprj, select it and open the song editor
     fn create_song(&mut self, name: &str, sr: u32, bits: u32) {
-        let dir = songs_dir(&self.config.project_lib);
-        let path = dir.join(format!("{}.songprj", name));
-        let xml = generate_songprj(name, now_ms(), sr, bits, 1);
-        // a fresh project library has no "LP16\Multitrack Songs" yet
-        if let Err(e) = fs::create_dir_all(&dir).and_then(|_| fs::write(&path, xml.as_bytes())) {
-            self.message("Error", format!("Cannot write {}:\n{}", path.display(), e));
+        let result = self.lib().create_song(name, sr, bits);
+        let Ok(path) = result else {
+            self.lib_ok(result);
             return;
-        }
+        };
         self.refresh();
         self.select_song_path(&path);
         if let Sel::Song(i) = self.sel {
@@ -3722,7 +3639,7 @@ impl Lp16App {
     fn new_song_dialog_ui(&mut self, ctx: &egui::Context, d: &mut Dialog) -> bool {
         let Dialog::NewSong { name, sr, bits } = d else { return true };
         let trimmed = name.trim().to_string();
-        let exists = songs_dir(&self.config.project_lib)
+        let exists = self.lib().songs_dir()
             .join(format!("{}.songprj", trimmed))
             .exists();
         let invalid = !valid_fat32_name(&trimmed);
@@ -3790,9 +3707,9 @@ impl Lp16App {
         let trimmed = name.trim().to_string();
         let ext = if is_song { "songprj" } else { "playlistprj" };
         let dir = if is_song {
-            songs_dir(&self.config.project_lib)
+            self.lib().songs_dir()
         } else {
-            playlists_dir(&self.config.project_lib)
+            self.lib().playlists_dir()
         };
         let exists = dir.join(format!("{}.{}", trimmed, ext)).exists();
         let invalid = !valid_fat32_name(&trimmed);
