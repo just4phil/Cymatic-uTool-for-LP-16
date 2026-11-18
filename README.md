@@ -1,78 +1,86 @@
 # lp16-tool
 
-**Ersatz für uTool2: Songs und Playlists für den Cymatic Audio LP-16 verwalten und auf den Stick exportieren.**
+**English** · [Deutsch](README_german.md)
 
-Der Hersteller Cymatic Audio existiert nicht mehr, und mit ihm fehlt die Pflege für uTool2.
-lp16-tool liest die uTool2-Projektbibliothek (`.songprj`, `.playlistprj`) und schreibt den Stick
-(`Recording\<Song>\…`, `Recording\#PLAYLISTS\*.play`) **byte-gleich** so, wie uTool2 es tut.
-Dazu gibt es eine Oberfläche, die der von uTool2 nachgebaut ist, und eine Kommandozeile.
+**A replacement for uTool2: manage songs and playlists for the Cymatic Audio LP-16 and export them to the stick.**
 
-> lp16-tool ist ein unabhängiges Projekt und steht in keiner Verbindung zu Cymatic Audio.
-> Es ist eine Neuentwicklung in Rust und enthält keinen Code aus uTool2. Die Dateiformate
-> wurden aus dem Verhalten von uTool2 und den Dateien auf einem echten Stick abgeleitet.
+Cymatic Audio no longer exists, and uTool2 is no longer maintained. lp16-tool reads the uTool2
+project library (`.songprj`, `.playlistprj`) and writes the stick (`Recording\<Song>\…`,
+`Recording\#PLAYLISTS\*.play`) **byte for byte** the way uTool2 does. It comes with a user
+interface modelled on uTool2 and a command line.
 
-## Funktionen
+> **Status:** lp16-tool supports **the LP-16 only** and is **not a complete rebuild** of uTool2.
+> What is missing or works differently is listed under
+> [What is missing and what is different](#what-is-missing-and-what-is-different). The
+> **Import** tab does something entirely different from the original, see
+> [Import](#import-batch-import-of-songs).
 
-- **Stick-Export wie uTool2:** `song.set` (inklusive `validationcode`), `.play` und die WAVs
-  (Header neu aufgebaut, Audiodaten unverändert, Namen `_<quelle>_<NN>.wav`) sind byte-gleich
-  mit dem, was uTool2 schreibt.
-- **Quick Export und Force Overwrite:** Quick Export schreibt nur neue und geänderte Songs,
-  Force Overwrite schreibt alle ausgewählten Songs neu. Die Vorschau zeigt pro Song
-  *New Export*, *Overwrite*, *Skip* oder *Force Overwrite* und die Datenmenge („To Copy“).
-- **Sicher schreiben:** Jede Datei wird erst als `.lp16tmp` geschrieben und dann umbenannt.
-  Nach jedem Song wird das Ergebnis auf dem Ziel geprüft. Ein abgebrochener Export hinterlässt
-  nie eine halbe Datei.
-- **Prüfen ohne zu schreiben:** `verify` vergleicht einen Stick mit der Bibliothek und endet mit
-  Exit-Code 0 nur, wenn alles aktuell ist. Gut vor jedem Gig.
-- **Bibliothek bearbeiten:** Playlists anlegen, umsortieren, umbenennen, kopieren und löschen;
-  Songs anlegen und im Song-Editor WAVs per Drag & Drop auf die 16 Spuren ziehen, MIDI-Datei
-  wählen.
-- **Import aus der AudioLibrary:** Neue Datumsordner (`<Song>\<YYYY-MM-DD…>\*.wav + .mid`) werden
-  erkannt und als Songs angelegt. „Update Playlist“ baut aus einer Playlist eine neue mit den
-  jeweils neuesten Song-Versionen.
-- **Edit Target:** Inhalt des Sticks als Baum, mit Details zu Songs und Playlists.
+> lp16-tool is an independent project and is not affiliated with Cymatic Audio. It is written
+> from scratch in Rust and contains no code from uTool2. The file formats were derived from
+> uTool2's behaviour and from the files on a real stick.
 
-## Voraussetzungen
+## Features
 
-- Windows (entwickelt und getestet unter Windows 11)
-- [Rust](https://www.rust-lang.org/tools/install) (stable), nur zum Bauen
-- Eine uTool2-Projektbibliothek oder ein leerer Ordner, den lp16-tool anlegt
+- **Stick export like uTool2:** `song.set` (including the `validationcode`), `.play` and the WAVs
+  (header rebuilt, audio data unchanged, names `_<source>_<NN>.wav`) are byte-identical to what
+  uTool2 writes.
+- **Quick Export and Force Overwrite:** Quick Export writes only new and changed songs, Force
+  Overwrite writes all selected songs again. The preview shows *New Export*, *Overwrite*, *Skip*
+  or *Force Overwrite* for each song, plus the amount of data ("To Copy").
+- **Safe writing:** every file is first written as `.lp16tmp` and then renamed. After each song
+  the result on the target is checked. A cancelled export never leaves a half-written file.
+- **Check without writing:** `verify` compares a stick with the library and exits with code 0
+  only if everything is up to date. Handy before every gig.
+- **Edit the library:** create, reorder, rename, copy and delete playlists; create songs and drag
+  WAVs onto the 16 tracks in the song editor, choose the MIDI file.
+- **Batch import of songs:** creates songs from new folders of the AudioLibrary in one go, see
+  [Import](#import-batch-import-of-songs).
+- **Edit Target:** the contents of the stick as a tree, with details on songs and playlists.
 
-## Bauen und starten
+## Requirements
+
+- Windows (developed and tested on Windows 11)
+- [Rust](https://www.rust-lang.org/tools/install) (stable), only for building
+- A uTool2 project library, or an empty folder that lp16-tool sets up
+
+A ready-built exe is available under [Releases](../../releases).
+
+## Build and run
 
 ```
 cargo build --release
 target\release\lp16-tool.exe
 ```
 
-Ohne Argumente (auch per Doppelklick) startet die Oberfläche. Ohne die Oberfläche bauen:
+Without arguments (also by double-click) the user interface starts. To build without it:
 `cargo build --release --no-default-features`.
 
-## Einrichtung
+## Setup
 
-Die Einstellungen stehen in `lp16-tool.toml`. Die Datei wird im aktuellen Ordner gesucht,
-sonst neben der exe und in den Ordnern darüber. Als Vorlage dient
-[`lp16-tool.example.toml`](lp16-tool.example.toml):
+The settings live in `lp16-tool.toml`. The file is looked for in the current folder, otherwise
+next to the exe and in the folders above it. Use
+[`lp16-tool.example.toml`](lp16-tool.example.toml) as a template:
 
 ```
 copy lp16-tool.example.toml lp16-tool.toml
 ```
 
-`lp16-tool.toml` enthält eigene Pfade und ist deshalb nicht im Repo (`.gitignore`). Fehlt die
-Datei, legt die Oberfläche sie beim ersten Ändern der Einstellungen neben der exe an. Am einfachsten setzt man
-im Reiter **Settings** den **Library Folder**; „Initialize Folders“ legt fehlende Ordner an.
+`lp16-tool.toml` contains your own paths and is therefore not in the repo (`.gitignore`). If the
+file is missing, the user interface creates it next to the exe the first time you change a
+setting. The easiest way is to set the **Library Folder** in the **Settings** tab; "Initialize
+Folders" creates any missing folders.
 
 ```toml
-# Basisordner: <library>\CymaticProjectLib = Projektbibliothek,
-#              <library>\AudioLibrary      = Audiodateien und Import
+# base folder: <library>\CymaticProjectLib = project library,
+#              <library>\AudioLibrary      = audio files and import
 library = "E:\LP16_LIBRARY"
-# Export-Ziel (wird im Export-Reiter gewählt und gemerkt)
+# export target (chosen and remembered in the Export tab)
 stick_root = "F:\"
-# wird nie beschrieben, mehrere Ziele mit ; trennen
+# never written to, separate several targets with ;
 protected_targets = "D:"
 ```
 
-Aufbau des Basisordners:
+Layout of the base folder:
 
 ```
 <library>\
@@ -81,43 +89,42 @@ Aufbau des Basisordners:
 │       ├── Multitrack Songs\       *.songprj
 │       └── Multitrack Playlists\   *.playlistprj
 └── AudioLibrary\
-    └── <Song>\<YYYY-MM-DD…>\       *.wav, eine .mid
+    └── <Song>\<YYYY-MM-DD…>\       *.wav, one .mid
 ```
 
-Ältere Dateien mit getrennten Pfaden (`audio_lib`, `project_lib`, `import_lib`) werden weiter
-gelesen.
+Older files with separate paths (`audio_lib`, `project_lib`, `import_lib`) are still read.
 
-### Schutz des echten Sticks
+### Protecting the real stick
 
-`protected_targets` sperrt Ziele für jeden Export, in der Oberfläche und in der Kommandozeile.
-Fehlt der Eintrag, ist `D:` gesperrt. Das ist Absicht: Zum Ausprobieren exportiert man auf eine
-Kopie des Sticks. Wer auf den Stick selbst exportieren will, trägt das Laufwerk aus
-(`protected_targets = ""` sperrt nichts). Vor dem ersten Export auf den echten Stick
-`Recording\` sichern.
+`protected_targets` blocks targets for every export, in the user interface and on the command
+line. If the entry is missing, `D:` is blocked. This is on purpose: to try things out, export to
+a copy of the stick. To export to the stick itself, remove its drive from the list
+(`protected_targets = ""` blocks nothing). Back up `Recording\` before the first export to the
+real stick.
 
-## Kommandozeile
+## Command line
 
 ```
-lp16-tool song     <songprj>     <audio-lib> <ausgabe-ordner>
-lp16-tool playlist <playlistprj> <project-lib> <audio-lib> <ausgabe-ordner>
-lp16-tool export   <playlistprj> <project-lib> <audio-lib> <stick-ordner> [--dry-run] [--force]
-lp16-tool verify   <playlistprj> <project-lib> <audio-lib> <stick-ordner>
+lp16-tool song     <songprj>     <audio-lib> <out-dir>
+lp16-tool playlist <playlistprj> <project-lib> <audio-lib> <out-dir>
+lp16-tool export   <playlistprj> <project-lib> <audio-lib> <stick-dir> [--dry-run] [--force]
+lp16-tool verify   <playlistprj> <project-lib> <audio-lib> <stick-dir>
 lp16-tool gui
 ```
 
-| Befehl | Was er tut |
+| Command | What it does |
 |---|---|
-| `song` | schreibt `<ausgabe>\<Song>\song.set` und zeigt den `validationcode` |
-| `playlist` | schreibt `<ausgabe>\#PLAYLISTS\<Playlist>.play` |
-| `export` | bringt eine Playlist mit allen Songs auf den Stick (`<stick>\Recording\…`); `--dry-run` zeigt nur an, `--force` = Force Overwrite |
-| `verify` | prüft den Stick nur lesend; Exit-Code 0 = aktuell |
+| `song` | writes `<out-dir>\<Song>\song.set` and prints the `validationcode` |
+| `playlist` | writes `<out-dir>\#PLAYLISTS\<Playlist>.play` |
+| `export` | puts a playlist with all its songs onto the stick (`<stick>\Recording\…`); `--dry-run` only shows what would happen, `--force` = Force Overwrite |
+| `verify` | checks the stick read-only; exit code 0 = up to date |
 
-- `audio-lib` ersetzt `{$AudioLib}` in der `.songprj` (bei uTool2 `AudioFileLibraryPath` in
+- `audio-lib` replaces `{$AudioLib}` in the `.songprj` (in uTool2: `AudioFileLibraryPath` in
   `%APPDATA%\Cymatic Audio uTool2\Cymatic Audio uTool2.settings`).
-- `project-lib` ist die Wurzel der Projektbibliothek und ersetzt `{$ProjectLib}` in der
+- `project-lib` is the root of the project library and replaces `{$ProjectLib}` in the
   `.playlistprj`.
 
-Beispiel:
+Example:
 
 ```
 lp16-tool verify ^
@@ -127,52 +134,74 @@ lp16-tool verify ^
   "F:\"
 ```
 
-Eine `.songprj`, die nicht gelesen werden kann, bricht `export` ab, bevor etwas geschrieben
-wird.
+A `.songprj` that cannot be read stops `export` before anything is written.
 
-## Wann ein Song neu exportiert wird
+## Import: batch import of songs
 
-Quick Export schreibt einen Song, wenn
+The **Import** tab shares only its name with uTool2's import.
 
-- sein Ordner auf dem Stick fehlt (*New Export*),
-- eine WAV fehlt oder nicht mehr die Größe hat, die die aktuelle Quelle ergibt,
-- die MIDI-Datei fehlt, oder
-- die `song.set` abweicht. Der `validationcode` darin enthält Pfade und Änderungszeiten der
-  Quelldateien, so fallen auch neu gerenderte WAVs gleicher Länge und geänderte MIDI-Dateien auf.
+- **uTool2** imports audio from a folder or an external drive into the project library, with
+  options such as "Split at Markers".
+- **lp16-tool** creates songs in a **batch**. It expects an AudioLibrary with one folder per song
+  and, inside it, one folder per version, named with a date:
 
-Sonst wird er übersprungen (*Skip*). Die `.play` einer ausgewählten Playlist wird bei jedem
-Export geschrieben. Force Overwrite schreibt alle ausgewählten Songs neu; das hilft, wenn
-Dateien auf dem Stick beschädigt sein könnten. Gelöscht wird auf dem Stick nichts.
+  ```
+  AudioLibrary\<Song>\<YYYY-MM-DD…>\   up to 16 mono WAVs, at most one .mid
+  ```
 
-## Aufbau des Codes
+  "Import Songs" scans the AudioLibrary and suggests every version folder that has no song yet
+  and is newer than the newest version in the library. After confirming, one `.songprj` is
+  created per folder, with the WAVs on tracks 1…n (natural sort order) and the MIDI file.
+  Faulty folders (not mono, mixed formats, more than 16 WAVs, several MIDI files) are shown but
+  not imported. Existing files are never overwritten.
 
-| Datei | Inhalt |
+**Update Playlist** belongs to this: it builds a new playlist from an existing one, with every
+song replaced by its newest version. After an import, this is suggested automatically.
+
+## When a song is exported again
+
+Quick Export writes a song if
+
+- its folder is missing on the stick (*New Export*),
+- a WAV is missing or no longer has the size the current source produces,
+- the MIDI file is missing, or
+- the `song.set` differs. The `validationcode` in it contains the paths and modification times
+  of the source files, so re-rendered WAVs of the same length and changed MIDI files are caught
+  as well.
+
+Otherwise it is skipped (*Skip*). The `.play` of a selected playlist is written on every export.
+Force Overwrite writes all selected songs again; this helps if files on the stick might be
+damaged. Nothing is deleted on the stick.
+
+## Code structure
+
+| File | Contents |
 |---|---|
-| `src/lib.rs` | Dateiformate: `SongProject` (eine `.songprj`, daraus `song.set` und `validationcode`), `.play`, `.playlistprj`, WAV- und MIDI-Lesen, Import, Einstellungen |
-| `src/sync.rs` | Stick Sync: `plan` (was ein Export tun würde), `run` (exportieren und prüfen), `check_target` (gesperrte Ziele). Kommandozeile und Oberfläche nutzen denselben Ablauf. |
-| `src/main.rs` | Kommandozeile |
-| `src/gui_app.rs` | Oberfläche (egui 0.27) |
+| `src/lib.rs` | File formats: `SongProject` (one `.songprj`, producing `song.set` and the `validationcode`), `.play`, `.playlistprj`, reading WAV and MIDI, import, settings |
+| `src/sync.rs` | Stick Sync: `plan` (what an export would do), `run` (export and verify), `check_target` (blocked targets). Command line and user interface use the same process. |
+| `src/main.rs` | Command line |
+| `src/gui_app.rs` | User interface (egui 0.27) |
 
-Es gibt keine Abhängigkeiten außer `eframe` und `rfd` für die Oberfläche; XML, MD5, WAV und MIDI
-sind selbst geschrieben.
+There are no dependencies apart from `eframe` and `rfd` for the user interface; XML, MD5, WAV and
+MIDI handling are written from scratch.
 
 ## Tests
 
 ```
-cargo test                  # ohne echte Daten
-cargo test -- --ignored     # Vergleich mit echter Bibliothek und echtem Stick
+cargo test                  # without real data
+cargo test -- --ignored     # compare with a real library and a real stick
 ```
 
-Die normalen Tests arbeiten mit kleinen Bibliotheken in einem temporären Ordner: Sync-Plan,
-Export und Prüfung, atomares Schreiben, WAV-Export, XML-Entities, gesperrte Ziele, Import.
-Die `#[ignore]`-Tests vergleichen byte-genau mit den Dateien, die uTool2 auf einen echten Stick
-geschrieben hat. Die Pfade der Referenzdaten kommen aus Umgebungsvariablen:
+The regular tests work with small libraries in a temporary folder: sync plan, export and check,
+atomic writing, WAV export, XML entities, blocked targets, import. The `#[ignore]` tests compare
+byte for byte with the files uTool2 wrote to a real stick. The paths of the reference data come
+from environment variables:
 
-| Variable | Inhalt |
+| Variable | Contents |
 |---|---|
-| `LP16_TEST_PROJECT_LIB` | Projektbibliothek mit den Referenz-Songs und -Playlists |
-| `LP16_TEST_AUDIO_LIB` | zugehörige Audio-Bibliothek (`{$AudioLib}`) |
-| `LP16_TEST_STICK` | Wurzel eines Sticks, den uTool2 beschrieben hat, z. B. `D:\` |
+| `LP16_TEST_PROJECT_LIB` | project library with the reference songs and playlists |
+| `LP16_TEST_AUDIO_LIB` | its audio library (`{$AudioLib}`) |
+| `LP16_TEST_STICK` | root of a stick written by uTool2, e.g. `D:\` |
 
 ```powershell
 $env:LP16_TEST_PROJECT_LIB = 'E:\LP16\CymaticProjectLib'
@@ -181,16 +210,36 @@ $env:LP16_TEST_STICK       = 'D:\'
 cargo test -- --ignored
 ```
 
-Fehlt eine Variable oder eine Datei, schlägt der Test fehl, statt still „ok“ zu melden. Einige
-Tests erwarten bestimmte Songs und Playlists aus der Referenzbibliothek (siehe `src/lib.rs`).
+If a variable or a file is missing, the test fails instead of silently passing. Some tests expect
+particular songs and playlists from the reference library (see `src/lib.rs`).
 
-## Grenzen
+## What is missing and what is different
 
-- Nur Multitrack-Songs und -Playlists; Stereo-Songs und -Playlists fehlen.
-- Kein Mixer, kein Löschen auf dem Stick.
-- Ob der LP-16 den `validationcode` prüft, ist nicht bekannt; lp16-tool erzeugt ihn wie uTool2.
+**LP-16 only.** Other devices known to uTool2 are not supported. The only Target Type is "LP-16".
 
-## Lizenz
+**Not implemented yet:**
 
-[MIT](LICENSE): frei nutzen, ändern und weitergeben, auch kommerziell. Der Copyright- und
-Lizenzhinweis muss erhalten bleiben. Ohne Gewähr.
+- Stereo songs and playlists (multitrack only)
+- Mixer, i.e. level and pan per track (existing values from the `.songprj` are kept, though)
+- Song editor: changing the name, sampling rate and resolution of an existing song
+- Playlist editor: setting start mode and delay per song (existing values are kept)
+- Undo/redo, folders in the library ("New folder")
+- Deleting and editing on the stick (Edit Target only shows the contents)
+- Export Batch
+- uTool2's import (from a folder or external drive, "Split at Markers")
+
+**Different from the original:**
+
+- **Import** is a batch import of songs from the AudioLibrary, see
+  [Import](#import-batch-import-of-songs).
+- **Quick Export** writes only what has changed. uTool2 rewrites every `song.set`.
+- **Settings** only has the Library Folder; the export target is chosen in the Export tab.
+- `D:` is blocked for writing by default, see [Protecting the real stick](#protecting-the-real-stick).
+
+Whether the LP-16 checks the `validationcode` is unknown; lp16-tool generates it the same way
+uTool2 does.
+
+## License
+
+[MIT](LICENSE): free to use, modify and distribute, including commercially. The copyright and
+license notice must be kept. No warranty.
