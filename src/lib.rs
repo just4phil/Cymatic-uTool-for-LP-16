@@ -1926,12 +1926,12 @@ pub struct Config {
     pub stick_root: String,
     /// "AudioLibrary" for the song import: <Song>\<Date + note>\*.wav + .mid
     pub import_lib: String,
-    /// targets that are never written to, separated by ";" (prefix match,
-    /// case-insensitive). Default "D:" = the real stick.
+    /// optional: targets that are never written to, separated by ";"
+    /// (prefix match, case-insensitive). Default: none.
     pub protected_targets: String,
 }
 
-pub const DEFAULT_PROTECTED_TARGETS: &str = "D:";
+pub const DEFAULT_PROTECTED_TARGETS: &str = "";
 
 impl Default for Config {
     fn default() -> Self {
@@ -2021,7 +2021,7 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
         )
     };
     let text = format!(
-        "{}stick_root = \"{}\"\r\n# never written to, separated by ;\r\nprotected_targets = \"{}\"\r\n",
+        "{}stick_root = \"{}\"\r\n# optional: never written to, separated by ;\r\nprotected_targets = \"{}\"\r\n",
         paths, config.stick_root, config.protected_targets
     );
     fs::write(path, text.as_bytes())
@@ -2565,27 +2565,28 @@ mod tests {
 
     #[test]
     fn protected_targets() {
-        let config = Config::default();
-        assert!(is_protected_target("D:\\", &config));
-        assert!(is_protected_target("  d:/Recording", &config));
-        assert!(!is_protected_target("C:\\stick-copy", &config));
+        // by default nothing is protected
+        assert!(!is_protected_target("D:\\", &Config::default()));
         let custom = Config {
             protected_targets: "D:; F:\\LP16".to_string(),
             ..Config::default()
         };
+        assert!(is_protected_target("D:\\", &custom));
+        assert!(is_protected_target("  d:/Recording", &custom));
+        assert!(!is_protected_target("C:\\stick-copy", &custom));
         assert!(is_protected_target("f:\\lp16\\x", &custom));
         assert!(!is_protected_target("F:\\other", &custom));
-        // an empty list protects nothing (explicit opt-out)
+        // an empty list protects nothing
         let none = Config {
             protected_targets: String::new(),
             ..Config::default()
         };
         assert!(!is_protected_target("D:\\", &none));
-        // missing key in the file keeps the default
+        // missing key in the file: nothing protected
         let dir = temp_dir("config");
         let path = dir.join("lp16-tool.toml");
         fs::write(&path, "audio_lib = \"A\"\r\n").unwrap();
-        assert_eq!(load_config(&path).protected_targets, "D:");
+        assert_eq!(load_config(&path).protected_targets, "");
         save_config(&path, &custom).unwrap();
         assert_eq!(load_config(&path).protected_targets, "D:; F:\\LP16");
         let with_import = Config {

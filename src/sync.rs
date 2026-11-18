@@ -214,11 +214,11 @@ pub fn plan(
 }
 
 /// Can the export write to `stick_root`? Refuses protected targets
-/// (protected_targets in lp16-tool.toml, default D:).
+/// (optional protected_targets in lp16-tool.toml; none by default).
 pub fn check_target(stick_root: &str, config: &Config) -> Result<(), String> {
     if is_protected_target(stick_root, config) {
         return Err(format!(
-            "Writing to {} is blocked (protected_targets = \"{}\" in lp16-tool.toml).\nExport to a copy of the stick instead.",
+            "Writing to {} is blocked (protected_targets = \"{}\" in lp16-tool.toml).\nRemove it from protected_targets to export there.",
             stick_root, config.protected_targets
         ));
     }

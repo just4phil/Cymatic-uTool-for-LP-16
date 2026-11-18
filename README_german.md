@@ -76,8 +76,8 @@ im Reiter **Settings** den **Library Folder**; „Initialize Folders“ legt feh
 library = "E:\LP16_LIBRARY"
 # Export-Ziel (wird im Export-Reiter gewählt und gemerkt)
 stick_root = "F:\"
-# wird nie beschrieben, mehrere Ziele mit ; trennen
-protected_targets = "D:"
+# optional: wird nie beschrieben, mehrere Ziele mit ; trennen
+protected_targets = ""
 ```
 
 Aufbau des Basisordners:
@@ -95,13 +95,12 @@ Aufbau des Basisordners:
 Ältere Dateien mit getrennten Pfaden (`audio_lib`, `project_lib`, `import_lib`) werden weiter
 gelesen.
 
-### Schutz des echten Sticks
+### Laufwerk schützen (optional)
 
-`protected_targets` sperrt Ziele für jeden Export, in der Oberfläche und in der Kommandozeile.
-Fehlt der Eintrag, ist `D:` gesperrt. Das ist Absicht: Zum Ausprobieren exportiert man auf eine
-Kopie des Sticks. Wer auf den Stick selbst exportieren will, trägt das Laufwerk aus
-(`protected_targets = ""` sperrt nichts). Vor dem ersten Export auf den echten Stick
-`Recording\` sichern.
+Standardmäßig darf lp16-tool auf jedes Ziel schreiben. Mit `protected_targets` lassen sich
+Laufwerke oder Ordner für jeden Export sperren, in der Oberfläche und in der Kommandozeile, zum
+Beispiel `protected_targets = "G:"`, solange man mit einer Kopie des Sticks probiert. Mehrere
+Einträge trennt man mit `;`. Vor dem ersten Export auf einen echten Stick `Recording\` sichern.
 
 ## Kommandozeile
 
@@ -238,8 +237,6 @@ gibt es nur „LP-16“.
   [Import](#import-batch-import-von-songs).
 - **Quick Export** schreibt nur, was sich geändert hat. uTool2 schreibt jede `song.set` neu.
 - **Settings** kennt nur den Library Folder; das Export-Ziel wird im Export-Reiter gewählt.
-- `D:` ist standardmäßig gegen Schreiben gesperrt, siehe
-  [Schutz des echten Sticks](#schutz-des-echten-sticks).
 
 Ob der LP-16 den `validationcode` prüft, ist nicht bekannt; lp16-tool erzeugt ihn wie uTool2.
 

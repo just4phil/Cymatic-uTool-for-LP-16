@@ -6,5 +6,6 @@
 library = "E:\LP16_LIBRARY"
 # export target (chosen and remembered in the Export tab)
 stick_root = "F:\"
-# never written to, separated by ; ("" = nothing protected)
-protected_targets = "D:"
+# optional: drives/folders that are never written to, separated by ;
+# e.g. "G:" to protect a drive while trying things out ("" = nothing protected)
+protected_targets = ""

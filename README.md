@@ -76,8 +76,8 @@ Folders" creates any missing folders.
 library = "E:\LP16_LIBRARY"
 # export target (chosen and remembered in the Export tab)
 stick_root = "F:\"
-# never written to, separate several targets with ;
-protected_targets = "D:"
+# optional: never written to, separate several targets with ;
+protected_targets = ""
 ```
 
 Layout of the base folder:
@@ -94,13 +94,12 @@ Layout of the base folder:
 
 Older files with separate paths (`audio_lib`, `project_lib`, `import_lib`) are still read.
 
-### Protecting the real stick
+### Protecting a drive (optional)
 
-`protected_targets` blocks targets for every export, in the user interface and on the command
-line. If the entry is missing, `D:` is blocked. This is on purpose: to try things out, export to
-a copy of the stick. To export to the stick itself, remove its drive from the list
-(`protected_targets = ""` blocks nothing). Back up `Recording\` before the first export to the
-real stick.
+By default lp16-tool may write to any target. `protected_targets` can block drives or folders
+for every export, in the user interface and on the command line, e.g.
+`protected_targets = "G:"` while you try things out on a copy of the stick. Several entries are
+separated with `;`. Back up `Recording\` before the first export to a real stick.
 
 ## Command line
 
@@ -234,7 +233,6 @@ particular songs and playlists from the reference library (see `src/lib.rs`).
   [Import](#import-batch-import-of-songs).
 - **Quick Export** writes only what has changed. uTool2 rewrites every `song.set`.
 - **Settings** only has the Library Folder; the export target is chosen in the Export tab.
-- `D:` is blocked for writing by default, see [Protecting the real stick](#protecting-the-real-stick).
 
 Whether the LP-16 checks the `validationcode` is unknown; lp16-tool generates it the same way
 uTool2 does.
