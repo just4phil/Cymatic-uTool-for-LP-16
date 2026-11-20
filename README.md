@@ -55,7 +55,7 @@ target\release\lp16-tool.exe
 ```
 
 Without arguments (also by double-click) the user interface starts. To build without it (and
-without the audio dependencies `cpal` and `rtrb` of the rehearsal player):
+without the audio and MIDI dependencies `cpal`, `rtrb` and `midir` of the rehearsal player):
 `cargo build --release --no-default-features`.
 
 ## Setup
@@ -85,6 +85,8 @@ audio_device = ""
 audio_out_left = "1"
 audio_out_right = "2"
 audio_buffer = "0"
+# MIDI output port of the rehearsal player (Settings > MIDI output); empty = off
+midi_port = ""
 # rehearsal mix presets (written by the program, see "Rehearsal mix")
 mix.1.name = "Default"
 mix.1.master = "0.0"
@@ -111,7 +113,8 @@ Back up `Recording\` before the first export to a real stick.
 ## Rehearsal player
 
 The player plays a song of the project library on the **audio output** you choose in the
-Settings tab (WASAPI), for rehearsing at home. MIDI and ASIO follow.
+Settings tab (WASAPI), for rehearsing at home. It also sends the MIDI file of the song to a
+**MIDI output** (see [MIDI output](#midi-output-settings-tab)). ASIO follows.
 
 - In the Home tab, right-click a song and choose **Play in Rehearsal**. This loads the song,
   switches to the **Rehearsal** tab and starts playing.
@@ -230,6 +233,47 @@ message comes when you press Play or Test tone.
 driver the USB return channels) and in X Air Edit route a channel or an aux return with source
 USB to these channels.
 
+### MIDI output (Settings tab)
+
+The **MIDI output** area of the Settings tab chooses the MIDI port the MIDI file of the song is
+sent to. The choice is saved at once as `midi_port` in `lp16-tool.toml` (empty = no MIDI output,
+the default; an old file without the key also means off).
+
+- The combo lists **(none)** and all MIDI output ports of the system (on Windows there is always
+  "Microsoft GS Wavetable Synth"); **Refresh** reads the list again.
+- **Send test** sends the state the loaded song would give a device right after its start: bank
+  select, program change and the controllers that lie on the very start of the song. The modeler
+  only gets what it would get at the start of the song anyway. The button needs a port and a
+  loaded song with a MIDI file.
+- The port is opened with Play (or with the test), not at program start. If the saved port is
+  missing or cannot be opened, the Rehearsal tab and the settings say "MIDI port not available:
+  <name>", the audio plays anyway, and the next Play tries again.
+- The Rehearsal tab shows "MIDI: <port> · <n> events" under the audio output, with a dot that
+  lights up for 150 ms at every message sent. "MIDI: no file" means the song has no (readable) MIDI
+  file, "MIDI: off" that no port is chosen. The song list shows a MIDI symbol for songs that have a
+  file.
+
+**How the MIDI is sent.** The MIDI file is sent in time with the audio, tempo changes included.
+The band's files contain no notes and no clock, only bank select (CC32) and program change on
+channel 1 at the start, CC69 (snapshot selection on Line 6 devices) with the values 1 to 5
+spread over the song, and CC22 on channel 10. The audio callback never sends MIDI itself: it
+queues the messages with a target time (time of the callback + output latency of the stream +
+position in the block), and a MIDI thread sends them on time.
+
+**Chasing.** When the song starts at a position after the beginning, and at every jump while it
+plays, the MIDI state at that position is sent first, at the moment the audio comes back: for
+each MIDI channel the bank select (CC0, CC32), the last program change and the last value of
+every other controller (1 to 119). Notes, pitch bend, aftertouch, SysEx and channel mode
+messages are not chased. An event exactly on the target position is sent as a normal event.
+Because of this, **CC69 and the program change give the right snapshot after a jump**. Starting
+at 0 and continuing after a pause send each event exactly once, with no chasing.
+
+**All Notes Off** (CC123) goes to every channel on which the file has notes when you stop or
+pause, jump, change the song or close the program. Files without notes send nothing.
+
+**Behringer XR18:** connect the XR18 over USB and choose its MIDI port here. The XR18 passes the
+messages on from its MIDI out to the modeler.
+
 ## Command line
 
 ```
@@ -311,6 +355,8 @@ damaged. Nothing is deleted on the stick.
 | `src/mix.rs` | The rehearsal mix: strips, presets, config lines, saving timer |
 | `src/rehearsal.rs` | Playback engine of the rehearsal player (reading, mixing, meters, transport, playlist queue with start modes and preloading), independent of any audio device (feature `player`) |
 | `src/rehearsal_queue.rs` | The queue of the player: entries, the mailbox that opens songs for the engine, rows of the song list (feature `player`) |
+| `src/rehearsal_midi.rs` | MIDI of the engine: events as frames, the messages of a block, chasing (feature `player`) |
+| `src/midi_out.rs` | MIDI output adapter (`midir`): ports, the MIDI thread with target times, All Notes Off at the end (feature `player`) |
 | `src/audio_out.rs` | Audio output adapter: hosts, devices and streams via `cpal`, channel distribution, test tone, commands and status between the user interface and the audio callback (feature `player`) |
 | `src/main.rs` | Command line |
 | `src/gui_app.rs` | User interface (egui 0.27) |
@@ -318,9 +364,10 @@ damaged. Nothing is deleted on the stick.
 | `src/gui_playlist.rs` | Playlist combo and song list in the Rehearsal tab |
 | `src/gui_mixer.rs` | The rehearsal mix in the Rehearsal tab |
 | `src/gui_audio.rs` | The "Audio output" area of the Settings tab |
+| `src/gui_midi.rs` | The "MIDI output" area of the Settings tab |
 
 There are no dependencies apart from `eframe` and `rfd` for the user interface and `cpal` and
-`rtrb` for the rehearsal player (feature `player`, switched on by `gui`); XML, MD5, WAV and MIDI
+`rtrb` and `midir` for the rehearsal player (feature `player`, switched on by `gui`); XML, MD5, WAV and MIDI
 handling are written from scratch.
 
 ## Tests

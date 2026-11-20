@@ -56,7 +56,7 @@ target\release\lp16-tool.exe
 ```
 
 Ohne Argumente (auch per Doppelklick) startet die Oberfläche. Ohne die Oberfläche (und ohne die
-Audio-Abhängigkeiten `cpal` und `rtrb` des Probe-Players) bauen:
+Audio- und MIDI-Abhängigkeiten `cpal`, `rtrb` und `midir` des Probe-Players) bauen:
 `cargo build --release --no-default-features`.
 
 ## Einrichtung
@@ -85,6 +85,8 @@ audio_device = ""
 audio_out_left = "1"
 audio_out_right = "2"
 audio_buffer = "0"
+# MIDI-Ausgang des Probe-Players (Settings > MIDI output); leer = aus
+midi_port = ""
 # Presets des Proben-Mix (vom Programm geschrieben, siehe „Proben-Mix“)
 mix.1.name = "Default"
 mix.1.master = "0.0"
@@ -112,7 +114,8 @@ Vor dem ersten Export auf einen echten Stick `Recording\` sichern.
 ## Probe-Player
 
 Der Player spielt einen Song der Projektbibliothek über den **Audioausgang** ab, den man im Reiter
-Settings wählt (WASAPI), zum Proben zu Hause. MIDI und ASIO folgen.
+Settings wählt (WASAPI), zum Proben zu Hause. Er schickt außerdem die MIDI-Datei des Songs an einen
+**MIDI-Ausgang** (siehe [MIDI-Ausgang](#midi-ausgang-reiter-settings)). ASIO folgt.
 
 - Im Home-Reiter mit der rechten Maustaste auf einen Song klicken und **Play in Rehearsal**
   wählen. Das lädt den Song, wechselt in den Reiter **Rehearsal** und startet die Wiedergabe.
@@ -234,6 +237,48 @@ Gerät fehlt; die Meldung kommt bei Play oder Test tone.
 **Behringer XR18:** den Stereo-Mix auf zwei USB-Kanäle legen (z. B. 17 und 18, beim X-AIR-Treiber die
 USB-Return-Kanäle) und in X Air Edit einen Kanal oder Aux-Return mit Quelle USB auf diese Kanäle routen.
 
+### MIDI-Ausgang (Reiter Settings)
+
+Im Bereich **MIDI output** des Reiters Settings wählt man den MIDI-Port, an den die MIDI-Datei des
+Songs geschickt wird. Die Wahl wird sofort als `midi_port` in `lp16-tool.toml` gespeichert (leer =
+kein MIDI-Ausgang, das ist der Standard; eine alte Datei ohne den Schlüssel bedeutet ebenfalls aus).
+
+- Die Combo zeigt **(none)** und alle MIDI-Ausgänge des Systems (unter Windows gibt es immer
+  „Microsoft GS Wavetable Synth“); **Refresh** liest die Liste neu.
+- **Send test** schickt den Zustand, den ein Gerät direkt nach dem Start des geladenen Songs
+  bekäme: Bank Select, Program Change und die Controller, die ganz am Songanfang liegen. Der Modeler
+  bekommt so nur, was er beim Songstart ohnehin bekäme. Der Button braucht einen Port und einen
+  geladenen Song mit MIDI-Datei.
+- Der Port wird bei Play (oder beim Test) geöffnet, nicht beim Programmstart. Fehlt der gespeicherte
+  Port oder lässt er sich nicht öffnen, steht im Reiter Rehearsal und in den Einstellungen „MIDI
+  port not available: <Name>“, das Audio spielt trotzdem, und das nächste Play versucht es erneut.
+- Der Reiter Rehearsal zeigt unter dem Audioausgang „MIDI: <Port> · <n> events“, mit einem Punkt,
+  der bei jeder gesendeten Nachricht 150 ms aufleuchtet. „MIDI: no file“ heißt: Der Song hat keine
+  (lesbare) MIDI-Datei, „MIDI: off“: Es ist kein Port gewählt. Die Songliste zeigt ein MIDI-Symbol
+  bei Songs mit Datei.
+
+**Wie das MIDI gesendet wird.** Die MIDI-Datei wird synchron zum Audio gesendet, Tempowechsel
+eingerechnet. Die MIDI-Dateien der Band enthalten keine Noten und keine Clock, sondern Bank Select
+(CC32) und Program Change auf Kanal 1 am Anfang, CC69 (Snapshot-Auswahl bei Line-6-Geräten) mit den
+Werten 1 bis 5 über den Song verteilt und CC22 auf Kanal 10. Der Audio-Callback sendet nie selbst
+MIDI: Er legt die Nachrichten mit einer Zielzeit in eine Warteschlange (Zeit des Callbacks +
+Ausgangslatenz des Streams + Position im Block), und ein MIDI-Thread sendet sie pünktlich.
+
+**Chasing.** Startet der Song an einer Position nach dem Anfang und bei jedem Sprung während der
+Wiedergabe, wird zuerst der MIDI-Zustand an dieser Stelle gesendet, und zwar in dem Moment, in dem
+das Audio zurückkommt: pro MIDI-Kanal Bank Select (CC0, CC32), das letzte Program Change und der
+letzte Wert jedes anderen Controllers (1 bis 119). Noten, Pitch Bend, Aftertouch, SysEx und
+Channel-Mode-Nachrichten werden nicht nachgeholt. Ein Event genau auf der Zielposition wird als
+normales Event gesendet. Deshalb sorgen **CC69 und Program Change beim Springen für den richtigen
+Snapshot**. Start bei 0 und Weiterspielen nach einer Pause senden jedes Event genau einmal, ohne
+Chasing.
+
+**All Notes Off** (CC123) geht auf jeden Kanal, auf dem die Datei Noten hat, bei Stop, Pause,
+Sprung, Songwechsel und beim Beenden des Programms. Dateien ohne Noten senden nichts.
+
+**Behringer XR18:** den XR18 über USB anschließen und hier seinen MIDI-Port wählen. Der XR18 gibt die
+Nachrichten von seinem MIDI-Out an den Modeler weiter.
+
 ## Kommandozeile
 
 ```
@@ -316,6 +361,8 @@ Dateien auf dem Stick beschädigt sein könnten. Gelöscht wird auf dem Stick ni
 | `src/mix.rs` | Der Proben-Mix: Kanalzüge, Presets, Config-Zeilen, Speicher-Timer |
 | `src/rehearsal.rs` | Abspiel-Engine des Probe-Players (Lesen, Mischen, Pegelanzeigen, Transport, Playlist-Warteschlange mit Startmodi und Vorladen), unabhängig von jedem Audiogerät (Feature `player`) |
 | `src/rehearsal_queue.rs` | Die Warteschlange des Players: Einträge, der Briefkasten, der Songs für die Engine öffnet, Zeilen der Songliste (Feature `player`) |
+| `src/rehearsal_midi.rs` | MIDI der Engine: Events als Frames, die Nachrichten eines Blocks, Chasing (Feature `player`) |
+| `src/midi_out.rs` | Adapter für den MIDI-Ausgang (`midir`): Ports, MIDI-Thread mit Zielzeiten, All Notes Off am Ende (Feature `player`) |
 | `src/audio_out.rs` | Adapter für den Audioausgang: Hosts, Geräte und Streams über `cpal`, Kanalverteilung, Testton, Befehle und Status zwischen Oberfläche und Audio-Callback (Feature `player`) |
 | `src/main.rs` | Kommandozeile |
 | `src/gui_app.rs` | Oberfläche (egui 0.27) |
@@ -323,8 +370,9 @@ Dateien auf dem Stick beschädigt sein könnten. Gelöscht wird auf dem Stick ni
 | `src/gui_playlist.rs` | Playlist-Combo und Songliste im Reiter Rehearsal |
 | `src/gui_mixer.rs` | Der Proben-Mix im Reiter Rehearsal |
 | `src/gui_audio.rs` | Der Bereich „Audio output“ im Reiter Settings |
+| `src/gui_midi.rs` | Der Bereich „MIDI output“ im Reiter Settings |
 
-Es gibt keine Abhängigkeiten außer `eframe` und `rfd` für die Oberfläche sowie `cpal` und `rtrb`
+Es gibt keine Abhängigkeiten außer `eframe` und `rfd` für die Oberfläche sowie `cpal`, `rtrb` und `midir`
 für den Probe-Player (Feature `player`, wird von `gui` eingeschaltet); XML, MD5, WAV und MIDI sind
 selbst geschrieben.
 
