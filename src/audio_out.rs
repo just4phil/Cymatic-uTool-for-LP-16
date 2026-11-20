@@ -158,6 +158,19 @@ impl OutSample for i16 {
     }
 }
 
+impl OutSample for i32 {
+    /// ASIO drivers mostly use 32-bit integers
+    fn from_f32(v: f32) -> i32 {
+        (f64::from(v.clamp(-1.0, 1.0)) * 2147483647.0).round() as i32
+    }
+}
+
+impl OutSample for f64 {
+    fn from_f32(v: f32) -> f64 {
+        f64::from(v)
+    }
+}
+
 impl OutSample for u16 {
     /// silence (0.0) is 32768
     fn from_f32(v: f32) -> u16 {
@@ -215,6 +228,8 @@ pub fn test_tone(rate: u32) -> Vec<f32> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fmt {
     F32,
+    F64,
+    I32,
     I16,
     U16,
     Other,
@@ -240,13 +255,15 @@ pub enum PickError {
 
 /// The configuration to open: the index of the range that has `rate`, at
 /// least `need` channels and a usable sample format; fewest channels first,
-/// then `f32` before `i16` before `u16`.
+/// then `f32`, `f64`, `i32`, `i16`, `u16`.
 pub fn pick_config(ranges: &[RangeInfo], rate: u32, need: u16) -> Result<usize, PickError> {
     let rank = |f: Fmt| match f {
         Fmt::F32 => 0,
-        Fmt::I16 => 1,
-        Fmt::U16 => 2,
-        Fmt::Other => 3,
+        Fmt::F64 => 1,
+        Fmt::I32 => 2,
+        Fmt::I16 => 3,
+        Fmt::U16 => 4,
+        Fmt::Other => 5,
     };
     let with_rate: Vec<(usize, &RangeInfo)> = ranges
         .iter()
@@ -282,6 +299,16 @@ pub fn pick_error(device: &str, rate: u32, need: u16, e: PickError) -> String {
     }
 }
 
+/// What to add to a message about an ignored buffer size: ASIO drivers
+/// have their own setting.
+pub fn buffer_hint(host: &str) -> &'static str {
+    if host.eq_ignore_ascii_case("asio") {
+        " Tip: set the buffer size in the ASIO driver's control panel."
+    } else {
+        ""
+    }
+}
+
 fn range_info(r: &cpal::SupportedStreamConfigRange) -> RangeInfo {
     RangeInfo {
         channels: r.channels(),
@@ -289,6 +316,8 @@ fn range_info(r: &cpal::SupportedStreamConfigRange) -> RangeInfo {
         max_rate: r.max_sample_rate().0,
         format: match r.sample_format() {
             cpal::SampleFormat::F32 => Fmt::F32,
+            cpal::SampleFormat::F64 => Fmt::F64,
+            cpal::SampleFormat::I32 => Fmt::I32,
             cpal::SampleFormat::I16 => Fmt::I16,
             cpal::SampleFormat::U16 => Fmt::U16,
             _ => Fmt::Other,
@@ -330,8 +359,26 @@ fn max_channels(device: &cpal::Device) -> u16 {
     }
 }
 
+/// The message for an ASIO host without a usable driver. cpal lists only the
+/// ASIO drivers it can initialise, so the driver of a device that is not
+/// connected (e.g. the XR18) is missing, as is a driver another application
+/// has open.
+pub fn no_asio_driver_message() -> String {
+    "No ASIO driver could be opened. Drivers of devices that are not connected (e.g. the XR18), or that another application (e.g. your DAW) uses, are not listed."
+        .to_string()
+}
+
 /// The output devices of host `host` (empty = default host).
 pub fn list_devices(host: &str) -> Result<Vec<DeviceInfo>, String> {
+    let is_asio = host.trim().eq_ignore_ascii_case("asio");
+    let list = list_devices_of(host)?;
+    if is_asio && list.is_empty() {
+        return Err(no_asio_driver_message());
+    }
+    Ok(list)
+}
+
+fn list_devices_of(host: &str) -> Result<Vec<DeviceInfo>, String> {
     let host = host_by_name(host)?;
     let default = host.default_output_device().and_then(|d| d.name().ok());
     let devices = host.output_devices().map_err(|e| format!("The audio devices cannot be listed: {}", e))?;
@@ -630,8 +677,11 @@ fn open_stream<S: Source>(
         if let cpal::SupportedBufferSize::Range { min, max } = chosen.buffer_size() {
             if buffer < *min || buffer > *max {
                 note = Some(format!(
-                    "The driver accepts buffers of {} to {} frames, not {}. It uses its default buffer.",
-                    min, max, buffer
+                    "The driver accepts buffers of {} to {} frames, not {}. It uses its default buffer.{}",
+                    min,
+                    max,
+                    buffer,
+                    buffer_hint(host.id().name())
                 ));
                 buffer = 0;
             }
@@ -645,6 +695,8 @@ fn open_stream<S: Source>(
         let ch = channels as usize;
         match format {
             cpal::SampleFormat::F32 => build::<f32, S>(&device, &config, source, ch, on_error),
+            cpal::SampleFormat::F64 => build::<f64, S>(&device, &config, source, ch, on_error),
+            cpal::SampleFormat::I32 => build::<i32, S>(&device, &config, source, ch, on_error),
             cpal::SampleFormat::I16 => build::<i16, S>(&device, &config, source, ch, on_error),
             cpal::SampleFormat::U16 => build::<u16, S>(&device, &config, source, ch, on_error),
             _ => Err(cpal::BuildStreamError::StreamConfigNotSupported),
@@ -658,7 +710,11 @@ fn open_stream<S: Source>(
         Ok(s) => s,
         Err(_) if buffer > 0 => {
             // the driver refuses the fixed size: its own default instead
-            note = Some(format!("The driver did not accept a buffer of {} frames. It uses its default buffer.", buffer));
+            note = Some(format!(
+                "The driver did not accept a buffer of {} frames. It uses its default buffer.{}",
+                buffer,
+                buffer_hint(host.id().name())
+            ));
             buffer = 0;
             attempt(0).map_err(describe)?
         }
@@ -854,6 +910,76 @@ mod tests {
         assert_eq!(<u16 as OutSample>::from_f32(1.0), 65535);
         assert_eq!(<u16 as OutSample>::from_f32(-1.0), 1);
         assert_eq!(<u16 as OutSample>::from_f32(-5.0), 1);
+        // the formats ASIO drivers use: i32 and f64 (and f32 unchanged)
+        assert_eq!(<i32 as OutSample>::from_f32(0.0), 0);
+        assert_eq!(<i32 as OutSample>::from_f32(1.0), i32::MAX);
+        assert_eq!(<i32 as OutSample>::from_f32(-1.0), -i32::MAX);
+        assert_eq!(<i32 as OutSample>::from_f32(2.5), i32::MAX);
+        assert_eq!(<i32 as OutSample>::from_f32(-2.5), -i32::MAX);
+        assert_eq!(<i32 as OutSample>::from_f32(0.5), 1073741824);
+        assert_eq!(<f64 as OutSample>::from_f32(0.0), 0.0);
+        assert_eq!(<f64 as OutSample>::from_f32(1.0), 1.0);
+        assert_eq!(<f64 as OutSample>::from_f32(-1.0), -1.0);
+        assert_eq!(<f64 as OutSample>::from_f32(0.25), 0.25);
+        assert_eq!(<f32 as OutSample>::from_f32(1.0), 1.0);
+        assert_eq!(<f32 as OutSample>::from_f32(-1.0), -1.0);
+        assert_eq!(<f32 as OutSample>::from_f32(0.0), 0.0);
+    }
+
+    #[test]
+    fn integer_and_f64_formats_fill_the_channels() {
+        let st = [0.5f32, -0.5, 1.0, -1.0];
+        let mut a = [7i32; 6];
+        distribute(&st, &mut a, 3, 1, 3);
+        assert_eq!(a, [1073741824, 0, -1073741824, i32::MAX, 0, -i32::MAX]);
+        let mut b = [7.0f64; 6];
+        distribute(&st, &mut b, 3, 1, 3);
+        assert_eq!(b, [0.5, 0.0, -0.5, 1.0, 0.0, -1.0]);
+    }
+
+    #[test]
+    fn asio_formats_are_picked_in_the_order_of_preference() {
+        let r = |f| range(18, 44100, 48000, f);
+        assert_eq!(pick_config(&[r(Fmt::I16), r(Fmt::I32)], 48000, 2), Ok(1));
+        assert_eq!(pick_config(&[r(Fmt::I32), r(Fmt::F64)], 48000, 2), Ok(1));
+        assert_eq!(pick_config(&[r(Fmt::F64), r(Fmt::F32)], 48000, 2), Ok(1));
+        assert_eq!(pick_config(&[r(Fmt::I32)], 48000, 18), Ok(0));
+        assert_eq!(pick_config(&[r(Fmt::I32)], 48000, 19), Err(PickError::Channels(18)));
+    }
+
+    /// With the `asio` feature the host list has ASIO. Needs no device.
+    #[cfg(feature = "asio")]
+    #[test]
+    fn asio_is_a_host_with_the_asio_feature() {
+        assert!(list_hosts().iter().any(|h| h == "ASIO"));
+    }
+
+    /// Prints the installed ASIO drivers (needs the `asio` feature and
+    /// drivers on this PC): `cargo test --features asio -- --ignored --nocapture asio_drivers`
+    #[cfg(feature = "asio")]
+    #[test]
+    #[ignore]
+    fn asio_drivers_are_listed() {
+        match list_devices("ASIO") {
+            Ok(devices) => {
+                for d in &devices {
+                    println!("ASIO driver: {} ({} output channels)", d.name, d.max_channels);
+                }
+            }
+            Err(e) => println!("{}", e),
+        }
+    }
+
+    #[test]
+    fn the_message_for_a_missing_asio_driver_names_the_reasons() {
+        let m = no_asio_driver_message();
+        assert!(m.contains("not connected") && m.contains("DAW"));
+    }
+
+    #[test]
+    fn the_buffer_hint_names_the_asio_control_panel() {
+        assert!(buffer_hint("ASIO").contains("set the buffer size in the ASIO driver's control panel"));
+        assert_eq!(buffer_hint("WASAPI"), "");
     }
 
     /// the interleaved stereo of the frames `0..n`: L = 0.1 * (k+1), R = -0.1 * (k+1)
