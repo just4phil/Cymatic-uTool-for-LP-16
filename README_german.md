@@ -164,25 +164,39 @@ Settings wählt (WASAPI oder ASIO), zum Proben zu Hause. Er schickt außerdem di
   | Pos1 | auf 0 springen, der Zustand bleibt |
   | Esc | Stop |
 
-  | Hoch / Runter | voriger / nächster Song |
+  | Hoch / Runter | Markierung auf den vorigen / nächsten Song (wie ein Klick) |
 
   Dieselben Funktionen liegen auf den Knöpfen neben Play.
 - **Playlists:** Die Songliste links zeigt Nummer, Name, Länge und ein Notensymbol, wenn der Song
-  eine MIDI-Datei hat. Der aktuelle Song ist farbig hinterlegt, der nächste mit Rahmen und Pfeil
-  markiert. Ein Song, der nicht gelesen werden kann (z. B. fehlende `.songprj`), ist rot, mit dem
-  Grund als Tooltip, und wird übersprungen. Doppelklick startet einen Song. Die Knöpfe ⏮ und ⏭
-  (Tasten Hoch und Runter) springen zum vorigen und nächsten Song:
-  - Nächster: Läuft gerade ein Song, startet der nächste sofort; sonst wird er auf Position 0
-    geladen und bleibt gestoppt. Beim letzten Song passiert nichts.
-  - Voriger: Weiter als 3 s im Song springt er an seinen Anfang, sonst wird der Song davor geladen
-    (und startet sofort, wenn der Player gespielt hat).
-- **Startmodi:** Der Startmodus eines Songs in der Playlist (`start_mode`) sagt, wie er nach dem
-  Song davor startet. `wait_for_button_press` (oder leer): Nach dem Ende des Songs davor wartet der
-  Player (der Reiter zeigt „Next: <Song> – press Play“), und der nächste Song startet mit Play. Jeder
-  andere Wert (in der Bibliothek kommt bisher nur `wait_for_button_press` vor, das ist eine Annahme): Der nächste Song
-  startet von selbst nach `start_mode_delay` Sekunden Stille (der Reiter zeigt „Next: <Song> in <n> s“).
-  Play während des Countdowns startet sofort, Pause bricht ihn ab. Nach dem letzten Song bleibt der
-  Player stehen; Play startet die Playlist dann wieder beim ersten Song.
+  eine MIDI-Datei hat. Ein Song, der nicht gelesen werden kann (z. B. fehlende `.songprj`), ist rot,
+  mit dem Grund als Tooltip, und wird übersprungen. **Genau ein Song ist immer markiert** (farbig
+  hinterlegt); nach dem Laden einer Playlist ist es der erste spielbare. **Play startet den
+  markierten Song** (ein geladener, pausierter Song läuft an seiner Position weiter).
+  - **Einfacher Klick** markiert einen Song. Spielt nichts (gestoppt, pausiert, beendet, wartend,
+    Countdown), wird der Song auf Position 0 geladen und bleibt gestoppt, damit Play ihn startet; ein
+    laufender Countdown wird abgebrochen. Spielt gerade ein Song, läuft er weiter: Der angeklickte Song
+    wird markiert und zum **nächsten** Song, kommt also nach dem Ende des aktuellen dran (ein Klick auf
+    den spielenden Song nimmt das zurück). Der spielende Song hat ein ▶ vor dem Namen, der nächste einen
+    Pfeil →.
+  - **Doppelklick** startet den Song sofort.
+  - Die Tasten Hoch und Runter verschieben die Markierung und klicken, Leertaste ist Play.
+  - Endet ein Song, springt die Markierung auf den nächsten Song (den angeklickten, falls es einen
+    gibt). Am Ende der Playlist bleibt sie auf dem letzten Song, der Zustand ist „beendet“; Play spielt
+    diesen Song dann noch einmal.
+  - Die Song-Auswahl im Mixer-Reiter ist dasselbe wie ein Klick.
+  - Die Knöpfe ⏮ und ⏭ springen zum vorigen und nächsten Song:
+    - Nächster: Läuft gerade ein Song, startet der nächste sofort; sonst wird er auf Position 0
+      geladen und bleibt gestoppt. Beim letzten Song passiert nichts.
+    - Voriger: Weiter als 3 s im Song springt er an seinen Anfang, sonst wird der Song davor geladen
+      (und startet sofort, wenn der Player gespielt hat).
+- **Autoplay after 5 seconds** (Kontrollkästchen über der Songliste, auch im Mixer-Reiter; dieselbe
+  Einstellung, gespeichert als `rehearsal_autoplay` in `lp16-tool.toml`, standardmäßig aus). Aus: Endet
+  ein Song, ist der nächste markiert und geladen, und der Player wartet (der Reiter zeigt „Next: <Song>
+  – press Play“). An: Der nächste Song startet von selbst nach 5 Sekunden Stille (der Reiter zeigt
+  „Next: <Song> in <n> s“). Play während des Countdowns startet sofort, Pause bricht ihn ab, Autoplay
+  ausschalten beendet ihn. Die Einstellung ersetzt den Startmodus der Playlist: Der Player wertet
+  `start_mode` und `start_mode_delay` in der `.playlistprj` nicht mehr aus (die Datei wird nicht
+  verändert). Ein einzelner Song hat keinen nächsten.
 - Der nächste Song wird geöffnet, sobald vom aktuellen weniger als 10 s übrig sind (und während
   des Wartens), damit er ohne spürbare Verzögerung startet. Hat er eine andere Samplerate, wird der
   Ausgang vor dem Start mit dieser Rate neu geöffnet.
@@ -403,7 +417,7 @@ Dateien auf dem Stick beschädigt sein könnten. Gelöscht wird auf dem Stick ni
 | `src/project_lib.rs` | Projektbibliothek: Songs und Playlists auflisten, anlegen, umbenennen, kopieren und löschen. Beim Umbenennen eines Songs zeigen die Playlists weiter auf ihn; ein Song, den eine Playlist nutzt, lässt sich nicht löschen. |
 | `src/sync.rs` | Stick Sync: `plan` (was ein Export tun würde), `run` (exportieren und prüfen). Kommandozeile und Oberfläche nutzen denselben Ablauf. |
 | `src/mix.rs` | Der Proben-Mix: Kanalzüge, Presets, Config-Zeilen, Speicher-Timer |
-| `src/rehearsal.rs` | Abspiel-Engine des Probe-Players (Lesen, Mischen, Pegelanzeigen, Transport, Playlist-Warteschlange mit Startmodi und Vorladen), unabhängig von jedem Audiogerät (Feature `player`) |
+| `src/rehearsal.rs` | Abspiel-Engine des Probe-Players (Lesen, Mischen, Pegelanzeigen, Transport, Playlist-Warteschlange mit Markierung, Autoplay und Vorladen), unabhängig von jedem Audiogerät (Feature `player`) |
 | `src/rehearsal_queue.rs` | Die Warteschlange des Players: Einträge, der Briefkasten, der Songs für die Engine öffnet, Zeilen der Songliste (Feature `player`) |
 | `src/rehearsal_midi.rs` | MIDI der Engine: Events als Frames, die Nachrichten eines Blocks, Chasing (Feature `player`) |
 | `src/midi_out.rs` | Adapter für den MIDI-Ausgang (`midir`): Ports, MIDI-Thread mit Zielzeiten, All Notes Off am Ende (Feature `player`) |

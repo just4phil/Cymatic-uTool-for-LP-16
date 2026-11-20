@@ -419,6 +419,7 @@ fn transport_bar(ui: &mut Ui, player: &mut RehearsalPanel, status: Option<&Statu
         ui.spacing_mut().item_spacing = vec2(8.0, 6.0);
         player.playlist_picker(ui, "mixer_tab_playlist", (total * 0.2).clamp(120.0, 220.0));
         player.song_picker(ui, "mixer_tab_song", (total * 0.25).clamp(140.0, 300.0), status);
+        player.autoplay_option(ui);
         ui.separator();
         player.transport(ui, status, TRANSPORT_COMPACT);
         if let Some(st) = loaded {

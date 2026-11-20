@@ -27,8 +27,8 @@ pub struct QueueEntry {
     pub name: String,
     /// the song, or why it could not be loaded
     pub project: Result<SongProject, String>,
-    /// `start_mode` of the playlist entry: how the song starts after the
-    /// one before it
+    /// `start_mode` of the playlist entry. Kept as read, but the player no
+    /// longer uses it: the autoplay option decides (see `Engine::set_autoplay`)
     pub start_mode: String,
     /// `start_mode_delay` in seconds
     pub delay: f64,
@@ -59,13 +59,6 @@ impl QueueEntry {
     pub fn from_playlist_song(song: &PlaylistSong, audio_lib: &str) -> QueueEntry {
         let project = SongProject::load(&song.songprj, audio_lib).map_err(|e| e.to_string());
         QueueEntry::new(&song.name, project, &song.mode, &song.delay)
-    }
-
-    /// Whether the song starts by itself after its delay (any start mode
-    /// but "wait_for_button_press" and the empty one).
-    pub fn auto_start(&self) -> bool {
-        let m = self.start_mode.trim();
-        !(m.is_empty() || m.eq_ignore_ascii_case(WAIT_MODE))
     }
 
     pub fn readable(&self) -> bool {
@@ -131,17 +124,28 @@ pub struct SongRow {
     pub midi: bool,
     /// why the song cannot be played
     pub error: Option<String>,
-    /// the song that plays (or is stopped/paused)
+    /// the song that plays right now
     pub current: bool,
-    /// the song that comes next (while waiting: the one that waits)
+    /// the highlighted song: what Play starts (while playing: the clicked
+    /// next song, else the playing one)
+    pub marked: bool,
+    /// the song that follows the playing one
     pub next: bool,
 }
 
-/// The rows for `entries`. `index` and `next_index` come from the status;
-/// while `waiting` (state `Waiting` or `Countdown`) `index` is the song that
-/// starts next, so it is marked as the next one and nothing is current.
-pub fn song_rows(entries: &[QueueEntry], index: Option<usize>, next_index: Option<usize>, waiting: bool) -> Vec<SongRow> {
-    let (current, next) = if waiting { (None, index) } else { (index, next_index) };
+/// The rows for `entries`. `index`, `next_index` and `marked` come from the
+/// status (`index`, `next_index`, `marked_index`). Only while `playing`
+/// (state `Playing`) a song is current and one is the next one; otherwise
+/// the highlight (`marked`) alone shows the song that Play starts, also
+/// while the next song waits (`Waiting`, `Countdown`).
+pub fn song_rows(
+    entries: &[QueueEntry],
+    index: Option<usize>,
+    next_index: Option<usize>,
+    marked: Option<usize>,
+    playing: bool,
+) -> Vec<SongRow> {
+    let (current, next) = if playing { (index, next_index) } else { (None, None) };
     entries
         .iter()
         .enumerate()
@@ -155,6 +159,7 @@ pub fn song_rows(entries: &[QueueEntry], index: Option<usize>, next_index: Optio
             midi: e.project.as_ref().map(|p| !p.midi_file.is_empty()).unwrap_or(false),
             error: e.project.as_ref().err().cloned(),
             current: current == Some(i),
+            marked: marked == Some(i),
             next: next == Some(i),
         })
         .collect()
@@ -289,16 +294,6 @@ mod tests {
         assert_eq!(parse_delay("inf"), 0.0);
     }
 
-    #[test]
-    fn start_modes() {
-        let e = |m: &str| QueueEntry::new("x", Err("e".into()), m, "");
-        assert!(!e("").auto_start());
-        assert!(!e("wait_for_button_press").auto_start());
-        assert!(!e(" Wait_For_Button_Press ").auto_start());
-        assert!(e("auto").auto_start());
-        assert!(e("start_after_delay").auto_start());
-    }
-
     fn project(name: &str, secs: f64, midi: &str) -> SongProject {
         let mut p = SongProject::parse("", "");
         p.name = name.to_string();
@@ -314,19 +309,23 @@ mod tests {
             QueueEntry::new("b", Err("no such file".into()), "", ""),
             QueueEntry::new("c", Ok(project("C", 59.0, "")), "", ""),
         ];
-        let rows = song_rows(&entries, Some(0), Some(2), false);
+        let rows = song_rows(&entries, Some(0), Some(2), Some(0), true);
         assert_eq!(rows.len(), 3);
         assert_eq!((rows[0].number, rows[0].name.as_str(), rows[0].length.as_str(), rows[0].midi), (1, "A", "3:05", true));
-        assert!(rows[0].current && !rows[0].next && rows[0].error.is_none());
+        assert!(rows[0].current && rows[0].marked && !rows[0].next && rows[0].error.is_none());
         assert_eq!(rows[1].error.as_deref(), Some("no such file"));
         assert_eq!((rows[1].name.as_str(), rows[1].length.as_str(), rows[1].midi), ("b", "", false));
-        assert!(!rows[2].current && rows[2].next);
+        assert!(!rows[2].current && !rows[2].marked && rows[2].next);
         assert_eq!((rows[2].length.as_str(), rows[2].midi), ("0:59", false));
-        // waiting: the song that waits is the next one, none is current
-        let rows = song_rows(&entries, Some(2), None, true);
-        assert!(rows.iter().all(|r| !r.current));
-        assert_eq!(rows.iter().filter(|r| r.next).count(), 1);
-        assert!(rows[2].next);
+        // a click while playing: the clicked song is marked and comes next
+        let rows = song_rows(&entries, Some(0), Some(2), Some(2), true);
+        assert!(rows[0].current && !rows[0].marked && rows[2].marked && rows[2].next);
+        assert_eq!(rows.iter().filter(|r| r.marked).count(), 1);
+        // not playing (stopped, waiting): only the marked song shows
+        let rows = song_rows(&entries, Some(2), None, Some(2), false);
+        assert!(rows.iter().all(|r| !r.current && !r.next));
+        assert_eq!(rows.iter().filter(|r| r.marked).count(), 1);
+        assert!(rows[2].marked);
     }
 
     #[test]

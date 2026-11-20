@@ -14,3 +14,6 @@ stick_root = "F:\"
 # audio_buffer = "0"           # frames: 0 (driver default), 64, 128, 256, 512, 1024, 2048
 # MIDI output port of the rehearsal player (Settings > MIDI output); empty = off
 # midi_port = ""
+# rehearsal player: start the next song 5 s after the end of a song
+# (off: wait for Play; the Rehearsal and Mixer tabs write this)
+# rehearsal_autoplay = "false"

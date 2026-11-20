@@ -1114,6 +1114,7 @@ impl Lp16App {
         };
         app.rehearsal.set_settings(AudioSettings::from(&app.config));
         app.rehearsal.set_midi_port(&app.config.midi_port);
+        app.rehearsal.set_autoplay(app.config.rehearsal_autoplay);
         app.rehearsal.set_mix(app.config.mixes.active().params());
         app.refresh();
         app
@@ -1605,6 +1606,14 @@ impl eframe::App for Lp16App {
                 Tab::Settings => self.settings(ui),
                 Tab::Support => self.support(ui),
             });
+        // the autoplay checkbox of the Rehearsal and Mixer tabs
+        if let Some(on) = self.rehearsal.take_autoplay_change() {
+            self.config.rehearsal_autoplay = on;
+            if let Err(e) = save_config(&config_path(), &self.config) {
+                self.message("Settings", format!("Cannot save {}:
+{}", config_path().display(), e));
+            }
+        }
         self.playlist_editor(ctx);
         self.playlist_update(ctx);
         self.song_editor(ctx, frame);
