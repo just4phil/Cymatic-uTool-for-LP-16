@@ -37,8 +37,8 @@ Dazu gibt es eine Oberfläche, die der von uTool2 nachgebaut ist, und eine Komma
 - **Batch-Import von Songs:** legt aus neuen Ordnern der AudioLibrary auf einen Schlag Songs an,
   siehe [Import](#import-batch-import-von-songs).
 - **Edit Target:** Inhalt des Sticks als Baum, mit Details zu Songs und Playlists.
-- **Probe-Player (erste Version):** spielt einen Song der Bibliothek über das Standard-Audiogerät
-  ab, siehe [Probe-Player](#probe-player).
+- **Probe-Player (erste Version):** spielt einen Song der Bibliothek über einen wählbaren
+  Audioausgang ab, siehe [Probe-Player](#probe-player).
 
 ## Voraussetzungen
 
@@ -79,6 +79,12 @@ im Reiter **Settings** den **Library Folder**; „Initialize Folders“ legt feh
 library = "E:\LP16_LIBRARY"
 # Export-Ziel (wird im Export-Reiter gewählt und gemerkt)
 stick_root = "F:\"
+# Audioausgang des Probe-Players (Settings > Audio output, siehe unten)
+audio_host = "WASAPI"
+audio_device = ""
+audio_out_left = "1"
+audio_out_right = "2"
+audio_buffer = "0"
 ```
 
 Aufbau des Basisordners:
@@ -100,9 +106,9 @@ Vor dem ersten Export auf einen echten Stick `Recording\` sichern.
 
 ## Probe-Player
 
-Der Player spielt einen Song der Projektbibliothek über den **Standard-Audioausgang von Windows**
-(WASAPI) ab, zum Proben zu Hause. Das ist die erste Version; Playlist, Proben-Mix, MIDI und ASIO
-folgen.
+Der Player spielt einen Song der Projektbibliothek über den **Audioausgang** ab, den man im Reiter
+Settings wählt (WASAPI), zum Proben zu Hause. Das ist die erste Version; Playlist, Proben-Mix,
+MIDI und ASIO folgen.
 
 - Im Home-Reiter mit der rechten Maustaste auf einen Song klicken und **Play in Rehearsal**
   wählen. Das lädt den Song, wechselt in den Reiter **Rehearsal** und startet die Wiedergabe.
@@ -126,14 +132,43 @@ folgen.
 - Alle Spuren werden synchron von der Platte gestreamt (nichts wird vorab in den Speicher
   geladen) und zu Stereo gemischt. Vorerst hat jede Spur 0 dB und Panorama Mitte (Constant-Power-
   Gesetz); der Mix wird auf Vollaussteuerung begrenzt.
+- Der Stream wird mit der **Samplerate des Songs** geöffnet. Hat der nächste Song eine andere Rate,
+  wird der Stream geschlossen und mit der neuen Rate neu geöffnet. Es gibt kein Resampling; der Song
+  wird nur dann nicht gespielt, wenn das Gerät seine Rate nicht unterstützt (der Reiter sagt das).
 - WAVs müssen mono sein, mit 8, 16, 24 oder 32 Bit Integer oder 32 Bit Float. Eine Spur mit
-  anderer Samplerate als die erste lesbare Spur bleibt still. Es gibt kein Resampling: weicht die
-  Samplerate des Songs von der des Audiogeräts ab, wird der Song nicht gespielt und der Reiter
-  sagt das.
+  anderer Samplerate als die erste lesbare Spur bleibt still.
 - Wird der Song umbenannt, gelöscht oder im Song-Editor gespeichert, während er geladen ist,
   stoppt der Player und entlädt ihn, und der Reiter fordert auf, ihn neu zu laden.
 - Export, Import und Bibliotheksbearbeitung bleiben während der Wiedergabe benutzbar.
-- Ohne Audiogerät zeigt der Reiter eine Meldung.
+- Ohne nutzbares Audiogerät zeigt der Reiter eine Meldung, und Play versucht es erneut. Verschwindet
+  das Gerät während der Wiedergabe, stoppt sie, die Position bleibt und der Reiter meldet „Audio
+  device lost“; nach dem Wiederanschließen genügt Play, der Ausgang wird neu geöffnet, ein Neustart ist
+  nicht nötig.
+
+### Audio output (Reiter Settings)
+
+Der Bereich **Audio output** im Reiter Settings legt fest, wohin der Stereo-Mix geht. Änderungen
+werden sofort in `lp16-tool.toml` gespeichert und beim nächsten Öffnen des Streams verwendet (ein
+laufender Song wird nicht unterbrochen). Das Programm startet ohne Meldung, auch wenn das gespeicherte
+Gerät fehlt; die Meldung kommt bei Play oder Test tone.
+
+| Einstellung | Schlüssel in `lp16-tool.toml` | Bedeutung | Standard |
+|---|---|---|---|
+| Host | `audio_host` | Audiosystem, heute `WASAPI` (ASIO folgt) | Standard-Host |
+| Device | `audio_device` | Name des Ausgabegeräts | leer = Standardgerät |
+| Left / Right | `audio_out_left`, `audio_out_right` | Ausgangskanäle (ab 1) für die linke und rechte Seite des Stereo-Mix; derselbe Kanal zweimal bekommt (L+R)/2 | 1 / 2 |
+| Buffer | `audio_buffer` | Frames: 0 = Treiber-Standard, 64, 128, 256, 512, 1024, 2048 | 0 |
+
+- **Refresh** liest die Geräteliste neu (z. B. nach dem Anstecken eines Geräts).
+- **Test tone** spielt einen 1-kHz-Ton mit -20 dBFS, 1 s auf dem linken, dann 1 s auf dem rechten
+  Kanal, mit den obigen Einstellungen (48 kHz, oder die Standardrate des Geräts, falls es 48 kHz nicht
+  kann). Der Button ist deaktiviert, solange ein Song spielt.
+- Läuft ein Stream, zeigt der Bereich „Running: <Rate> Hz, buffer <N> frames“. Lehnt das Gerät die
+  gewählte Puffergröße ab, wird der Treiber-Standard benutzt und ein Hinweis sagt das.
+- Ungültige Werte in der Datei (z. B. `audio_buffer = "333"`) werden durch den Standard ersetzt.
+
+**Behringer XR18:** den Stereo-Mix auf zwei USB-Kanäle legen (z. B. 17 und 18, beim X-AIR-Treiber die
+USB-Return-Kanäle) und in X Air Edit einen Kanal oder Aux-Return mit Quelle USB auf diese Kanäle routen.
 
 ## Kommandozeile
 
@@ -215,10 +250,11 @@ Dateien auf dem Stick beschädigt sein könnten. Gelöscht wird auf dem Stick ni
 | `src/project_lib.rs` | Projektbibliothek: Songs und Playlists auflisten, anlegen, umbenennen, kopieren und löschen. Beim Umbenennen eines Songs zeigen die Playlists weiter auf ihn; ein Song, den eine Playlist nutzt, lässt sich nicht löschen. |
 | `src/sync.rs` | Stick Sync: `plan` (was ein Export tun würde), `run` (exportieren und prüfen). Kommandozeile und Oberfläche nutzen denselben Ablauf. |
 | `src/rehearsal.rs` | Abspiel-Engine des Probe-Players (Lesen, Mischen, Transport), unabhängig von jedem Audiogerät (Feature `player`) |
-| `src/audio_out.rs` | Adapter für den Audioausgang: Standardgerät über `cpal`, Befehle und Status zwischen Oberfläche und Audio-Callback (Feature `player`) |
+| `src/audio_out.rs` | Adapter für den Audioausgang: Hosts, Geräte und Streams über `cpal`, Kanalverteilung, Testton, Befehle und Status zwischen Oberfläche und Audio-Callback (Feature `player`) |
 | `src/main.rs` | Kommandozeile |
 | `src/gui_app.rs` | Oberfläche (egui 0.27) |
 | `src/gui_rehearsal.rs` | Der Reiter Rehearsal |
+| `src/gui_audio.rs` | Der Bereich „Audio output“ im Reiter Settings |
 
 Es gibt keine Abhängigkeiten außer `eframe` und `rfd` für die Oberfläche sowie `cpal` und `rtrb`
 für den Probe-Player (Feature `player`, wird von `gui` eingeschaltet); XML, MD5, WAV und MIDI sind

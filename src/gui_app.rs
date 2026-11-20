@@ -11,11 +11,13 @@
 //! Everything goes through the same lp16_tool library that the CLI uses.
 
 use crate::config_path;
+use crate::gui_audio::AudioPanel;
 use crate::gui_rehearsal::RehearsalPanel;
 use eframe::egui::{
     self, pos2, vec2, Align, Align2, Color32, FontId, Layout, Margin, Rect, RichText, Sense,
     Stroke, Ui,
 };
+use lp16_tool::audio_out::AudioSettings;
 use lp16_tool::project_lib::ProjectLibrary;
 use lp16_tool::sync::{self, Action, ExportMode, Progress};
 use lp16_tool::{
@@ -333,6 +335,8 @@ pub struct Lp16App {
     pl_update: Option<PlUpdate>,
     // rehearsal player
     rehearsal: RehearsalPanel,
+    // settings: the "Audio output" area
+    audio: AudioPanel,
 }
 
 // ---------------------------------------------------------------------------
@@ -878,7 +882,7 @@ fn badge(ui: &mut Ui, text: &str) -> egui::Response {
 }
 
 /// small orange-framed button of the Details panels
-fn small_btn(ui: &mut Ui, text: &str, enabled: bool) -> bool {
+pub(crate) fn small_btn(ui: &mut Ui, text: &str, enabled: bool) -> bool {
     ui.add_enabled(
         enabled,
         egui::Button::new(RichText::new(text).size(11.5).color(TEXT))
@@ -890,7 +894,7 @@ fn small_btn(ui: &mut Ui, text: &str, enabled: bool) -> bool {
 }
 
 /// the small grey "tab" on top of a panel ("Project Explorer", "Details")
-fn panel_tab(ui: &mut Ui, title: &str, refresh: bool) -> bool {
+pub(crate) fn panel_tab(ui: &mut Ui, title: &str, refresh: bool) -> bool {
     let mut clicked = false;
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
@@ -913,7 +917,7 @@ fn panel_tab(ui: &mut Ui, title: &str, refresh: bool) -> bool {
 }
 
 /// panel body (grey box under a panel tab); `fill` = take all space
-fn panel_body<R>(ui: &mut Ui, fill: bool, body: impl FnOnce(&mut Ui) -> R) -> R {
+pub(crate) fn panel_body<R>(ui: &mut Ui, fill: bool, body: impl FnOnce(&mut Ui) -> R) -> R {
     let spacing = ui.spacing().item_spacing.y;
     ui.add_space(-spacing);
     egui::Frame::none()
@@ -1092,7 +1096,9 @@ impl Lp16App {
             import_show_all: false,
             pl_update: None,
             rehearsal: RehearsalPanel::default(),
+            audio: AudioPanel::default(),
         };
+        app.rehearsal.set_settings(AudioSettings::from(&app.config));
         app.refresh();
         app
     }
@@ -3126,8 +3132,31 @@ impl Lp16App {
                 if init {
                     self.init_folders();
                 }
+                ui.add_space(12.0);
+                self.audio_output(ui);
             });
         });
+    }
+
+    /// The "Audio output" area of the Settings tab (gui_audio.rs): changes
+    /// are saved at once and handed to the rehearsal player, which uses
+    /// them the next time it opens its stream.
+    fn audio_output(&mut self, ui: &mut Ui) {
+        let running = self.rehearsal.stream_info().cloned();
+        let playing = self.rehearsal.is_playing();
+        let error = self.rehearsal.error().map(str::to_string);
+        let out = self.audio.ui(ui, &mut self.config, running.as_ref(), playing, error.as_deref());
+        if out.changed {
+            self.rehearsal.set_settings(AudioSettings::from(&self.config));
+            if let Err(e) = save_config(&config_path(), &self.config) {
+                self.message("Settings", format!("Cannot save {}:\n{}", config_path().display(), e));
+            }
+        }
+        if out.tone {
+            // the tone may need the device that the idle stream holds
+            self.rehearsal.park();
+            self.audio.start_tone(&self.config);
+        }
     }
 
     // -----------------------------------------------------------------------
