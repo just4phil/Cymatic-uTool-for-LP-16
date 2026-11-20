@@ -17,7 +17,8 @@
 //! the callback fills with `try_lock` after each block. A stream error
 //! (device unplugged) ends up in `Player::error`.
 
-use crate::rehearsal::{Engine, LoadedSong, PlayState, Status};
+use crate::mix::MixParams;
+use crate::rehearsal::{Engine, Levels, LoadedSong, PlayState, Status};
 use crate::{Config, SongProject};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Stream;
@@ -40,6 +41,10 @@ pub enum Command {
     Stop,
     /// jump to a position in seconds (`Engine::seek`)
     Seek(f64),
+    /// a new rehearsal mix (plain numbers, so the callback frees nothing)
+    SetMix(MixParams),
+    /// clear the clip flag of the master
+    ResetClip,
 }
 
 /// The audio output chosen in the settings (the `audio_*` fields of
@@ -386,6 +391,14 @@ impl Callback {
                 self.engine.seek(seconds);
                 None
             }
+            Command::SetMix(mix) => {
+                self.engine.set_mix(&mix);
+                None
+            }
+            Command::ResetClip => {
+                self.engine.reset_clip();
+                None
+            }
         };
         if let Some(old) = old {
             let _ = self.trash.send(Box::new(old));
@@ -403,8 +416,12 @@ impl Callback {
         }
         self.engine.render(&mut self.stereo[..need]);
         distribute(&self.stereo[..need], out, channels, self.left, self.right);
+        // the peaks are only taken when they are really handed on; the ones
+        // the user interface has not read yet stay (the larger peak wins)
         if let Ok(mut st) = self.status.try_lock() {
-            *st = self.engine.status();
+            let unread = st.levels;
+            *st = self.engine.take_status();
+            st.levels.merge_peaks(&unread);
         }
     }
 }
@@ -649,6 +666,18 @@ impl Player {
         self.send(Command::Load(Box::new(LoadedSong::open(project))));
     }
 
+    /// The peaks of the meters since the last call (the clip flag stays
+    /// until `Command::ResetClip`).
+    pub fn take_levels(&self) -> Levels {
+        let mut st = match self.status.lock() {
+            Ok(s) => s,
+            Err(p) => p.into_inner(),
+        };
+        let levels = st.levels;
+        st.levels.clear_peaks();
+        levels
+    }
+
     /// The status of the last callback. After a stream error nothing
     /// plays any more: `Playing` shows as `Paused`.
     pub fn status(&self) -> Status {
@@ -712,6 +741,7 @@ pub fn start_test_tone(settings: &AudioSettings) -> Result<ToneStream, String> {
 mod tests {
     use super::*;
     use crate::rehearsal::tests::{constant, song, wav24, RATE};
+    use crate::mix::MixParams;
     use crate::rehearsal::PlayState;
     use crate::tests::temp_dir;
 
@@ -958,6 +988,53 @@ mod tests {
         let guard = status.lock().unwrap();
         cb.fill(&mut out, 2);
         drop(guard);
+        drop(cb);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_mix_commands_reach_the_engine_and_the_peaks_are_kept_until_read() {
+        let dir = temp_dir("ao-mix");
+        let a = wav24(&dir, "a", RATE, 1, &constant(48000, 0.9));
+        let b = wav24(&dir, "b", RATE, 1, &constant(48000, 0.9));
+        let (tx, rx) = channel();
+        let (trash_tx, _trash_rx) = channel();
+        let engine = Engine::new(RATE);
+        let status = Arc::new(Mutex::new(engine.status()));
+        let mut cb = Callback::new(engine, rx, trash_tx, status.clone());
+        let mut prj = song(&dir, &[&a, &b]);
+        prj.tracks[1].channel = 0;
+        let mut mix = MixParams::default();
+        mix.master_db = -6.0;
+        tx.send(Command::SetMix(mix)).unwrap();
+        tx.send(Command::Load(Box::new(LoadedSong::open(&prj)))).unwrap();
+        tx.send(Command::Play).unwrap();
+        let mut out = [0.0f32; 64];
+        for _ in 0..2000 {
+            cb.fill(&mut out, 2); // the first blocks wait for the reader thread
+            if status.lock().unwrap().position_frames >= 32 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // 1.8 x 0.7071 x 0.5012 = 0.638
+        assert!((out[0] - 0.638).abs() < 1e-3, "{}", out[0]);
+        let peak = status.lock().unwrap().levels.strips[0];
+        assert!((peak - 1.8).abs() < 1e-5, "{}", peak);
+        // the user interface has not read: a later, quieter update keeps the peak
+        tx.send(Command::SetMix({
+            let mut m = MixParams::default();
+            m.strips[0].level_db = -60.0;
+            m
+        }))
+        .unwrap();
+        for _ in 0..40 {
+            cb.fill(&mut [0.0f32; 64], 2);
+        }
+        assert!(status.lock().unwrap().levels.strips[0] >= 1.8);
+        assert!(!status.lock().unwrap().levels.clip);
+        tx.send(Command::ResetClip).unwrap();
+        cb.fill(&mut out, 2);
         drop(cb);
         let _ = std::fs::remove_dir_all(&dir);
     }

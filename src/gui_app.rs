@@ -18,12 +18,13 @@ use eframe::egui::{
     Stroke, Ui,
 };
 use lp16_tool::audio_out::AudioSettings;
+use lp16_tool::mix::MixSaver;
 use lp16_tool::project_lib::ProjectLibrary;
 use lp16_tool::sync::{self, Action, ExportMode, Progress};
 use lp16_tool::{
     import_songs, init_folders,
     library_songs, midi_duration, natural_cmp, newest_version, scan_import, ImportItem, ImportStatus, LibrarySong,
-    now_ms, resolve, save_config,
+    now_ms, resolve, save_config, save_mixes,
     plain_tag, xml_unescape, unresolve, valid_fat32_name, Config,
     PlaylistSong, ProjectTrack, SongProject, WavInfo, STICK_WAV_HEADER_LEN,
 };
@@ -335,6 +336,8 @@ pub struct Lp16App {
     pl_update: Option<PlUpdate>,
     // rehearsal player
     rehearsal: RehearsalPanel,
+    /// decides when changed rehearsal mix values are written to the config
+    mix_saver: MixSaver,
     // settings: the "Audio output" area
     audio: AudioPanel,
 }
@@ -1096,9 +1099,11 @@ impl Lp16App {
             import_show_all: false,
             pl_update: None,
             rehearsal: RehearsalPanel::default(),
+            mix_saver: MixSaver::default(),
             audio: AudioPanel::default(),
         };
         app.rehearsal.set_settings(AudioSettings::from(&app.config));
+        app.rehearsal.set_mix(app.config.mixes.active().params());
         app.refresh();
         app
     }
@@ -1561,7 +1566,11 @@ impl eframe::App for Lp16App {
             .frame(egui::Frame::none().fill(BG).inner_margin(Margin::same(10.0)))
             .show(ctx, |ui| match self.tab {
                 Tab::Home => self.home(ui),
-                Tab::Rehearsal => self.rehearsal.ui(ui),
+                Tab::Rehearsal => {
+                    if self.rehearsal.ui(ui, &mut self.config.mixes) {
+                        self.mix_saver.mark();
+                    }
+                }
                 Tab::Export => self.export(ui),
                 Tab::Import => self.import(ui),
                 Tab::EditTarget => self.edit_target(ui),
@@ -1573,6 +1582,14 @@ impl eframe::App for Lp16App {
         self.song_editor(ctx, frame);
         self.export_overlay(ctx);
         self.dialogs(ctx);
+        // rehearsal mix: saved at most once a second, bundled
+        let now = std::time::Instant::now();
+        if self.mix_saver.poll(now) {
+            let _ = save_mixes(&config_path(), &self.config.mixes);
+        }
+        if let Some(wait) = self.mix_saver.wait(now) {
+            ctx.request_repaint_after(wait);
+        }
         // the position display moves while a song plays
         if self.rehearsal.is_playing() {
             ctx.request_repaint_after(std::time::Duration::from_millis(33));
@@ -1580,6 +1597,8 @@ impl eframe::App for Lp16App {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        // the rehearsal mix is always saved when the program ends
+        let _ = save_mixes(&config_path(), &self.config.mixes);
         self.rehearsal.shutdown();
     }
 }

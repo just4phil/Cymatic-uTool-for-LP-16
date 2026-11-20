@@ -17,12 +17,21 @@
 //! new generation (and sufficiently filled) a playing engine outputs silence
 //! and does not advance; that wait is no dropout.
 //!
+//! The rehearsal mix (`crate::mix`) is applied here: every track goes to the
+//! strip of its LP-16 output (`ProjectTrack.channel`), each strip has level,
+//! pan, mute and solo, then comes the master and a limiter at +-1.0. The
+//! target gains of a new mix are reached with a linear 10 ms ramp, so
+//! changes while playing do not click. The meters (peak per strip after
+//! fader and mute, master peak after the limiter, clip flag) are collected
+//! in `render` and handed out with `take_status`.
+//!
 //! `seek` builds on this. While playing it first fades the audio out over
 //! 5 ms from the current position (`Fade::Out`; the status already shows the
 //! target), then changes the position, waits in silence (`Fade::Wait`) and
 //! fades in over 5 ms (`Fade::In`). Several seeks in a row only replace the
 //! target; there is one fade-out and one fade-in.
 
+use crate::mix::{MixParams, StripGains, STRIPS};
 use crate::{SongProject, WavReader};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -30,12 +39,12 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-/// Gain of a track in the mix, centre pan with the constant-power law.
-const CENTER_GAIN: f32 = 0.707_106_77;
 /// Frames the reader thread reads and pushes at once.
 const READ_BLOCK: usize = 4096;
-/// Frames `render` mixes per round (size of the mix scratch buffer).
+/// Frames `render` mixes per round (size of the scratch buffer of a strip).
 const MIX_CHUNK: usize = 1024;
+/// Length of the ramp to the gains of a new mix.
+const MIX_RAMP_SECONDS: f64 = 0.01;
 /// Length of the fade-out and fade-in around a jump while playing.
 const FADE_SECONDS: f64 = 0.005;
 /// How long the reader thread sleeps when every ring is full.
@@ -50,6 +59,34 @@ pub enum PlayState {
     Paused,
     /// the longest track is over; silence follows
     Ended,
+}
+
+/// The meters. The peaks are absolute values (1.0 = full scale), the
+/// maximum since the last `Engine::take_status`.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Levels {
+    /// per strip after fader and mute, before pan
+    pub strips: [f32; STRIPS],
+    /// left and right after the limiter
+    pub master: [f32; 2],
+    /// the master was limited; stays set until `Engine::reset_clip`
+    pub clip: bool,
+}
+
+impl Levels {
+    /// Keep the larger peaks of `self` and `other`; the clip flag of `self`.
+    pub fn merge_peaks(&mut self, other: &Levels) {
+        for (a, b) in self.strips.iter_mut().zip(other.strips.iter()) {
+            *a = a.max(*b);
+        }
+        self.master[0] = self.master[0].max(other.master[0]);
+        self.master[1] = self.master[1].max(other.master[1]);
+    }
+
+    pub fn clear_peaks(&mut self) {
+        self.strips = [0.0; STRIPS];
+        self.master = [0.0; 2];
+    }
 }
 
 /// What the user interface shows. Cheap to clone (no string copies), so the
@@ -69,6 +106,7 @@ pub struct Status {
     /// blocks in which a playing track had no data
     pub underruns: u64,
     pub warnings: Arc<Vec<String>>,
+    pub levels: Levels,
 }
 
 /// "m:ss" for a time in seconds (rounded down).
@@ -163,6 +201,8 @@ fn reader_thread(mut tracks: Vec<ReaderTrack>, shared: Arc<Shared>) {
 
 /// The engine side of one track.
 struct PlayTrack {
+    /// strip of the rehearsal mix (0-based LP-16 output)
+    channel: usize,
     consumer: Consumer<f32>,
     shared: Arc<TrackShared>,
     frames: u64,
@@ -186,12 +226,12 @@ impl PlayTrack {
         }
     }
 
-    /// Adds `n` frames (times the centre gain) to `mix`.
+    /// Adds `n` frames to `mix` (the buffer of the track's strip).
     fn add_to(&mut self, n: usize, mix: &mut [f32]) {
         if let Ok(chunk) = self.consumer.read_chunk(n) {
             let (a, b) = chunk.as_slices();
             for (m, s) in mix.iter_mut().zip(a.iter().chain(b.iter())) {
-                *m += *s * CENTER_GAIN;
+                *m += *s;
             }
             chunk.commit_all();
             self.popped += n as u64;
@@ -245,6 +285,8 @@ pub struct LoadedSong {
     tracks: Vec<PlayTrack>,
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
+    /// bit n: a track plays on strip n
+    strip_mask: u16,
     // transport
     generation: u64,
     pos: u64,
@@ -261,17 +303,26 @@ impl LoadedSong {
     /// than the first readable track stay silent and add a warning.
     pub fn open(project: &SongProject) -> LoadedSong {
         let mut warnings = Vec::new();
-        let mut readers: Vec<(String, WavReader)> = Vec::new();
+        let mut readers: Vec<(String, usize, WavReader)> = Vec::new();
         for (i, t) in project.tracks.iter().enumerate() {
             let name = if t.name.is_empty() { format!("channel {}", i + 1) } else { t.name.clone() };
+            if t.channel < 0 || t.channel as usize >= STRIPS {
+                warnings.push(format!(
+                    "Track \"{}\": output channel {} is not in 1-{}, left silent",
+                    name,
+                    t.channel as i64 + 1,
+                    STRIPS
+                ));
+                continue;
+            }
             match WavReader::open(&project.wav(t)) {
-                Ok(r) => readers.push((name, r)),
+                Ok(r) => readers.push((name, t.channel as usize, r)),
                 Err(e) => warnings.push(format!("Track \"{}\": {}", name, e)),
             }
         }
-        let song_rate = readers.first().map(|(_, r)| r.rate()).unwrap_or(project.sampling_rate);
+        let song_rate = readers.first().map(|(_, _, r)| r.rate()).unwrap_or(project.sampling_rate);
         let mut used = Vec::new();
-        for (name, r) in readers {
+        for (name, channel, r) in readers {
             if r.channels() != 1 {
                 warnings.push(format!("Track \"{}\": not mono ({} channels), left silent", name, r.channels()));
             } else if r.rate() != song_rate {
@@ -282,7 +333,7 @@ impl LoadedSong {
                     song_rate
                 ));
             } else {
-                used.push(r);
+                used.push((channel, r));
             }
         }
         // 2 s, rounded up to whole read blocks so that the ring can really be full
@@ -295,12 +346,15 @@ impl LoadedSong {
         let mut length_frames = 0;
         let mut play = Vec::new();
         let mut read = Vec::new();
-        for reader in used {
+        let mut strip_mask = 0u16;
+        for (channel, reader) in used {
+            strip_mask |= 1 << channel;
             let (producer, consumer) = RingBuffer::new(capacity);
             let ts = Arc::new(TrackShared { generation: AtomicU64::new(0), start_count: AtomicU64::new(0) });
             let frames = reader.frames();
             length_frames = length_frames.max(frames);
             play.push(PlayTrack {
+                channel,
                 consumer,
                 shared: ts.clone(),
                 frames,
@@ -330,6 +384,7 @@ impl LoadedSong {
             tracks: play,
             shared,
             thread,
+            strip_mask,
             generation: 1,
             pos: 0,
             primed: false,
@@ -418,6 +473,31 @@ impl Drop for LoadedSong {
 // engine
 // ---------------------------------------------------------------------------
 
+/// The gains the mixer applies: per strip and the master.
+#[derive(Clone, Copy)]
+struct Gains {
+    strips: [StripGains; STRIPS],
+    master: f32,
+}
+
+impl Gains {
+    fn neutral() -> Gains {
+        let (strips, master) = MixParams::default().gains();
+        Gains { strips, master }
+    }
+
+    /// `start` + (`target` - `start`) x `t`
+    fn lerp(start: &Gains, target: &Gains, t: f32) -> Gains {
+        let mix = |a: f32, b: f32| a + (b - a) * t;
+        let mut g = *target;
+        for ((o, a), b) in g.strips.iter_mut().zip(start.strips.iter()).zip(target.strips.iter()) {
+            *o = StripGains { level: mix(a.level, b.level), left: mix(a.left, b.left), right: mix(a.right, b.right) };
+        }
+        g.master = mix(start.master, target.master);
+        g
+    }
+}
+
 pub struct Engine {
     output_rate: u32,
     /// frames of a fade: round(5 ms x rate)
@@ -425,7 +505,18 @@ pub struct Engine {
     state: PlayState,
     song: Option<LoadedSong>,
     underruns: u64,
-    mix: Vec<f32>,
+    /// one buffer of `MIX_CHUNK` frames per strip
+    chan: Vec<f32>,
+    /// frames of the ramp to a new mix: round(10 ms x rate)
+    ramp_len: usize,
+    /// frames of the current ramp that are done (`ramp_len` = finished)
+    ramp_done: usize,
+    ramp_start: Gains,
+    ramp_target: Gains,
+    /// gains of the last frame
+    gains: Gains,
+    peaks: Levels,
+    clip: bool,
     no_name: Arc<str>,
     no_warnings: Arc<Vec<String>>,
 }
@@ -438,7 +529,14 @@ impl Engine {
             state: PlayState::Empty,
             song: None,
             underruns: 0,
-            mix: vec![0.0; MIX_CHUNK],
+            chan: vec![0.0; STRIPS * MIX_CHUNK],
+            ramp_len: ((MIX_RAMP_SECONDS * output_rate as f64).round() as usize).max(1),
+            ramp_done: ((MIX_RAMP_SECONDS * output_rate as f64).round() as usize).max(1),
+            ramp_start: Gains::neutral(),
+            ramp_target: Gains::neutral(),
+            gains: Gains::neutral(),
+            peaks: Levels::default(),
+            clip: false,
             no_name: Arc::from(""),
             no_warnings: Arc::new(Vec::new()),
         }
@@ -558,6 +656,28 @@ impl Engine {
         }
     }
 
+    /// Use a new rehearsal mix. While playing, the gains of every strip
+    /// and of the master move linearly to their new values over
+    /// round(10 ms x rate) frames, from where they are now; otherwise
+    /// nothing is audible and they jump at once. No allocation.
+    pub fn set_mix(&mut self, mix: &MixParams) {
+        let (strips, master) = mix.gains();
+        self.ramp_target = Gains { strips, master };
+        if self.state == PlayState::Playing && self.song.is_some() {
+            self.ramp_start = self.gains;
+            self.ramp_done = 0;
+        } else {
+            self.gains = self.ramp_target;
+            self.ramp_start = self.ramp_target;
+            self.ramp_done = self.ramp_len;
+        }
+    }
+
+    /// Clear the clip flag of the master.
+    pub fn reset_clip(&mut self) {
+        self.clip = false;
+    }
+
     /// Pause plus position 0. No fade: silence follows anyway.
     pub fn stop(&mut self) {
         if let Some(song) = self.song.as_mut() {
@@ -599,8 +719,11 @@ impl Engine {
             if let Fade::Out(d) | Fade::In(d) = song.fade {
                 m = m.min(fade_len - d);
             }
-            let mix = &mut self.mix[..m];
-            mix.fill(0.0);
+            for c in 0..STRIPS {
+                if song.strip_mask & (1 << c) != 0 {
+                    self.chan[c * MIX_CHUNK..c * MIX_CHUNK + m].fill(0.0);
+                }
+            }
             for t in song.tracks.iter_mut() {
                 let k = (t.frames.saturating_sub(song.pos) as usize).min(m);
                 if k == 0 {
@@ -608,7 +731,7 @@ impl Engine {
                 }
                 t.pay_debt();
                 if t.debt == 0 && t.consumer.slots() >= k {
-                    t.add_to(k, mix);
+                    t.add_to(k, &mut self.chan[t.channel * MIX_CHUNK..]);
                 } else {
                     // silence for this block; the frames due now are
                     // skipped as soon as they arrive, keeping the sync
@@ -618,23 +741,44 @@ impl Engine {
                     underrun = true;
                 }
             }
-            match song.fade {
-                Fade::Out(d) => {
-                    for (i, s) in mix.iter_mut().enumerate() {
-                        *s *= 1.0 - (d + i) as f32 / fade_len as f32;
-                    }
+            for i in 0..m {
+                if self.ramp_done < self.ramp_len {
+                    self.ramp_done += 1;
+                    self.gains = if self.ramp_done == self.ramp_len {
+                        self.ramp_target
+                    } else {
+                        Gains::lerp(&self.ramp_start, &self.ramp_target, self.ramp_done as f32 / self.ramp_len as f32)
+                    };
                 }
-                Fade::In(d) => {
-                    for (i, s) in mix.iter_mut().enumerate() {
-                        *s *= (d + i) as f32 / fade_len as f32;
+                let (mut l, mut r) = (0.0f32, 0.0f32);
+                for c in 0..STRIPS {
+                    if song.strip_mask & (1 << c) == 0 {
+                        continue;
                     }
+                    let x = self.chan[c * MIX_CHUNK + i];
+                    let g = &self.gains.strips[c];
+                    self.peaks.strips[c] = self.peaks.strips[c].max((x * g.level).abs());
+                    l += x * g.left;
+                    r += x * g.right;
                 }
-                _ => {}
-            }
-            for (o, s) in out[done * 2..(done + m) * 2].chunks_exact_mut(2).zip(mix.iter()) {
-                let v = s.clamp(-1.0, 1.0);
-                o[0] = v;
-                o[1] = v;
+                l *= self.gains.master;
+                r *= self.gains.master;
+                let f = match song.fade {
+                    Fade::Out(d) => 1.0 - (d + i) as f32 / fade_len as f32,
+                    Fade::In(d) => (d + i) as f32 / fade_len as f32,
+                    _ => 1.0,
+                };
+                l *= f;
+                r *= f;
+                if l.abs() > 1.0 || r.abs() > 1.0 {
+                    self.clip = true;
+                }
+                let (l, r) = (l.clamp(-1.0, 1.0), r.clamp(-1.0, 1.0));
+                self.peaks.master[0] = self.peaks.master[0].max(l.abs());
+                self.peaks.master[1] = self.peaks.master[1].max(r.abs());
+                let o = &mut out[(done + i) * 2..(done + i) * 2 + 2];
+                o[0] = l;
+                o[1] = r;
             }
             song.pos += m as u64;
             done += m;
@@ -659,7 +803,16 @@ impl Engine {
         }
     }
 
+    /// The status for the audio callback: like `status`, and the peaks start
+    /// again (call it only when the status is really handed on).
+    pub fn take_status(&mut self) -> Status {
+        let st = self.status();
+        self.peaks.clear_peaks();
+        st
+    }
+
     pub fn status(&self) -> Status {
+        let levels = Levels { clip: self.clip, ..self.peaks };
         match &self.song {
             None => Status {
                 state: self.state,
@@ -672,6 +825,7 @@ impl Engine {
                 song_rate: 0,
                 underruns: self.underruns,
                 warnings: self.no_warnings.clone(),
+                levels,
             },
             Some(s) => {
                 let rate = s.song_rate.max(1) as f64;
@@ -686,6 +840,7 @@ impl Engine {
                     song_rate: s.song_rate,
                     underruns: self.underruns,
                     warnings: s.warnings.clone(),
+                    levels,
                 }
             }
         }
@@ -1296,6 +1451,223 @@ pub(crate) mod tests {
             assert_eq!(run(block), reference, "block size {}", block);
         }
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    // ---- rehearsal mix ----
+
+    use crate::mix::{MixParams, Strip};
+
+    /// a ready, playing engine for tracks of constant values `vals` on the
+    /// strips `channels`, `frames` long each, with `mix`
+    fn mix_engine(name: &str, vals: &[f32], channels: &[i32], frames: usize, mix: &MixParams) -> Engine {
+        let dir = temp_dir(name);
+        let wavs: Vec<String> =
+            vals.iter().enumerate().map(|(i, v)| wav24(&dir, &format!("t{}", i), RATE, 1, &constant(frames, *v))).collect();
+        let refs: Vec<&str> = wavs.iter().map(|s| s.as_str()).collect();
+        let mut prj = song(&dir, &refs);
+        for (t, c) in prj.tracks.iter_mut().zip(channels) {
+            t.channel = *c;
+        }
+        let mut e = ready_engine(&prj);
+        e.set_mix(mix);
+        e.play();
+        let _ = fs::remove_dir_all(&dir);
+        e
+    }
+
+    fn first(out: &[f32]) -> (f32, f32) {
+        (out[0], out[1])
+    }
+
+    fn near(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-6
+    }
+
+    #[test]
+    fn strip_level_and_pan_shape_the_signal() {
+        let mut mix = MixParams::default();
+        mix.strips[0] = Strip { level_db: -6.0, pan: -127, mute: false, solo: false };
+        let mut e = mix_engine("mx-level", &[0.5], &[0], 2000, &mix);
+        let (l, r) = first(&render(&mut e, 100));
+        assert!((l - 0.5 * 0.501187).abs() < 1e-5, "{}", l);
+        assert_eq!(r, 0.0);
+        mix.strips[0] = Strip { level_db: 6.0, pan: 127, mute: false, solo: false };
+        let mut e = mix_engine("mx-level2", &[0.25], &[0], 2000, &mix);
+        let (l, r) = first(&render(&mut e, 100));
+        assert_eq!(l, 0.0);
+        assert!((r - 0.25 * 1.995262).abs() < 1e-5, "{}", r);
+        mix.strips[0].level_db = f32::NEG_INFINITY;
+        let mut e = mix_engine("mx-off", &[0.25], &[0], 2000, &mix);
+        assert!(render(&mut e, 100).iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn mute_solo_and_master_in_the_engine() {
+        let g = 0.707_106_77f32;
+        let two = |mix: &MixParams| {
+            let mut e = mix_engine("mx-ms", &[0.125, 0.25], &[0, 1], 2000, mix);
+            first(&render(&mut e, 100)).0
+        };
+        let mut mix = MixParams::default();
+        assert!(near(two(&mix), 0.375 * g));
+        mix.strips[0].mute = true;
+        assert!(near(two(&mix), 0.25 * g));
+        mix.strips[0].mute = false;
+        mix.strips[1].solo = true;
+        assert!(near(two(&mix), 0.25 * g), "solo silences the other");
+        mix.strips[0].solo = true;
+        assert!(near(two(&mix), 0.375 * g), "solo on both");
+        mix.strips[0].mute = true;
+        assert!(near(two(&mix), 0.25 * g), "mute beats solo");
+        mix = MixParams { master_db: -6.0, ..MixParams::default() };
+        assert!((two(&mix) - 0.375 * g * 0.501187).abs() < 1e-5);
+    }
+
+    #[test]
+    fn overload_is_limited_and_sets_the_clip_flag_until_reset() {
+        let mut e = mix_engine("mx-clip", &[0.9, 0.9], &[0, 0], 2000, &MixParams::default());
+        assert!(!e.status().levels.clip);
+        let out = render(&mut e, 50);
+        assert!(out.iter().all(|&s| s == 1.0), "1.8 x 0.707 limited to 1.0");
+        assert!(e.status().levels.clip);
+        // the flag stays, also after the peaks were taken
+        assert!(e.take_status().levels.clip);
+        assert!(e.status().levels.clip);
+        e.reset_clip();
+        assert!(!e.status().levels.clip);
+        // negative side
+        let mut e = mix_engine("mx-clip2", &[-0.9, -0.9], &[0, 1], 2000, &MixParams::default());
+        assert!(render(&mut e, 10).iter().all(|&s| s == -1.0));
+        assert!(e.status().levels.clip);
+        // no clip below full scale
+        let mut e = mix_engine("mx-clip3", &[0.9], &[0], 2000, &MixParams::default());
+        render(&mut e, 10);
+        assert!(!e.status().levels.clip);
+    }
+
+    #[test]
+    fn a_mix_change_while_playing_ramps_linearly_over_10_ms() {
+        let n = 480; // round(0.01 x 48000)
+        let x = 0.5f32;
+        let g = 0.707_106_77f32;
+        let mut e = mix_engine("mx-ramp", &[x], &[0], 4000, &MixParams::default());
+        let before = render(&mut e, 20);
+        assert!(near(before[2 * 19], x * g));
+        let mut mix = MixParams::default();
+        mix.strips[0].level_db = f32::NEG_INFINITY;
+        e.set_mix(&mix);
+        let out = render(&mut e, n + 20);
+        // linear steps, starting without a jump
+        for i in 0..n {
+            let want = x * g * (1.0 - (i + 1) as f32 / n as f32);
+            assert!((out[2 * i] - want).abs() < 2e-6, "frame {}: {} vs {}", i, out[2 * i], want);
+        }
+        assert_eq!(out[2 * (n - 1)], 0.0, "the target after exactly {} frames", n);
+        assert!(out[2 * n..].iter().all(|&s| s == 0.0));
+        // a second change starts from the current value
+        let mut e = mix_engine("mx-ramp2", &[x], &[0], 4000, &MixParams::default());
+        render(&mut e, 20);
+        e.set_mix(&mix);
+        let half = render(&mut e, n / 2);
+        let mid = half[2 * (n / 2 - 1)];
+        e.set_mix(&MixParams::default());
+        let back = render(&mut e, 4);
+        assert!(back[0] > mid && back[0] - mid < x * g * 0.01, "continues from {} to {}", mid, back[0]);
+    }
+
+    #[test]
+    fn a_mix_change_while_stopped_applies_at_once() {
+        let dir = temp_dir("mx-stopped");
+        let a = wav24(&dir, "a", RATE, 1, &constant(2000, 0.5));
+        let mut e = ready_engine(&song(&dir, &[&a]));
+        let mut mix = MixParams::default();
+        mix.strips[0].level_db = f32::NEG_INFINITY;
+        e.set_mix(&mix);
+        mix.strips[0].level_db = -6.0;
+        e.set_mix(&mix);
+        e.play();
+        let (l, _) = first(&render(&mut e, 10));
+        assert!((l - 0.5 * 0.707_106_77 * 0.501187).abs() < 1e-5, "no ramp from an earlier value: {}", l);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn tracks_go_to_the_strip_of_their_channel() {
+        let g = 0.707_106_77f32;
+        // two tracks on the same channel are summed in that strip
+        let mut mix = MixParams::default();
+        mix.strips[3].level_db = -6.0;
+        let mut e = mix_engine("mx-same", &[0.125, 0.25], &[3, 3], 2000, &mix);
+        let (l, _) = first(&render(&mut e, 10));
+        assert!((l - 0.375 * g * 0.501187).abs() < 1e-5);
+        assert!((e.status().levels.strips[3] - 0.375 * 0.501187).abs() < 1e-5);
+        // the channel decides, not the order of the tracks
+        let mut mix = MixParams::default();
+        mix.strips[0].mute = true;
+        let mut e = mix_engine("mx-order", &[0.125, 0.25], &[1, 0], 2000, &mix);
+        assert!(near(first(&render(&mut e, 10)).0, 0.125 * g));
+        // channel 16 (strip 17) does not exist: warning and silence
+        let mut e = mix_engine("mx-beyond", &[0.5, 0.25], &[16, 15], 2000, &MixParams::default());
+        let st = e.status();
+        assert_eq!(st.warnings.len(), 1);
+        assert!(st.warnings[0].contains("t0") && st.warnings[0].contains("17"), "{}", st.warnings[0]);
+        assert!(near(first(&render(&mut e, 10)).0, 0.25 * g));
+        let mut e = mix_engine("mx-neg", &[0.5], &[-1], 2000, &MixParams::default());
+        assert_eq!(e.status().warnings.len(), 1);
+        assert!(render(&mut e, 10).iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn monitor_values_of_the_song_are_ignored() {
+        let dir = temp_dir("mx-monitor");
+        let a = wav24(&dir, "a", RATE, 1, &constant(2000, 0.25));
+        let b = wav24(&dir, "b", RATE, 1, &ramp(2000));
+        let plain = song(&dir, &[&a, &b]);
+        let mut loud = plain.clone();
+        for t in loud.tracks.iter_mut() {
+            t.monitor_level = "-20.0".into();
+            t.monitor_pan = "50.0".into();
+            t.monitor_mute = "1".into();
+        }
+        let play = |prj: &SongProject| {
+            let mut e = ready_engine(prj);
+            e.play();
+            render(&mut e, 1000).iter().map(|s| s.to_bits()).collect::<Vec<_>>()
+        };
+        let reference = play(&plain);
+        assert!(reference.iter().any(|&b| f32::from_bits(b) != 0.0));
+        assert_eq!(play(&loud), reference);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_meters_give_the_peak_since_the_last_reading() {
+        let mut mix = MixParams::default();
+        mix.strips[2] = Strip { level_db: -6.0, pan: 127, mute: false, solo: false };
+        mix.strips[5].mute = true;
+        let mut e = mix_engine("mx-meter", &[0.5, 0.4], &[2, 5], 4000, &mix);
+        render(&mut e, 100);
+        let lv = e.status().levels;
+        assert_eq!(e.status().levels, lv, "reading the status does not reset");
+        let lv = e.take_status().levels;
+        assert!((lv.strips[2] - 0.5 * 0.501187).abs() < 1e-5, "after the fader, before the pan");
+        assert_eq!(lv.strips[5], 0.0, "after the mute");
+        assert_eq!(lv.strips[0], 0.0);
+        assert_eq!(lv.master[0], 0.0, "panned fully right");
+        assert!((lv.master[1] - 0.5 * 0.501187).abs() < 1e-5);
+        // reset after the reading, then the new peak
+        let lv = e.take_status().levels;
+        assert_eq!((lv.strips[2], lv.master), (0.0, [0.0, 0.0]));
+        render(&mut e, 10);
+        assert!(e.take_status().levels.strips[2] > 0.2);
+        // the peak is the largest one of several blocks
+        let mut e = mix_engine("mx-meter2", &[0.5], &[0], 4000, &MixParams::default());
+        render(&mut e, 10);
+        let mut quiet = MixParams::default();
+        quiet.strips[0].level_db = -60.0;
+        e.set_mix(&quiet);
+        render(&mut e, 600);
+        assert!((e.take_status().levels.strips[0] - 0.5).abs() < 1e-6);
     }
 
     #[test]

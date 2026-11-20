@@ -10,6 +10,7 @@ use std::fs;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
+pub mod mix;
 pub mod project_lib;
 #[cfg(feature = "player")]
 pub mod audio_out;
@@ -2034,6 +2035,8 @@ pub struct Config {
     pub audio_out_right: u16,
     /// buffer size in frames, 0 = driver default (see `AUDIO_BUFFERS`)
     pub audio_buffer: u32,
+    /// the rehearsal mix presets (`mix.*` and `mix_active` in the file)
+    pub mixes: mix::MixLibrary,
 }
 
 /// The buffer sizes (frames) the settings offer; 0 = driver default.
@@ -2054,6 +2057,7 @@ impl Default for Config {
             audio_out_left: 1,
             audio_out_right: 2,
             audio_buffer: 0,
+            mixes: mix::MixLibrary::default(),
         }
     }
 }
@@ -2080,6 +2084,7 @@ impl Config {
 
 pub fn load_config(path: &std::path::Path) -> Config {
     let mut config = Config::default();
+    let mut mixes = mix::MixParser::default();
     if let Ok(text) = fs::read_to_string(path) {
         for line in text.lines() {
             let line = line.trim();
@@ -2112,11 +2117,13 @@ pub fn load_config(path: &std::path::Path) -> Config {
                             config.audio_buffer = b;
                         }
                     }
+                    k if k == "mix_active" || k.starts_with("mix.") => mixes.feed(k, &value),
                     _ => {}
                 }
             }
         }
     }
+    config.mixes = mixes.finish();
     config.apply_library();
     config
 }
@@ -2145,16 +2152,25 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
     let text = format!(
         "{}stick_root = \"{}\"\r\n\
          audio_host = \"{}\"\r\naudio_device = \"{}\"\r\n\
-         audio_out_left = \"{}\"\r\naudio_out_right = \"{}\"\r\naudio_buffer = \"{}\"\r\n",
+         audio_out_left = \"{}\"\r\naudio_out_right = \"{}\"\r\naudio_buffer = \"{}\"\r\n{}",
         paths,
         config.stick_root,
         config.audio_host,
         config.audio_device,
         config.audio_out_left,
         config.audio_out_right,
-        config.audio_buffer
+        config.audio_buffer,
+        config.mixes.to_config_text()
     );
     fs::write(path, text.as_bytes())
+}
+
+/// Write only the rehearsal mix presets into the config file: the file is
+/// read again and everything else in it stays as it is on disk.
+pub fn save_mixes(path: &std::path::Path, mixes: &mix::MixLibrary) -> std::io::Result<()> {
+    let mut config = load_config(path);
+    config.mixes = mixes.clone();
+    save_config(path, &config)
 }
 
 #[cfg(test)]
@@ -2982,6 +2998,62 @@ mod tests {
     }
 
     #[test]
+    fn config_mix_presets() {
+        let dir = temp_dir("config-mix");
+        let path = dir.join("lp16-tool.toml");
+        // an old file without presets: one neutral "Default"
+        fs::write(&path, "library = \"E:\\x\"\r\nstick_root = \"F:\\\"\r\n").unwrap();
+        let old = load_config(&path);
+        assert_eq!(old.mixes, mix::MixLibrary::default());
+        assert_eq!(old.mixes.active_name(), "Default");
+
+        // three presets, umlauts, spaces, off, solo, active one
+        let mut c = Config {
+            library: "E:\\x\\LIB".into(),
+            stick_root: "F:\\".into(),
+            audio_host: "WASAPI".into(),
+            audio_device: "Lautsprecher (Realtek)".into(),
+            audio_out_left: 3,
+            audio_out_right: 4,
+            audio_buffer: 512,
+            ..Config::default()
+        };
+        c.mixes.rename_active("B\u{fc}hne laut").unwrap();
+        c.mixes.active_mut().set_level(4, f32::NEG_INFINITY);
+        c.mixes.active_mut().set_mute(4, true);
+        c.mixes.new_mix();
+        c.mixes.active_mut().set_solo(7, true);
+        c.mixes.active_mut().set_pan(7, -50);
+        c.mixes.active_mut().set_master(-4.5);
+        c.mixes.new_mix();
+        c.mixes.rename_active("Zur\u{fc}ck zum Start").unwrap();
+        c.mixes.select("Mix 1").unwrap();
+        save_config(&path, &c).unwrap();
+        let b = load_config(&path);
+        assert_eq!(b.mixes, c.mixes);
+        assert_eq!(b.mixes.presets().len(), 3);
+        assert_eq!(b.mixes.active_name(), "Mix 1");
+        // paths and audio settings are unchanged
+        assert_eq!((b.library.as_str(), b.stick_root.as_str()), ("E:\\x\\LIB", "F:\\"));
+        assert_eq!(b.audio_device, "Lautsprecher (Realtek)");
+        assert_eq!((b.audio_host.as_str(), b.audio_out_left, b.audio_out_right, b.audio_buffer), ("WASAPI", 3, 4, 512));
+
+        // broken lines are ignored
+        let mut text = fs::read_to_string(&path).unwrap();
+        text.push_str("mix.1.ch3 = \"kaputt\"\r\nmix.9\r\nmix.1.ch40 = \"0.0 0 0 0\"\r\n");
+        fs::write(&path, text).unwrap();
+        assert_eq!(load_config(&path).mixes, c.mixes);
+
+        // save_mixes only replaces the mix; the rest of the file stays
+        fs::write(&path, "library = \"E:\\y\"\r\nstick_root = \"G:\\\"\r\n").unwrap();
+        save_mixes(&path, &c.mixes).unwrap();
+        let s = load_config(&path);
+        assert_eq!((s.library.as_str(), s.stick_root.as_str()), ("E:\\y", "G:\\"));
+        assert_eq!(s.mixes, c.mixes);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn config_audio_fields() {
         let dir = temp_dir("config-audio");
         let path = dir.join("lp16-tool.toml");
@@ -3006,6 +3078,7 @@ mod tests {
                 audio_out_left: 4,
                 audio_out_right: 3,
                 audio_buffer: 256,
+                mixes: mix::MixLibrary::default(),
             };
             save_config(&path, &c).unwrap();
             let text = fs::read_to_string(&path).unwrap();
