@@ -4,8 +4,10 @@
 //! sends commands.
 
 use crate::gui_app::{key, DIM, LINE, ORANGE, PANEL, RED, TEXT};
+use crate::gui_mixer::MixerPanel;
 use eframe::egui::{self, vec2, Align, Color32, Key, Layout, Modifiers, RichText, Sense, Stroke, Ui};
 use lp16_tool::audio_out::{AudioSettings, Command, Player, StreamInfo};
+use lp16_tool::mix::{MixLibrary, MixParams, STRIPS};
 use lp16_tool::rehearsal::{fmt_clock, Engine, LoadedSong, PlayState, Status};
 use lp16_tool::SongProject;
 use std::time::{Duration, Instant};
@@ -41,6 +43,28 @@ pub struct RehearsalPanel {
     drag_target: Option<f64>,
     /// the last target sent, and when
     last_seek: Option<(f64, Instant)>,
+    /// the rehearsal mix (below the player)
+    mixer: MixerPanel,
+    /// the mix the engine should use; sent again to every new stream
+    mix: MixParams,
+    /// per LP-16 output the names of the tracks of the loaded song
+    track_names: [String; STRIPS],
+}
+
+/// The track names per strip: tracks on the same output are joined.
+fn track_names(project: &SongProject) -> [String; STRIPS] {
+    let mut names: [String; STRIPS] = Default::default();
+    for t in &project.tracks {
+        if t.channel < 0 || t.channel as usize >= STRIPS {
+            continue;
+        }
+        let n = &mut names[t.channel as usize];
+        if !n.is_empty() {
+            n.push_str(" + ");
+        }
+        n.push_str(if t.name.is_empty() { "Track" } else { &t.name });
+    }
+    names
 }
 
 impl RehearsalPanel {
@@ -48,6 +72,14 @@ impl RehearsalPanel {
     /// opened. A running stream is not touched.
     pub fn set_settings(&mut self, settings: AudioSettings) {
         self.settings = settings;
+    }
+
+    /// The rehearsal mix for the engine (kept for streams opened later).
+    pub fn set_mix(&mut self, mix: MixParams) {
+        self.mix = mix;
+        if let Some(player) = &self.player {
+            player.send(Command::SetMix(mix));
+        }
     }
 
     /// What the open stream runs with (for the settings).
@@ -69,6 +101,7 @@ impl RehearsalPanel {
         self.player = None;
         match Player::open(&self.settings, rate) {
             Ok(p) => {
+                p.send(Command::SetMix(self.mix));
                 self.player = Some(p);
                 self.device_error = None;
                 true
@@ -86,6 +119,7 @@ impl RehearsalPanel {
         let loaded = LoadedSong::open(project);
         let rate = loaded.rate();
         self.project = Some(project.clone());
+        self.track_names = track_names(project);
         self.song_path = Some(project.path.clone());
         self.notice = None;
         self.drag_target = None;
@@ -158,6 +192,7 @@ impl RehearsalPanel {
         }
         self.song_path = None;
         self.project = None;
+        self.track_names = Default::default();
         self.parked = None;
         self.notice = Some(CHANGED_NOTICE.to_string());
     }
@@ -252,15 +287,40 @@ impl RehearsalPanel {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut Ui) {
+    /// Draw the tab: the player, below it the rehearsal mix `mixes`.
+    /// Returns true if the mix (values or presets) was changed, so the
+    /// caller saves the config.
+    pub fn ui(&mut self, ui: &mut Ui, mixes: &mut MixLibrary) -> bool {
         self.check_stream();
+        let levels = self.player.as_ref().map(|p| p.take_levels()).unwrap_or_default();
+        let mut changed = false;
+        egui::ScrollArea::vertical().id_source("rehearsal_scroll").auto_shrink([false, false]).show(ui, |ui| {
+            self.player_area(ui);
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(6.0);
+            let out = self.mixer.ui(ui, mixes, &self.track_names, &levels);
+            if out.changed {
+                changed = true;
+                self.set_mix(mixes.active().params());
+            }
+            if out.reset_clip {
+                if let Some(player) = &self.player {
+                    player.send(Command::ResetClip);
+                }
+            }
+        });
+        changed
+    }
+
+    fn player_area(&mut self, ui: &mut Ui) {
         let status = self.player.as_ref().map(|p| p.status()).or_else(|| self.parked.clone());
         let loaded = status.as_ref().map(|s| s.state != PlayState::Empty).unwrap_or(false);
         if let Some(st) = &status {
             self.keys(ui, st);
         }
         ui.with_layout(Layout::top_down(Align::Center), |ui| {
-            ui.add_space(30.0);
+            ui.add_space(12.0);
             match (&status, loaded) {
                 (Some(st), true) => self.song_view(ui, st),
                 _ => self.empty_view(ui),

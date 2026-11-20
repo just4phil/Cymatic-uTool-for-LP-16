@@ -38,7 +38,7 @@ Dazu gibt es eine Oberfläche, die der von uTool2 nachgebaut ist, und eine Komma
   siehe [Import](#import-batch-import-von-songs).
 - **Edit Target:** Inhalt des Sticks als Baum, mit Details zu Songs und Playlists.
 - **Probe-Player (erste Version):** spielt einen Song der Bibliothek über einen wählbaren
-  Audioausgang ab, siehe [Probe-Player](#probe-player).
+  Audioausgang ab, mit einem 16-Kanal-Proben-Mix, siehe [Probe-Player](#probe-player).
 
 ## Voraussetzungen
 
@@ -85,6 +85,11 @@ audio_device = ""
 audio_out_left = "1"
 audio_out_right = "2"
 audio_buffer = "0"
+# Presets des Proben-Mix (vom Programm geschrieben, siehe „Proben-Mix“)
+mix.1.name = "Default"
+mix.1.master = "0.0"
+mix.1.ch1 = "0.0 0 0 0"
+mix_active = "Default"
 ```
 
 Aufbau des Basisordners:
@@ -107,7 +112,7 @@ Vor dem ersten Export auf einen echten Stick `Recording\` sichern.
 ## Probe-Player
 
 Der Player spielt einen Song der Projektbibliothek über den **Audioausgang** ab, den man im Reiter
-Settings wählt (WASAPI), zum Proben zu Hause. Das ist die erste Version; Playlist, Proben-Mix,
+Settings wählt (WASAPI), zum Proben zu Hause. Das ist die erste Version; Playlist,
 MIDI und ASIO folgen.
 
 - Im Home-Reiter mit der rechten Maustaste auf einen Song klicken und **Play in Rehearsal**
@@ -130,8 +135,8 @@ MIDI und ASIO folgen.
 
   Hoch/Runter sind für Playlists reserviert.
 - Alle Spuren werden synchron von der Platte gestreamt (nichts wird vorab in den Speicher
-  geladen) und zu Stereo gemischt. Vorerst hat jede Spur 0 dB und Panorama Mitte (Constant-Power-
-  Gesetz); der Mix wird auf Vollaussteuerung begrenzt.
+  geladen) und zu Stereo gemischt, und zwar vom [Proben-Mix](#proben-mix); das Ergebnis wird auf
+  Vollaussteuerung begrenzt.
 - Der Stream wird mit der **Samplerate des Songs** geöffnet. Hat der nächste Song eine andere Rate,
   wird der Stream geschlossen und mit der neuen Rate neu geöffnet. Es gibt kein Resampling; der Song
   wird nur dann nicht gespielt, wenn das Gerät seine Rate nicht unterstützt (der Reiter sagt das).
@@ -144,6 +149,36 @@ MIDI und ASIO folgen.
   das Gerät während der Wiedergabe, stoppt sie, die Position bleibt und der Reiter meldet „Audio
   device lost“; nach dem Wiederanschließen genügt Play, der Ausgang wird neu geöffnet, ein Neustart ist
   nicht nötig.
+
+### Proben-Mix
+
+Unter dem Player hat der Reiter Rehearsal den **Proben-Mix**: 16 Kanalzüge (LP-16-Ausgang 1 bis
+16) und einen Master. Er gilt für alle Songs. Jede Spur des geladenen Songs spielt auf dem Kanalzug
+ihres LP-16-Ausgangs (der Kanal in der `.songprj`); mehrere Spuren auf einem Ausgang werden in
+diesem Kanalzug summiert. Eine Spur mit einem Ausgang jenseits von 16 bleibt still und erzeugt eine
+Warnung. Der Kanalzug zeigt die Ausgangsnummer und den Spurnamen; ein Kanalzug ohne Spur ist
+ausgegraut („—“), lässt sich aber trotzdem bedienen.
+
+- Pro Kanalzug: Fader (−60 bis +6 dB, ganz unten „off“, Doppelklick = 0 dB), Panorama (−127 bis
+  +127 wie in uTool2, Constant-Power-Gesetz, Doppelklick = Mitte), **M**ute und **S**olo (ein
+  stummer Kanalzug bleibt auch mit Solo stumm) und eine Pegelanzeige mit dem Wert in dB.
+- Master: Fader, Pegelanzeige links und rechts und eine **CLIP**-LED. Sie leuchtet, wenn der Master
+  auf Vollaussteuerung begrenzen musste, und bleibt an, bis man sie anklickt.
+- Die Pegelanzeigen zeigen den Spitzenwert nach Fader und Mute, vor dem Panorama; sie fallen mit
+  20 dB pro Sekunde ab.
+- Änderungen wirken sofort während der Wiedergabe und ohne Knacken (die Pegel laufen über 10 ms).
+- **Presets** sind benannte Mixe: in der Liste wählen, **New** (neutral, „Mix N“), **Copy**,
+  **Rename**, **Delete** (das letzte lässt sich nicht löschen) und **Reset** (zurück auf neutral:
+  alle Kanalzüge 0 dB, Mitte, kein Mute/Solo, Master 0 dB). Namen müssen eindeutig und nicht leer
+  sein und dürfen kein Anführungszeichen `"` und keinen Zeilenumbruch enthalten.
+- Die Presets werden automatisch in `lp16-tool.toml` gespeichert (nach einer Änderung höchstens
+  einmal pro Sekunde und immer beim Beenden) als `mix.<n>.name`, `mix.<n>.master`,
+  `mix.<n>.ch<k> = "<Pegel> <Pan> <Mute> <Solo>"` (Pegel mit einer Nachkommastelle oder `off`) und
+  `mix_active`.
+- **Der Proben-Mix wird nicht exportiert.** Er landet nie in einer `.songprj`, einer Playlist,
+  einer `song.set` oder einer `.play` und nicht auf dem Stick. Die Mixer-Werte der Songs
+  (`monitor_level`, `monitor_pan`, `monitor_mute`, der Kopfhörer-Mix des LP-16) bleiben
+  unberührt und werden vom Player ignoriert.
 
 ### Audio output (Reiter Settings)
 
@@ -249,11 +284,13 @@ Dateien auf dem Stick beschädigt sein könnten. Gelöscht wird auf dem Stick ni
 | `src/lib.rs` | Dateiformate: `SongProject` (eine `.songprj`, daraus `song.set` und `validationcode`), `.play`, `.playlistprj`, WAV- und MIDI-Lesen, Import, Einstellungen |
 | `src/project_lib.rs` | Projektbibliothek: Songs und Playlists auflisten, anlegen, umbenennen, kopieren und löschen. Beim Umbenennen eines Songs zeigen die Playlists weiter auf ihn; ein Song, den eine Playlist nutzt, lässt sich nicht löschen. |
 | `src/sync.rs` | Stick Sync: `plan` (was ein Export tun würde), `run` (exportieren und prüfen). Kommandozeile und Oberfläche nutzen denselben Ablauf. |
-| `src/rehearsal.rs` | Abspiel-Engine des Probe-Players (Lesen, Mischen, Transport), unabhängig von jedem Audiogerät (Feature `player`) |
+| `src/mix.rs` | Der Proben-Mix: Kanalzüge, Presets, Config-Zeilen, Speicher-Timer |
+| `src/rehearsal.rs` | Abspiel-Engine des Probe-Players (Lesen, Mischen, Pegelanzeigen, Transport), unabhängig von jedem Audiogerät (Feature `player`) |
 | `src/audio_out.rs` | Adapter für den Audioausgang: Hosts, Geräte und Streams über `cpal`, Kanalverteilung, Testton, Befehle und Status zwischen Oberfläche und Audio-Callback (Feature `player`) |
 | `src/main.rs` | Kommandozeile |
 | `src/gui_app.rs` | Oberfläche (egui 0.27) |
 | `src/gui_rehearsal.rs` | Der Reiter Rehearsal |
+| `src/gui_mixer.rs` | Der Proben-Mix im Reiter Rehearsal |
 | `src/gui_audio.rs` | Der Bereich „Audio output“ im Reiter Settings |
 
 Es gibt keine Abhängigkeiten außer `eframe` und `rfd` für die Oberfläche sowie `cpal` und `rtrb`
@@ -297,7 +334,7 @@ gibt es nur „LP-16“.
 
 - Stereo-Songs und -Playlists (nur Multitrack)
 - Mixer bzw. Pegel und Panorama pro Spur im Song (vorhandene Werte aus der `.songprj` werden
-  aber übernommen). Für den Probe-Player ist ein Proben-Mix geplant; der Song-Mixer bleibt
+  aber übernommen). Der Probe-Player hat seinen eigenen Proben-Mix (siehe oben); der Song-Mixer bleibt
   nicht umgesetzt.
 - Song-Editor: Name, Sampling Rate und Resolution eines bestehenden Songs ändern
 - Playlist-Editor: Start Mode und Delay pro Song einstellen (vorhandene Werte bleiben erhalten)

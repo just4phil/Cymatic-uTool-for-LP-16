@@ -37,7 +37,7 @@ interface modelled on uTool2 and a command line.
   [Import](#import-batch-import-of-songs).
 - **Edit Target:** the contents of the stick as a tree, with details on songs and playlists.
 - **Rehearsal player (first version):** plays a song of the library on an audio output of your
-  choice, see [Rehearsal player](#rehearsal-player).
+  choice, with a 16-channel rehearsal mix, see [Rehearsal player](#rehearsal-player).
 
 ## Requirements
 
@@ -85,6 +85,11 @@ audio_device = ""
 audio_out_left = "1"
 audio_out_right = "2"
 audio_buffer = "0"
+# rehearsal mix presets (written by the program, see "Rehearsal mix")
+mix.1.name = "Default"
+mix.1.master = "0.0"
+mix.1.ch1 = "0.0 0 0 0"
+mix_active = "Default"
 ```
 
 Layout of the base folder:
@@ -106,8 +111,8 @@ Back up `Recording\` before the first export to a real stick.
 ## Rehearsal player
 
 The player plays a song of the project library on the **audio output** you choose in the
-Settings tab (WASAPI), for rehearsing at home. It is the first version; the playlist, the
-rehearsal mix, MIDI and ASIO follow.
+Settings tab (WASAPI), for rehearsing at home. It is the first version; the playlist,
+MIDI and ASIO follow.
 
 - In the Home tab, right-click a song and choose **Play in Rehearsal**. This loads the song,
   switches to the **Rehearsal** tab and starts playing.
@@ -129,8 +134,7 @@ rehearsal mix, MIDI and ASIO follow.
 
   Up/Down are reserved for playlists.
 - All tracks are streamed from disk in sync (nothing is loaded into memory up front) and mixed
-  to stereo. For now every track has 0 dB and pan centre (constant power law); the mix is
-  limited to full scale.
+  to stereo by the [rehearsal mix](#rehearsal-mix); the result is limited to full scale.
 - The stream is opened with the **sample rate of the song**. If the next song has another rate,
   the stream is closed and opened again with the new rate. There is no resampling; the song is
   only not played if the device does not support its rate (the tab says so).
@@ -142,6 +146,35 @@ rehearsal mix, MIDI and ASIO follow.
 - Without a usable audio device the tab shows a message, and Play tries again. If the device
   disappears during playback, playback stops, the position stays and the tab says "Audio device
   lost"; after reconnecting, press Play and the output is opened again, no restart needed.
+
+### Rehearsal mix
+
+Below the player, the Rehearsal tab has the **rehearsal mix**: 16 channel strips (LP-16 output
+1 to 16) and a master. It applies to all songs. Each track of the loaded song plays on the strip
+of its LP-16 output (the channel in the `.songprj`); several tracks on one output are summed in
+that strip. A track with an output beyond 16 stays silent and adds a warning. The strip shows
+the output number and the track name; a strip without a track is greyed out ("—") but can still
+be used.
+
+- Per strip: fader (−60 to +6 dB, the very bottom is "off", double-click = 0 dB), pan
+  (−127 to +127 like uTool2, constant power law, double-click = centre), **M**ute and **S**olo
+  (a muted strip stays silent even with Solo) and a level meter with the value in dB.
+- Master: fader, meter for left and right and a **CLIP** LED. It lights when the master had to
+  limit the signal to full scale and stays on until you click it.
+- The meters show the peak after fader and mute, before pan; they fall by 20 dB per second.
+- Changes act at once during playback without clicks (the gains move over 10 ms).
+- **Presets** are named mixes: choose one in the list, **New** (neutral, "Mix N"), **Copy**,
+  **Rename**, **Delete** (the last one cannot be deleted) and **Reset** (back to neutral: all
+  strips 0 dB, centre, no Mute/Solo, master 0 dB). Names must be unique and not empty, and must
+  not contain a double quote or a line break.
+- The presets are saved automatically in `lp16-tool.toml` (at most once per second after a
+  change, and always when the program ends) as `mix.<n>.name`, `mix.<n>.master`,
+  `mix.<n>.ch<k> = "<level> <pan> <mute> <solo>"` (level with one decimal or `off`) and
+  `mix_active`.
+- **The rehearsal mix is not exported.** It never goes into a `.songprj`, a playlist, a
+  `song.set` or a `.play`, and not onto the stick. The mixer values of the songs
+  (`monitor_level`, `monitor_pan`, `monitor_mute`, the headphone mix of the LP-16) stay untouched
+  and are ignored by the player.
 
 ### Audio output (Settings tab)
 
@@ -247,11 +280,13 @@ damaged. Nothing is deleted on the stick.
 | `src/lib.rs` | File formats: `SongProject` (one `.songprj`, producing `song.set` and the `validationcode`), `.play`, `.playlistprj`, reading WAV and MIDI, import, settings |
 | `src/project_lib.rs` | Project Library: list, create, rename, copy and delete songs and playlists. Renaming a song keeps the playlists pointing at it; a song that a playlist uses cannot be deleted. |
 | `src/sync.rs` | Stick Sync: `plan` (what an export would do), `run` (export and verify). Command line and user interface use the same process. |
-| `src/rehearsal.rs` | Playback engine of the rehearsal player (reading, mixing, transport), independent of any audio device (feature `player`) |
+| `src/mix.rs` | The rehearsal mix: strips, presets, config lines, saving timer |
+| `src/rehearsal.rs` | Playback engine of the rehearsal player (reading, mixing, meters, transport), independent of any audio device (feature `player`) |
 | `src/audio_out.rs` | Audio output adapter: hosts, devices and streams via `cpal`, channel distribution, test tone, commands and status between the user interface and the audio callback (feature `player`) |
 | `src/main.rs` | Command line |
 | `src/gui_app.rs` | User interface (egui 0.27) |
 | `src/gui_rehearsal.rs` | The Rehearsal tab |
+| `src/gui_mixer.rs` | The rehearsal mix in the Rehearsal tab |
 | `src/gui_audio.rs` | The "Audio output" area of the Settings tab |
 
 There are no dependencies apart from `eframe` and `rfd` for the user interface and `cpal` and
@@ -294,7 +329,7 @@ particular songs and playlists from the reference library (see `src/lib.rs`).
 
 - Stereo songs and playlists (multitrack only)
 - Mixer, i.e. level and pan per track in the song (existing values from the `.songprj` are kept,
-  though). A rehearsal mix is planned for the rehearsal player; the song mixer stays
+  though). The rehearsal player has its own rehearsal mix (see above); the song mixer stays
   unimplemented.
 - Song editor: changing the name, sampling rate and resolution of an existing song
 - Playlist editor: setting start mode and delay per song (existing values are kept)
