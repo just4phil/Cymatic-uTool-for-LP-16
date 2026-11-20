@@ -17,6 +17,7 @@
 //! the callback fills with `try_lock` after each block. A stream error
 //! (device unplugged) ends up in `Player::error`.
 
+use crate::midi_out::{MidiLink, MidiSink};
 use crate::mix::MixParams;
 use crate::rehearsal::{Engine, Levels, LoadedSong, PlayState, Status};
 use crate::rehearsal_queue::{Opener, OpenerThread, QueueEntry};
@@ -27,6 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 /// Sample rate of the test tone (if the device cannot do it: its default).
 pub const TONE_RATE: u32 = 48000;
@@ -358,6 +360,10 @@ fn find_device(host: &cpal::Host, name: &str) -> Result<cpal::Device, String> {
 /// Something that fills the device buffer in the audio callback.
 pub trait Source: Send + 'static {
     fn fill<T: OutSample>(&mut self, out: &mut [T], channels: usize);
+
+    /// Time until the block that `fill` is called for is played (from the
+    /// stream timestamp); called before every `fill`.
+    fn set_latency(&mut self, _latency: Duration) {}
 }
 
 /// What runs in the audio callback.
@@ -371,6 +377,8 @@ pub struct Callback {
     stereo: Vec<f32>,
     left: usize,
     right: usize,
+    /// the queue to the MIDI thread; None without MIDI
+    midi: Option<MidiSink>,
 }
 
 impl Callback {
@@ -380,7 +388,13 @@ impl Callback {
         trash: Sender<Trash>,
         status: Arc<Mutex<Status>>,
     ) -> Callback {
-        Callback { engine, commands, trash, status, stereo: vec![0.0; 16384], left: 1, right: 2 }
+        Callback { engine, commands, trash, status, stereo: vec![0.0; 16384], left: 1, right: 2, midi: None }
+    }
+
+    /// Hand the MIDI messages of every block to the MIDI thread.
+    pub fn with_midi(mut self, sink: Option<MidiSink>) -> Callback {
+        self.midi = sink;
+        self
     }
 
     /// The device channels (1-based) of the left and right side.
@@ -465,7 +479,11 @@ impl Callback {
         if self.stereo.len() < need {
             self.stereo.resize(need, 0.0); // only if the device asks for more than usual
         }
-        self.engine.render(&mut self.stereo[..need]);
+        let rate = self.engine.output_rate();
+        let msgs = self.engine.render(&mut self.stereo[..need]);
+        if let (Some(sink), false) = (self.midi.as_mut(), msgs.is_empty()) {
+            sink.push_block(Instant::now(), msgs, rate);
+        }
         self.empty_garbage();
         distribute(&self.stereo[..need], out, channels, self.left, self.right);
         // the peaks are only taken when they are really handed on; the ones
@@ -481,6 +499,12 @@ impl Callback {
 impl Source for Callback {
     fn fill<T: OutSample>(&mut self, out: &mut [T], channels: usize) {
         Callback::fill(self, out, channels)
+    }
+
+    fn set_latency(&mut self, latency: Duration) {
+        if let Some(sink) = self.midi.as_mut() {
+            sink.set_latency(latency);
+        }
     }
 }
 
@@ -555,7 +579,13 @@ where
 {
     device.build_output_stream(
         config,
-        move |data: &mut [T], _: &cpal::OutputCallbackInfo| source.fill(data, channels),
+        move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
+            let ts = info.timestamp();
+            if let Some(latency) = ts.playback.duration_since(&ts.callback) {
+                source.set_latency(latency.min(Duration::from_secs(1)));
+            }
+            source.fill(data, channels)
+        },
         on_error,
         None,
     )
@@ -660,7 +690,9 @@ pub struct Player {
 impl Player {
     /// Open the output of `settings` with sample rate `rate` (that of the
     /// song) and start the stream. The error text is meant for the user.
-    pub fn open(settings: &AudioSettings, rate: u32) -> Result<Player, String> {
+    /// With a `midi` link the MIDI messages of the song go to its port,
+    /// in time with the audio.
+    pub fn open(settings: &AudioSettings, rate: u32, midi: Option<&MidiLink>) -> Result<Player, String> {
         let status = Arc::new(Mutex::new(Engine::new(rate).status()));
         let lost: Lost = Arc::new(Mutex::new(None));
         // `make` runs once per build attempt; the ends of the queues of
@@ -671,7 +703,9 @@ impl Player {
             let (trash_tx, trash_rx) = channel::<Trash>();
             let engine = Engine::new(rate);
             ends = Some((commands, trash_rx, engine.opener()));
-            Callback::new(engine, rx, trash_tx, status.clone()).with_outputs(settings.left, settings.right)
+            Callback::new(engine, rx, trash_tx, status.clone())
+                .with_outputs(settings.left, settings.right)
+                .with_midi(midi.map(|l| l.sink()))
         })?;
         let (commands, trash_rx, opener) = ends.ok_or("the audio stream was not created")?;
         let reaper = std::thread::Builder::new()
@@ -975,13 +1009,13 @@ mod tests {
     fn missing_host_or_device_gives_a_clear_message() {
         assert!(list_hosts().contains(&default_host_name()));
         let gone = AudioSettings { device: "Gibt es nicht".into(), ..AudioSettings::default() };
-        let e = Player::open(&gone, 48000).err().expect("a device that does not exist cannot be opened");
+        let e = Player::open(&gone, 48000, None).err().expect("a device that does not exist cannot be opened");
         assert!(e.starts_with("Cannot open Gibt es nicht: "), "{}", e);
         assert!(e.ends_with("It may be in use by another application (e.g. your DAW)."), "{}", e);
         let e = start_test_tone(&gone).err().expect("no tone without the device");
         assert!(e.starts_with("Cannot open Gibt es nicht: "), "{}", e);
         let no_host = AudioSettings { host: "NoSuchHost".into(), ..AudioSettings::default() };
-        let e = Player::open(&no_host, 48000).err().unwrap();
+        let e = Player::open(&no_host, 48000, None).err().unwrap();
         assert!(e.contains("NoSuchHost"), "{}", e);
         assert!(list_devices("NoSuchHost").is_err());
     }

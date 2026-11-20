@@ -44,8 +44,9 @@
 //! garbage list that the caller empties (dropping one joins its thread).
 
 use crate::mix::{MixParams, StripGains, STRIPS};
+use crate::rehearsal_midi::{ChaseState, MidiList, MidiMsg, MidiStatus, MidiTrack};
 use crate::rehearsal_queue::{find_path, Opener, QueueEntry, Request};
-use crate::{SongProject, WavReader};
+use crate::{read_midi_events, SongProject, WavReader};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -145,6 +146,8 @@ pub struct Status {
     pub needs_rate: Option<u32>,
     /// queue: one line per entry that cannot be played (skipped)
     pub queue_warnings: Arc<Vec<String>>,
+    /// the MIDI of the current song
+    pub midi: MidiStatus,
 }
 
 /// "m:ss" for a time in seconds (rounded down).
@@ -325,6 +328,8 @@ pub struct LoadedSong {
     thread: Option<JoinHandle<()>>,
     /// bit n: a track plays on strip n
     strip_mask: u16,
+    /// the events of the MIDI file; None without a (readable) file
+    midi: Option<MidiTrack>,
     // transport
     generation: u64,
     pos: u64,
@@ -376,6 +381,20 @@ impl LoadedSong {
         }
         // 2 s, rounded up to whole read blocks so that the ring can really be full
         let capacity = (2 * song_rate as usize).div_ceil(READ_BLOCK).max(1) * READ_BLOCK;
+        let midi = match project.midi_path() {
+            None => None,
+            Some(path) => match read_midi_events(&path) {
+                Some(events) => Some(MidiTrack::from_events(&events, song_rate)),
+                None => {
+                    let file = std::path::Path::new(&path)
+                        .file_name()
+                        .map(|f| f.to_string_lossy().into_owned())
+                        .unwrap_or(path);
+                    warnings.push(format!("MIDI file unreadable: {}", file));
+                    None
+                }
+            },
+        };
         let shared = Arc::new(Shared {
             generation: AtomicU64::new(1),
             start: AtomicU64::new(0),
@@ -423,6 +442,7 @@ impl LoadedSong {
             shared,
             thread,
             strip_mask,
+            midi,
             generation: 1,
             pos: 0,
             primed: false,
@@ -453,6 +473,9 @@ impl LoadedSong {
         }
         self.pos = frame;
         self.primed = false;
+        if let Some(m) = self.midi.as_mut() {
+            m.seek(frame);
+        }
         for t in self.tracks.iter_mut() {
             t.synced = false;
             t.debt = 0;
@@ -460,9 +483,25 @@ impl LoadedSong {
     }
 
     /// The fade-out is over (or the song ended during it): do the jump.
-    fn finish_fade_out(&mut self) {
+    /// Returns the MIDI channels that need All Notes Off now.
+    fn finish_fade_out(&mut self) -> u16 {
+        let notes = self.notes_mask();
         self.seek_to(self.pending);
         self.fade = Fade::Wait;
+        notes
+    }
+
+    /// MIDI channels that need All Notes Off when the song stops sounding.
+    fn notes_mask(&self) -> u16 {
+        self.midi.as_ref().map(|m| m.notes_mask()).unwrap_or(0)
+    }
+
+    /// The events are for this output rate (in place, no allocation).
+    fn midi_rate(&mut self, rate: u32) {
+        let pos = self.pos;
+        if let Some(m) = self.midi.as_mut() {
+            m.set_rate(rate, pos);
+        }
     }
 
     /// Position shown to the user: the target of a jump that is still fading out.
@@ -587,6 +626,14 @@ pub struct Engine {
     /// replaced songs; the owner drops them (`take_garbage`)
     garbage: Vec<LoadedSong>,
     skipped: Arc<Vec<String>>,
+    // MIDI
+    /// the messages of the last `render` (fixed capacity)
+    midi: MidiList,
+    chase: Box<ChaseState>,
+    /// channels that get All Notes Off at the start of the next block
+    ano_mask: u16,
+    midi_sent: u64,
+    last_midi: Option<Instant>,
 }
 
 /// The lines of `Status::queue_warnings`.
@@ -629,7 +676,17 @@ impl Engine {
             opener: Arc::new(Opener::default()),
             garbage: Vec::with_capacity(GARBAGE_SLOTS),
             skipped: Arc::new(Vec::new()),
+            midi: MidiList::new(),
+            chase: Box::new(ChaseState::new()),
+            ano_mask: 0,
+            midi_sent: 0,
+            last_midi: None,
         }
+    }
+
+    /// The rate the engine renders at.
+    pub fn output_rate(&self) -> u32 {
+        self.output_rate
     }
 
     /// The mailbox through which the engine gets songs opened. Whoever
@@ -649,6 +706,12 @@ impl Engine {
         self.ramp_done = self.ramp_len;
         self.ramp_start = self.ramp_target;
         self.gains = self.ramp_target;
+        if let Some(song) = self.song.as_mut() {
+            song.midi_rate(rate);
+        }
+        if let Some((_, song)) = self.slot.as_mut() {
+            song.midi_rate(rate);
+        }
         if let Some(song) = self.song.as_mut() {
             if song.song_rate == rate && song.warnings.iter().any(|w| w.starts_with("Song sample rate")) {
                 let kept: Vec<String> =
@@ -677,16 +740,26 @@ impl Engine {
                 song.song_rate, self.output_rate
             ));
         }
+        song.midi_rate(self.output_rate);
         self.state = PlayState::Stopped;
         self.underruns = 0;
-        self.song.replace(song)
+        self.midi_sent = 0;
+        let old = self.song.replace(song);
+        if let Some(o) = &old {
+            self.ano_mask |= o.notes_mask();
+        }
+        old
     }
 
     /// Remove the current song, see `set_song` about who drops it.
     pub fn take_song(&mut self) -> Option<LoadedSong> {
         self.leave_queue();
         self.state = PlayState::Empty;
-        self.song.take()
+        let old = self.song.take();
+        if let Some(o) = &old {
+            self.ano_mask |= o.notes_mask();
+        }
+        old
     }
 
     /// Drop the current song (ends its thread, releases the files).
@@ -714,6 +787,7 @@ impl Engine {
 
     /// Hand a replaced song to the garbage list (no allocation, no join).
     fn discard(&mut self, song: LoadedSong) {
+        self.ano_mask |= song.notes_mask();
         if self.garbage.len() < GARBAGE_SLOTS {
             self.garbage.push(song);
         }
@@ -878,7 +952,9 @@ impl Engine {
     }
 
     /// `song` (queue entry `idx`) becomes the current song.
-    fn install(&mut self, idx: usize, song: LoadedSong) {
+    fn install(&mut self, idx: usize, mut song: LoadedSong) {
+        song.midi_rate(self.output_rate);
+        self.midi_sent = 0;
         if let Some(old) = self.song.replace(song) {
             self.discard(old);
         }
@@ -959,7 +1035,12 @@ impl Engine {
     fn end_of_song(&mut self) {
         let next = self.cur.and_then(|c| self.next_readable(c + 1));
         match next {
-            None => self.state = PlayState::Ended,
+            None => {
+                self.state = PlayState::Ended;
+                if let Some(s) = &self.song {
+                    self.ano_mask |= s.notes_mask();
+                }
+            }
             Some(n) => {
                 let e = &self.queue[n];
                 if e.auto_start() {
@@ -1004,7 +1085,12 @@ impl Engine {
 
     pub fn pause(&mut self) {
         match self.state {
-            PlayState::Playing => self.state = PlayState::Paused,
+            PlayState::Playing => {
+                self.state = PlayState::Paused;
+                if let Some(song) = &self.song {
+                    self.ano_mask |= song.notes_mask();
+                }
+            }
             // the countdown is cancelled; Play starts the song
             PlayState::Countdown => {
                 self.state = PlayState::Waiting;
@@ -1014,7 +1100,7 @@ impl Engine {
         }
         if let Some(song) = self.song.as_mut() {
             if matches!(song.fade, Fade::Out(_)) {
-                song.finish_fade_out(); // the sound is gone anyway
+                self.ano_mask |= song.finish_fade_out(); // the sound is gone anyway
             }
         }
     }
@@ -1063,7 +1149,7 @@ impl Engine {
                     };
                     song.pending = target;
                     if done >= fade_len {
-                        song.finish_fade_out();
+                        self.ano_mask |= song.finish_fade_out();
                     } else {
                         song.fade = Fade::Out(done);
                     }
@@ -1113,6 +1199,9 @@ impl Engine {
     /// follows anyway.
     pub fn stop(&mut self) {
         if let Some(song) = self.song.as_mut() {
+            if self.state != PlayState::Stopped {
+                self.ano_mask |= song.notes_mask();
+            }
             song.fade = Fade::None;
             song.seek_to(0);
             self.state = PlayState::Stopped;
@@ -1125,8 +1214,22 @@ impl Engine {
     /// Fill `out` (interleaved stereo, 2 x frames) completely: the mix
     /// while playing, silence otherwise. No allocation, no file access, no
     /// blocking lock.
-    pub fn render(&mut self, out: &mut [f32]) {
+    ///
+    /// Returns the MIDI messages of the block, each with its frame in the
+    /// block (`MidiMsg::offset`), in the order of the file. A message that
+    /// is due on frame f of the song comes with the block that contains f.
+    /// After a jump (and when a song starts from a position after 0) the
+    /// block in which the audio starts again begins with the chasing
+    /// messages at offset 0; All Notes Off (after a stop, a pause, a jump
+    /// or a song change) is at offset 0 of the next block. The slice is
+    /// valid until the next call.
+    pub fn render(&mut self, out: &mut [f32]) -> &[MidiMsg] {
         out.fill(0.0);
+        self.midi.clear();
+        if self.ano_mask != 0 {
+            self.midi.all_notes_off(self.ano_mask, 0);
+            self.ano_mask = 0;
+        }
         self.poll_opener();
         self.maybe_preload();
         let frames = out.len() / 2;
@@ -1145,7 +1248,7 @@ impl Engine {
             // a jump to the end sets `Ended` at once but still fades out
             let fading_out = self.song.as_ref().map(|s| matches!(s.fade, Fade::Out(_))).unwrap_or(false);
             if self.state == PlayState::Playing || fading_out {
-                let (used, ended) = self.render_playing(&mut out[done * 2..]);
+                let (used, ended) = self.render_playing(&mut out[done * 2..], done);
                 done += used;
                 if ended {
                     self.end_of_song();
@@ -1167,12 +1270,18 @@ impl Engine {
                 break;
             }
         }
+        if !self.midi.is_empty() {
+            self.midi_sent += self.midi.len() as u64;
+            self.last_midi = Some(Instant::now());
+        }
+        self.midi.as_slice()
     }
 
     /// Mix the current song into `out`. Returns the frames of `out` that
     /// belong to this song and whether the song has ended (the rest of
-    /// `out` is then for what follows).
-    fn render_playing(&mut self, out: &mut [f32]) -> (usize, bool) {
+    /// `out` is then for what follows). `base`: the frame of the block that
+    /// `out` starts at (for the offsets of the MIDI messages).
+    fn render_playing(&mut self, out: &mut [f32], base: usize) -> (usize, bool) {
         let fade_len = self.fade_len;
         let frames = out.len() / 2;
         let Some(song) = self.song.as_mut() else { return (frames, false) };
@@ -1185,6 +1294,9 @@ impl Engine {
                 return (frames, false); // waiting is no dropout
             }
             song.primed = true;
+            if let Some(m) = song.midi.as_mut() {
+                m.begin(song.pos, &mut self.chase, &mut self.midi, base);
+            }
             if song.fade == Fade::Wait {
                 song.fade = Fade::In(0);
             }
@@ -1195,6 +1307,9 @@ impl Engine {
             let mut m = (frames - done).min(MIX_CHUNK).min((song.length_frames - song.pos) as usize);
             if let Fade::Out(d) | Fade::In(d) = song.fade {
                 m = m.min(fade_len - d);
+            }
+            if let Some(mt) = song.midi.as_mut() {
+                mt.emit(song.pos, song.pos + m as u64, &mut self.midi, base + done);
             }
             for c in 0..STRIPS {
                 if song.strip_mask & (1 << c) != 0 {
@@ -1261,7 +1376,7 @@ impl Engine {
             done += m;
             match song.fade {
                 Fade::Out(d) if d + m >= fade_len => {
-                    song.finish_fade_out();
+                    self.ano_mask |= song.finish_fade_out();
                     break; // silence until the new position is ready
                 }
                 Fade::Out(d) => song.fade = Fade::Out(d + m),
@@ -1274,7 +1389,7 @@ impl Engine {
             self.underruns += 1;
         }
         if matches!(song.fade, Fade::Out(_)) && song.pos >= song.length_frames {
-            song.finish_fade_out(); // the song ended during the fade-out
+            self.ano_mask |= song.finish_fade_out(); // the song ended during the fade-out
             (frames, false)
         } else if song.fade != Fade::Wait && song.pos >= song.length_frames {
             (done, true)
@@ -1313,6 +1428,7 @@ impl Engine {
                 countdown_seconds: 0.0,
                 needs_rate: None,
                 queue_warnings: self.no_warnings.clone(),
+                midi: MidiStatus { has_file: false, events_sent: self.midi_sent, last_event: self.last_midi },
             },
             Some(s) => {
                 let rate = s.song_rate.max(1) as f64;
@@ -1338,6 +1454,11 @@ impl Engine {
                     countdown_seconds: 0.0,
                     needs_rate: if rate_differs { Some(s.song_rate) } else { None },
                     queue_warnings: self.no_warnings.clone(),
+                    midi: MidiStatus {
+                        has_file: !opening && s.midi.is_some(),
+                        events_sent: self.midi_sent,
+                        last_event: self.last_midi,
+                    },
                 }
             }
         };
@@ -2766,6 +2887,388 @@ pub(crate) mod tests {
         pump(&mut e, 2400, 500);
         assert_eq!(e.status().state, PlayState::Ended);
         assert_eq!(e.status().index, None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // -- MIDI ------------------------------------------------------------------
+
+    use crate::rehearsal_queue::WAIT_MODE;
+    use crate::tests::{smf, trk, write_mid, EOT};
+
+    /// 8 kHz keeps the long songs of the chasing tests small.
+    const MR: u32 = 8000;
+
+    /// Track body from (absolute tick, event) pairs; 480 ticks per quarter
+    /// at 120 BPM are 960 ticks per second.
+    fn abs_trk(events: &[(u32, &[u8])]) -> Vec<u8> {
+        let mut last = 0;
+        let mut list: Vec<(u32, &[u8])> = Vec::new();
+        for (t, e) in events {
+            list.push((t - last, e));
+            last = *t;
+        }
+        list.push((0, EOT));
+        trk(&list)
+    }
+
+    fn sec(s: f64) -> u32 {
+        (s * 960.0).round() as u32
+    }
+
+    /// A song of `seconds` at `rate` with the MIDI file `mid`.
+    fn midi_song(dir: &Path, rate: u32, seconds: f64, mid: &[u8]) -> SongProject {
+        let wav = wav24(dir, "m", rate, 1, &constant((seconds * rate as f64) as usize, 0.25));
+        let mut prj = song(dir, &[&wav]);
+        prj.midi_file = write_mid(dir, "song.mid", mid);
+        prj
+    }
+
+    fn midi_engine(prj: &SongProject, rate: u32) -> Engine {
+        let mut e = Engine::new(rate);
+        e.load(prj);
+        assert!(e.wait_ready(WAIT));
+        e
+    }
+
+    /// Render `total` frames in blocks of `block`; every message as
+    /// (frame counted from the first block, bytes).
+    fn midi_run(e: &mut Engine, total: usize, block: usize) -> Vec<(usize, Vec<u8>)> {
+        let mut all = Vec::new();
+        let mut buf = vec![0f32; block * 2];
+        let mut done = 0;
+        while done < total {
+            let n = block.min(total - done);
+            for m in e.render(&mut buf[..n * 2]) {
+                assert!(m.offset < n, "offset {} in a block of {}", m.offset, n);
+                all.push((done + m.offset, m.data().to_vec()));
+            }
+            done += n;
+        }
+        all
+    }
+
+    fn bytes(list: &[(usize, Vec<u8>)]) -> Vec<Vec<u8>> {
+        list.iter().map(|m| m.1.clone()).collect()
+    }
+
+    const CC69: u8 = 0x45;
+    const ANO1: [u8; 3] = [0xb0, 123, 0];
+
+    #[test]
+    fn a_midi_event_lands_on_the_right_frame_after_a_tempo_change_at_both_rates() {
+        // 120 BPM, from tick 480 (0.5 s) on 60 BPM: tick 720 is at 1.0 s
+        let tempo =
+            trk(&[(0, &[0xff, 0x51, 0x03, 0x07, 0xa1, 0x20]), (480, &[0xff, 0x51, 0x03, 0x0f, 0x42, 0x40]), (0, EOT)]);
+        let ev = trk(&[(720, &[0xb0, CC69, 1]), (0, EOT)]);
+        let mid = smf(1, 480, &[tempo, ev]);
+        for (rate, frame) in [(48000u32, 48000usize), (44100, 44100)] {
+            let dir = temp_dir(&format!("mi-tempo-{}", rate));
+            let prj = midi_song(&dir, rate, 1.5, &mid);
+            let mut e = midi_engine(&prj, rate);
+            e.play();
+            let got = midi_run(&mut e, 70000, 512);
+            assert_eq!(got, vec![(frame, vec![0xb0, CC69, 1])], "rate {}", rate);
+            // the offset in the block: the frame inside its block of 512
+            let mut e = midi_engine(&prj, rate);
+            e.play();
+            let mut buf = vec![0f32; 1024];
+            let mut hit = None;
+            for block in 0..140 {
+                for m in e.render(&mut buf) {
+                    hit = Some((block * 512 + m.offset, m.offset));
+                }
+            }
+            assert_eq!(hit, Some((frame, frame % 512)));
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn block_sizes_1_37_and_512_give_the_same_events_on_the_same_frames() {
+        // 1 tick = 50 frames at 48 kHz
+        let t = abs_trk(&[
+            (0, &[0xc0, 4]),
+            (0, &[0xb0, CC69, 1]),
+            (1, &[0xb0, CC69, 2]),
+            (7, &[0xb1, 7, 100]),
+            (13, &[0x90, 60, 90]),
+            (13, &[0x80, 60, 0]),
+            (40, &[0xb0, CC69, 3]),
+        ]);
+        let dir = temp_dir("mi-blocks");
+        let prj = midi_song(&dir, RATE, 0.1, &smf(0, 480, &[t]));
+        let mut runs = Vec::new();
+        for block in [1usize, 37, 512] {
+            let mut e = midi_engine(&prj, RATE);
+            e.play();
+            runs.push(midi_run(&mut e, 4000, block));
+        }
+        assert_eq!(runs[0].len(), 7);
+        assert_eq!(runs[0].iter().map(|m| m.0).collect::<Vec<_>>(), vec![0, 0, 50, 350, 650, 650, 2000]);
+        assert_eq!(runs[0], runs[1]);
+        assert_eq!(runs[0], runs[2]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// bank, program, snapshots, a CC on channel 10, notes, pitch bend
+    fn chase_file() -> Vec<u8> {
+        let t = abs_trk(&[
+            (0, &[0xb0, 0, 3]),
+            (0, &[0xb0, 32, 5]),
+            (0, &[0xc0, 9]),
+            (sec(1.0), &[0xb0, CC69, 1]),
+            (sec(2.0), &[0xb9, 22, 7]),
+            (sec(3.0), &[0x90, 60, 100]),
+            (sec(3.5), &[0x80, 60, 0]),
+            (sec(5.0), &[0xb0, CC69, 2]),
+            (sec(6.0), &[0xe0, 0, 64]),
+            (sec(9.0), &[0xb0, CC69, 4]),
+            (sec(11.0), &[0xb0, CC69, 5]),
+            (sec(12.0), &[0xb9, 22, 9]),
+        ]);
+        smf(0, 480, &[t])
+    }
+
+    #[test]
+    fn jumping_chases_bank_program_and_the_last_controller_values_without_notes() {
+        let dir = temp_dir("mi-chase");
+        let prj = midi_song(&dir, MR, 12.5, &chase_file());
+        let mut e = midi_engine(&prj, MR);
+        e.play();
+        let start = midi_run(&mut e, 400, 128);
+        assert_eq!(bytes(&start), vec![vec![0xb0, 0, 3], vec![0xb0, 32, 5], vec![0xc0, 9]], "from 0: the events of frame 0");
+        e.pause();
+        assert_eq!(bytes(&midi_run(&mut e, 128, 128)), vec![ANO1.to_vec()], "the file has notes on channel 1");
+        e.seek(10.0);
+        assert!(e.wait_ready(WAIT));
+        e.play();
+        let mut buf = vec![0f32; 256];
+        let msgs: Vec<MidiMsg> = e.render(&mut buf).to_vec();
+        let got: Vec<Vec<u8>> = msgs.iter().map(|m| m.data().to_vec()).collect();
+        assert_eq!(
+            got,
+            vec![vec![0xb0, 0, 3], vec![0xb0, 32, 5], vec![0xc0, 9], vec![0xb0, CC69, 4], vec![0xb9, 22, 7]]
+        );
+        assert!(msgs.iter().all(|m| m.offset == 0), "chasing comes at offset 0 of the first block");
+        // the events after the jump follow in time
+        let rest = midi_run(&mut e, 2 * MR as usize + 4000, 512);
+        // the song ended: the notes are ended, too
+        assert_eq!(bytes(&rest), vec![vec![0xb0, CC69, 5], vec![0xb9, 22, 9], ANO1.to_vec()]);
+        let st = e.status();
+        assert!(st.midi.has_file && st.midi.events_sent == 3 + 1 + 5 + 3, "{:?}", st.midi);
+        assert!(st.midi.last_event.is_some());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_jump_while_playing_sends_all_notes_off_before_the_chasing() {
+        let dir = temp_dir("mi-chase-play");
+        let prj = midi_song(&dir, MR, 12.5, &chase_file());
+        let mut e = midi_engine(&prj, MR);
+        e.play();
+        midi_run(&mut e, 400, 100);
+        e.seek(5.5);
+        let mut got = Vec::new();
+        for _ in 0..3000 {
+            got.extend(bytes(&midi_run(&mut e, 64, 64)));
+            if got.contains(&vec![0xb9, 22, 7]) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            got,
+            vec![
+                ANO1.to_vec(),
+                vec![0xb0, 0, 3],
+                vec![0xb0, 32, 5],
+                vec![0xc0, 9],
+                vec![0xb0, CC69, 2],
+                vec![0xb9, 22, 7]
+            ]
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_event_on_the_jump_position_is_sent_once_as_a_normal_event() {
+        let t = abs_trk(&[(sec(1.0), &[0xb0, CC69, 1]), (sec(2.0), &[0xb0, CC69, 3])]);
+        let dir = temp_dir("mi-on-target");
+        let prj = midi_song(&dir, MR, 4.0, &smf(0, 480, &[t]));
+        let mut e = midi_engine(&prj, MR);
+        e.seek(2.0);
+        assert!(e.wait_ready(WAIT));
+        e.play();
+        let mut all = midi_run(&mut e, 256, 256);
+        assert_eq!(all, vec![(0, vec![0xb0, CC69, 1]), (0, vec![0xb0, CC69, 3])], "the state before, then the event");
+        all.extend(midi_run(&mut e, 2 * MR as usize, 500));
+        assert_eq!(bytes(&all).iter().filter(|m| **m == vec![0xb0, CC69, 3]).count(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn starting_at_0_has_no_chasing_and_sends_the_events_of_frame_0() {
+        let t = abs_trk(&[(0, &[0xb0, 0, 2]), (0, &[0xc0, 7]), (sec(0.5), &[0xb0, CC69, 1])]);
+        let dir = temp_dir("mi-start");
+        let prj = midi_song(&dir, MR, 1.0, &smf(0, 480, &[t]));
+        let mut e = midi_engine(&prj, MR);
+        e.play();
+        let first = midi_run(&mut e, 100, 100);
+        assert_eq!(first, vec![(0, vec![0xb0, 0, 2]), (0, vec![0xc0, 7])]);
+        let all = midi_run(&mut e, 2 * MR as usize, 400);
+        assert_eq!(bytes(&all), vec![vec![0xb0, CC69, 1]]);
+        // Stop and Play again: from 0, the events of frame 0 once more, no chasing
+        e.stop();
+        e.play();
+        assert!(e.wait_ready(WAIT));
+        let again = midi_run(&mut e, 100, 100);
+        assert_eq!(bytes(&again), vec![vec![0xb0, 0, 2], vec![0xc0, 7]]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pause_and_continue_loses_and_doubles_no_event() {
+        let list: Vec<(u32, Vec<u8>)> = (0..6).map(|i| (sec(i as f64 * 0.15), vec![0xb0, CC69, i as u8 + 1])).collect();
+        let refs: Vec<(u32, &[u8])> = list.iter().map(|(t, b)| (*t, b.as_slice())).collect();
+        let dir = temp_dir("mi-pause");
+        let prj = midi_song(&dir, MR, 1.0, &smf(0, 480, &[abs_trk(&refs)]));
+        let mut e = midi_engine(&prj, MR);
+        e.play();
+        let mut all = midi_run(&mut e, 3000, 37);
+        e.pause();
+        all.extend(midi_run(&mut e, 500, 37));
+        e.play();
+        all.extend(midi_run(&mut e, 6000, 37));
+        assert_eq!(e.status().state, PlayState::Ended);
+        let expect: Vec<Vec<u8>> = list.iter().map(|(_, b)| b.clone()).collect();
+        assert_eq!(bytes(&all), expect, "all events of the file, once, in order");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stop_sends_all_notes_off_only_on_channels_with_notes() {
+        let with_notes = abs_trk(&[(0, &[0x90, 60, 100]), (0, &[0x92, 62, 100]), (sec(0.5), &[0x80, 60, 0])]);
+        let dir = temp_dir("mi-stop");
+        let prj = midi_song(&dir, MR, 2.0, &smf(0, 480, &[with_notes]));
+        let mut e = midi_engine(&prj, MR);
+        assert!(midi_run(&mut e, 100, 100).is_empty(), "nothing is sent before Play");
+        e.stop();
+        assert!(midi_run(&mut e, 100, 100).is_empty(), "stopped already: nothing to end");
+        assert!(e.wait_ready(WAIT));
+        e.play();
+        midi_run(&mut e, 100, 100);
+        e.stop();
+        let got = midi_run(&mut e, 100, 100);
+        assert_eq!(got, vec![(0, vec![0xb0, 123, 0]), (0, vec![0xb2, 123, 0])]);
+        assert!(midi_run(&mut e, 100, 100).is_empty(), "only once");
+        // unloading ends the notes as well
+        e.play();
+        assert!(e.wait_ready(WAIT));
+        midi_run(&mut e, 100, 100);
+        e.unload();
+        assert_eq!(bytes(&midi_run(&mut e, 100, 100)), vec![vec![0xb0, 123, 0], vec![0xb2, 123, 0]]);
+
+        // without notes: nothing
+        let no_notes = abs_trk(&[(0, &[0xc0, 1]), (sec(0.5), &[0xb0, CC69, 2])]);
+        let prj = midi_song(&dir, MR, 2.0, &smf(0, 480, &[no_notes]));
+        let mut e = midi_engine(&prj, MR);
+        e.play();
+        midi_run(&mut e, 100, 100);
+        e.pause();
+        e.stop();
+        assert!(midi_run(&mut e, 100, 100).is_empty());
+        assert!(e.wait_ready(WAIT));
+        e.play();
+        midi_run(&mut e, 100, 100);
+        e.unload();
+        assert!(midi_run(&mut e, 100, 100).is_empty());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_song_without_a_midi_file_sends_nothing_and_an_unreadable_one_warns() {
+        let dir = temp_dir("mi-none");
+        let wav = wav24(&dir, "a", RATE, 1, &constant(2000, 0.25));
+        let plain = song(&dir, &[&wav]);
+        let mut e = midi_engine(&plain, RATE);
+        assert!(!e.status().midi.has_file);
+        e.play();
+        let reference = render(&mut e, 100);
+        assert!(midi_run(&mut e, 500, 100).is_empty());
+        assert!(e.status().warnings.is_empty());
+        assert_eq!(e.status().midi.events_sent, 0);
+
+        for name in ["bad.mid", "missing.mid"] {
+            let mut prj = plain.clone();
+            if name == "bad.mid" {
+                prj.midi_file = write_mid(&dir, name, b"this is not a midi file");
+            } else {
+                prj.midi_file = dir.join(name).to_str().unwrap().to_string();
+            }
+            let mut e = midi_engine(&prj, RATE);
+            let st = e.status();
+            assert_eq!(*st.warnings, vec![format!("MIDI file unreadable: {}", name)]);
+            assert!(!st.midi.has_file);
+            e.play();
+            assert_eq!(render(&mut e, 100), reference, "the audio is unchanged");
+            assert!(midi_run(&mut e, 500, 100).is_empty());
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_new_output_rate_computes_the_frames_again() {
+        let t = abs_trk(&[(sec(1.0), &[0xb0, CC69, 1])]);
+        let dir = temp_dir("mi-rate");
+        let prj = midi_song(&dir, RATE, 1.5, &smf(0, 480, &[t]));
+        // loaded into an engine of another rate: the events count in its frames
+        let mut e = Engine::new(44100);
+        drop(e.set_song(LoadedSong::open(&prj)));
+        e.set_output_rate(RATE);
+        assert!(e.wait_ready(WAIT));
+        e.play();
+        assert_eq!(midi_run(&mut e, 50000, 500), vec![(48000, vec![0xb0, CC69, 1])]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A song of the queue with a MIDI file that has a program change on
+    /// frame 0 (`program`) and a CC69 at 0.1 s.
+    fn qsong_midi(dir: &Path, name: &str, program: u8) -> String {
+        let path = qsong(dir, name, RATE, 6000, 0.25);
+        let t = abs_trk(&[(0, &[0xc0, program]), (96, &[0xb0, CC69, program])]);
+        let mut prj = SongProject::load(&path, dir.to_str().unwrap()).unwrap();
+        prj.midi_file = write_mid(dir, &format!("{}.mid", name), &smf(0, 480, &[t]));
+        prj.save_as(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn the_next_song_of_a_playlist_sends_its_events_from_frame_0() {
+        let dir = temp_dir("mi-queue");
+        qsong_midi(&dir, "a", 1);
+        qsong_midi(&dir, "b", 2);
+        // automatic: song b follows song a at once
+        let mut e = queue_engine(queue_of(&dir, &[("a", WAIT_MODE, "0"), ("b", "start_after_delay", "0")]));
+        e.goto(0, true);
+        assert!(e.wait_ready(WAIT));
+        let all = midi_run(&mut e, 12000, 480);
+        assert_eq!(
+            bytes(&all),
+            vec![vec![0xc0, 1], vec![0xb0, CC69, 1], vec![0xc0, 2], vec![0xb0, CC69, 2]],
+            "{:?}",
+            all
+        );
+        assert_eq!(all[2].0, 6000, "song b starts on its first frame");
+        assert_eq!(e.status().midi.events_sent, 2, "the count is per song");
+        // by hand while playing: Next sends the frame 0 events of the next song at once
+        let mut e = queue_engine(queue_of(&dir, &[("a", WAIT_MODE, "0"), ("b", WAIT_MODE, "0")]));
+        e.goto(0, true);
+        assert!(e.wait_ready(WAIT));
+        midi_run(&mut e, 1000, 100);
+        e.next();
+        assert!(e.wait_ready(WAIT));
+        let got = midi_run(&mut e, 100, 100);
+        assert_eq!(got, vec![(0, vec![0xc0, 2])]);
         let _ = fs::remove_dir_all(&dir);
     }
 }

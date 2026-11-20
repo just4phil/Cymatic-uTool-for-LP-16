@@ -18,6 +18,10 @@ pub mod audio_out;
 pub mod rehearsal;
 #[cfg(feature = "player")]
 pub mod rehearsal_queue;
+#[cfg(feature = "player")]
+pub mod rehearsal_midi;
+#[cfg(feature = "player")]
+pub mod midi_out;
 pub mod sync;
 
 // ---------------------------------------------------------------------------
@@ -2037,6 +2041,8 @@ pub struct Config {
     pub audio_out_right: u16,
     /// buffer size in frames, 0 = driver default (see `AUDIO_BUFFERS`)
     pub audio_buffer: u32,
+    /// name of the MIDI output port of the rehearsal player; empty = off
+    pub midi_port: String,
     /// the rehearsal mix presets (`mix.*` and `mix_active` in the file)
     pub mixes: mix::MixLibrary,
 }
@@ -2059,6 +2065,7 @@ impl Default for Config {
             audio_out_left: 1,
             audio_out_right: 2,
             audio_buffer: 0,
+            midi_port: String::new(),
             mixes: mix::MixLibrary::default(),
         }
     }
@@ -2103,6 +2110,7 @@ pub fn load_config(path: &std::path::Path) -> Config {
                     "import_lib" => config.import_lib = value,
                     "audio_host" => config.audio_host = value,
                     "audio_device" => config.audio_device = value,
+                    "midi_port" => config.midi_port = value,
                     // invalid values keep the default
                     "audio_out_left" => {
                         if let Some(c) = parse_audio_channel(&value) {
@@ -2154,7 +2162,7 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
     let text = format!(
         "{}stick_root = \"{}\"\r\n\
          audio_host = \"{}\"\r\naudio_device = \"{}\"\r\n\
-         audio_out_left = \"{}\"\r\naudio_out_right = \"{}\"\r\naudio_buffer = \"{}\"\r\n{}",
+         audio_out_left = \"{}\"\r\naudio_out_right = \"{}\"\r\naudio_buffer = \"{}\"\r\nmidi_port = \"{}\"\r\n{}",
         paths,
         config.stick_root,
         config.audio_host,
@@ -2162,6 +2170,7 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
         config.audio_out_left,
         config.audio_out_right,
         config.audio_buffer,
+        config.midi_port,
         config.mixes.to_config_text()
     );
     fs::write(path, text.as_bytes())
@@ -3064,6 +3073,7 @@ mod tests {
         let old = load_config(&path);
         assert_eq!((old.audio_host.as_str(), old.audio_device.as_str()), ("", ""));
         assert_eq!((old.audio_out_left, old.audio_out_right, old.audio_buffer), (1, 2, 0));
+        assert_eq!(old.midi_port, "", "an old config without the field: MIDI is off");
         assert_eq!(old.stick_root, "F:\\");
 
         // roundtrip of all fields, together with both path styles
@@ -3080,6 +3090,7 @@ mod tests {
                 audio_out_left: 4,
                 audio_out_right: 3,
                 audio_buffer: 256,
+                midi_port: "MIDI \u{fc}ber USB 2".into(),
                 mixes: mix::MixLibrary::default(),
             };
             save_config(&path, &c).unwrap();
@@ -3089,6 +3100,8 @@ mod tests {
             let b = load_config(&path);
             assert_eq!((b.audio_host.as_str(), b.audio_device.as_str()), ("WASAPI", "Speakers (Realtek(R) Audio)"));
             assert_eq!((b.audio_out_left, b.audio_out_right, b.audio_buffer), (4, 3, 256));
+            assert_eq!(b.midi_port, "MIDI \u{fc}ber USB 2");
+            assert!(text.contains("midi_port = \"MIDI \u{fc}ber USB 2\""));
             assert_eq!(b.stick_root, "F:\\");
             assert_eq!(b.audio_lib, if own { "A:\\audio" } else { "E:\\x\\LIB\\AudioLibrary" });
             assert_eq!(b.project_lib, if own { "P:\\prj" } else { "E:\\x\\LIB\\CymaticProjectLib" });
@@ -3375,7 +3388,7 @@ mod tests {
     }
 
     /// Track body from (delta ticks, event bytes) pairs.
-    fn trk(events: &[(u32, &[u8])]) -> Vec<u8> {
+    pub(crate) fn trk(events: &[(u32, &[u8])]) -> Vec<u8> {
         let mut b = Vec::new();
         for (d, e) in events {
             b.extend(vl(*d));
@@ -3384,9 +3397,9 @@ mod tests {
         b
     }
 
-    const EOT: &[u8] = &[0xff, 0x2f, 0x00];
+    pub(crate) const EOT: &[u8] = &[0xff, 0x2f, 0x00];
 
-    fn smf(format: u16, division: u16, tracks: &[Vec<u8>]) -> Vec<u8> {
+    pub(crate) fn smf(format: u16, division: u16, tracks: &[Vec<u8>]) -> Vec<u8> {
         let mut b = b"MThd".to_vec();
         b.extend_from_slice(&6u32.to_be_bytes());
         b.extend_from_slice(&format.to_be_bytes());
@@ -3400,7 +3413,7 @@ mod tests {
         b
     }
 
-    fn write_mid(dir: &Path, name: &str, bytes: &[u8]) -> String {
+    pub(crate) fn write_mid(dir: &Path, name: &str, bytes: &[u8]) -> String {
         let p = dir.join(name);
         fs::write(&p, bytes).unwrap();
         p.to_string_lossy().into_owned()

@@ -9,8 +9,11 @@ use crate::gui_mixer::MixerPanel;
 use crate::gui_playlist;
 use eframe::egui::{self, vec2, Align, Color32, Key, Layout, Modifiers, RichText, Sense, Stroke, Ui};
 use lp16_tool::audio_out::{AudioSettings, Command, Player, StreamInfo};
+use lp16_tool::midi_out::{MidiLink, PortStatus};
 use lp16_tool::mix::{MixLibrary, MixParams, STRIPS};
+use lp16_tool::read_midi_events;
 use lp16_tool::rehearsal::{fmt_clock, Engine, PlayState, Status};
+use lp16_tool::rehearsal_midi::start_messages;
 use lp16_tool::rehearsal_queue::{entries_from_playlist, find_path, next_caption, same_songs, song_rows, QueueEntry};
 use lp16_tool::{PlaylistSong, SongProject};
 use std::sync::Arc;
@@ -24,6 +27,8 @@ const LONG_STEP_SECONDS: f64 = 30.0;
 const SEEK_MEMORY: Duration = Duration::from_millis(400);
 /// Width of the left part (playlist and song list).
 const LIST_WIDTH: f32 = 290.0;
+/// How long the MIDI indicator stays lit after a message.
+const MIDI_FLASH: Duration = Duration::from_millis(150);
 
 /// Shown after the loaded song was renamed, deleted or saved.
 pub const CHANGED_NOTICE: &str = "The song was changed in the library \u{2013} load it again.";
@@ -63,6 +68,10 @@ pub struct RehearsalPanel {
     /// queue index they are for
     track_names: [String; STRIPS],
     names_for: Option<usize>,
+    /// the MIDI output: the thread and port of the player
+    midi: MidiLink,
+    /// the port chosen in the settings (empty = MIDI is off)
+    midi_port: String,
 }
 
 /// The track names per strip: tracks on the same output are joined.
@@ -86,6 +95,39 @@ impl RehearsalPanel {
     /// opened. A running stream is not touched.
     pub fn set_settings(&mut self, settings: AudioSettings) {
         self.settings = settings;
+    }
+
+    /// The MIDI output port of the settings (empty = off). It is opened
+    /// by the next Play (or the MIDI test).
+    pub fn set_midi_port(&mut self, port: &str) {
+        self.midi_port = port.to_string();
+        self.midi.set_port(port);
+    }
+
+    /// State of the MIDI port (for the settings).
+    pub fn midi_status(&self) -> PortStatus {
+        self.midi.status()
+    }
+
+    /// Whether the loaded song has a MIDI file (the MIDI test needs one).
+    pub fn has_midi_file(&self) -> bool {
+        self.current_status().map(|st| st.state != PlayState::Empty && st.midi.has_file).unwrap_or(false)
+    }
+
+    /// MIDI test: send the state the loaded song would give a device right
+    /// after its start (bank, program change, the controllers on frame 0)
+    /// to the port. False if there is no song with a MIDI file.
+    pub fn send_midi_test(&mut self) -> bool {
+        let events = self
+            .current_status()
+            .and_then(|st| st.index)
+            .and_then(|i| self.entries.get(i))
+            .and_then(|e| e.project.as_ref().ok())
+            .and_then(|p| p.midi_path())
+            .and_then(|path| read_midi_events(&path));
+        let Some(events) = events else { return false };
+        self.midi.send(&start_messages(&events));
+        true
     }
 
     /// The rehearsal mix for the engine (kept for streams opened later).
@@ -224,7 +266,8 @@ impl RehearsalPanel {
             return true;
         }
         self.player = None;
-        match Player::open(&self.settings, rate) {
+        self.midi.open();
+        match Player::open(&self.settings, rate, Some(&self.midi)) {
             Ok(p) => {
                 p.send(Command::SetMix(self.mix));
                 self.player = Some(p);
@@ -332,6 +375,9 @@ impl RehearsalPanel {
     /// has to be given the queue even if the stream is kept.
     fn start(&mut self, index: usize, autoplay: bool, new_queue: bool) {
         let Some(i) = self.first_readable(index) else { return };
+        if autoplay {
+            self.midi.open(); // tries the port again if it failed before
+        }
         let rate = self.rate_of(i);
         if !self.stream_fits(rate) {
             if !self.open_stream(rate) {
@@ -434,6 +480,7 @@ impl RehearsalPanel {
     /// End the audio stream and the reader thread (closing the program).
     pub fn shutdown(&mut self) {
         self.player = None;
+        self.midi.shutdown(); // All Notes Off for sounding notes, closes the port
     }
 
     // -- transport -------------------------------------------------------------
@@ -474,6 +521,7 @@ impl RehearsalPanel {
             }
             return;
         }
+        self.midi.open();
         // no stream (lost, test tone) or one that does not fit the settings
         // any more: open it again at the same position
         let stale = self.player.as_ref().map(|p| !p.matches(&self.settings, st.song_rate)).unwrap_or(true);
@@ -787,7 +835,41 @@ impl RehearsalPanel {
             None => format!("No audio output open \u{2013} Play opens it. Song: {} Hz", st.song_rate),
         };
         ui.label(RichText::new(output).size(12.0).color(DIM));
+        self.midi_line(ui, st);
     }
+
+    /// "MIDI: <Port> - <n> events" with an indicator that lights up for
+    /// 150 ms at every message; "MIDI: no file" / "MIDI: off" otherwise.
+    fn midi_line(&self, ui: &mut Ui, st: &Status) {
+        let (text, lit) = midi_summary(&self.midi_port, st);
+        ui.horizontal(|ui| {
+            ui.add_space(((ui.available_width() - 260.0) / 2.0).max(0.0));
+            let (rect, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
+            let color = if lit.is_some() { ORANGE } else { LINE };
+            ui.painter().circle_filled(rect.center(), 5.0, color);
+            ui.label(RichText::new(text).size(12.0).color(DIM));
+        });
+        if let Some(left) = lit {
+            ui.ctx().request_repaint_after(left);
+        }
+        if !self.midi_port.is_empty() {
+            if let Some(e) = self.midi.status().error {
+                ui.add(egui::Label::new(RichText::new(e).size(13.0).color(ORANGE)).wrap(true));
+            }
+        }
+    }
+}
+
+/// The MIDI line of the status, and how much longer the indicator is lit.
+fn midi_summary(port: &str, st: &Status) -> (String, Option<Duration>) {
+    if port.is_empty() {
+        return ("MIDI: off".to_string(), None);
+    }
+    if !st.midi.has_file {
+        return ("MIDI: no file".to_string(), None);
+    }
+    let lit = st.midi.last_event.and_then(|t| MIDI_FLASH.checked_sub(t.elapsed())).filter(|d| !d.is_zero());
+    (format!("MIDI: {} \u{b7} {} events", port, st.midi.events_sent), lit)
 }
 
 fn big_button(ui: &mut Ui, text: &str, enabled: bool, width: f32) -> egui::Response {

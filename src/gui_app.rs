@@ -12,6 +12,7 @@
 
 use crate::config_path;
 use crate::gui_audio::AudioPanel;
+use crate::gui_midi::MidiPanel;
 use crate::gui_rehearsal::RehearsalPanel;
 use eframe::egui::{
     self, pos2, vec2, Align, Align2, Color32, FontId, Layout, Margin, Rect, RichText, Sense,
@@ -340,6 +341,8 @@ pub struct Lp16App {
     mix_saver: MixSaver,
     // settings: the "Audio output" area
     audio: AudioPanel,
+    // settings: the "MIDI output" area
+    midi: MidiPanel,
 }
 
 // ---------------------------------------------------------------------------
@@ -1101,8 +1104,10 @@ impl Lp16App {
             rehearsal: RehearsalPanel::default(),
             mix_saver: MixSaver::default(),
             audio: AudioPanel::default(),
+            midi: MidiPanel::default(),
         };
         app.rehearsal.set_settings(AudioSettings::from(&app.config));
+        app.rehearsal.set_midi_port(&app.config.midi_port);
         app.rehearsal.set_mix(app.config.mixes.active().params());
         app.refresh();
         app
@@ -3175,6 +3180,8 @@ impl Lp16App {
                 }
                 ui.add_space(12.0);
                 self.audio_output(ui);
+                ui.add_space(12.0);
+                self.midi_output(ui);
             });
         });
     }
@@ -3197,6 +3204,26 @@ impl Lp16App {
             // the tone may need the device that the idle stream holds
             self.rehearsal.park();
             self.audio.start_tone(&self.config);
+        }
+    }
+
+    /// The "MIDI output" area of the Settings tab (gui_midi.rs): the port
+    /// is saved at once and handed to the rehearsal player, which opens it
+    /// at the next Play.
+    fn midi_output(&mut self, ui: &mut Ui) {
+        let status = self.rehearsal.midi_status();
+        let can_test = self.rehearsal.has_midi_file();
+        let out = self.midi.ui(ui, &mut self.config, can_test, &status);
+        if out.changed {
+            self.rehearsal.set_midi_port(&self.config.midi_port);
+            if let Err(e) = save_config(&config_path(), &self.config) {
+                self.message("Settings", format!("Cannot save {}:
+{}", config_path().display(), e));
+            }
+        }
+        if out.test {
+            let sent = self.rehearsal.send_midi_test();
+            self.midi.set_test_note(if sent { None } else { Some("The MIDI file of the loaded song could not be read.".to_string()) });
         }
     }
 
