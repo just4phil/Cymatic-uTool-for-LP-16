@@ -36,8 +36,8 @@ interface modelled on uTool2 and a command line.
 - **Batch import of songs:** creates songs from new folders of the AudioLibrary in one go, see
   [Import](#import-batch-import-of-songs).
 - **Edit Target:** the contents of the stick as a tree, with details on songs and playlists.
-- **Rehearsal player (first version):** plays a song of the library on the default audio device,
-  see [Rehearsal player](#rehearsal-player).
+- **Rehearsal player (first version):** plays a song of the library on an audio output of your
+  choice, see [Rehearsal player](#rehearsal-player).
 
 ## Requirements
 
@@ -79,6 +79,12 @@ Folders" creates any missing folders.
 library = "E:\LP16_LIBRARY"
 # export target (chosen and remembered in the Export tab)
 stick_root = "F:\"
+# audio output of the rehearsal player (Settings > Audio output, see below)
+audio_host = "WASAPI"
+audio_device = ""
+audio_out_left = "1"
+audio_out_right = "2"
+audio_buffer = "0"
 ```
 
 Layout of the base folder:
@@ -99,9 +105,9 @@ Back up `Recording\` before the first export to a real stick.
 
 ## Rehearsal player
 
-The player plays a song of the project library on the **default audio output of Windows**
-(WASAPI), for rehearsing at home. It is the first version; the playlist, the rehearsal mix, MIDI
-and ASIO follow.
+The player plays a song of the project library on the **audio output** you choose in the
+Settings tab (WASAPI), for rehearsing at home. It is the first version; the playlist, the
+rehearsal mix, MIDI and ASIO follow.
 
 - In the Home tab, right-click a song and choose **Play in Rehearsal**. This loads the song,
   switches to the **Rehearsal** tab and starts playing.
@@ -125,14 +131,43 @@ and ASIO follow.
 - All tracks are streamed from disk in sync (nothing is loaded into memory up front) and mixed
   to stereo. For now every track has 0 dB and pan centre (constant power law); the mix is
   limited to full scale.
+- The stream is opened with the **sample rate of the song**. If the next song has another rate,
+  the stream is closed and opened again with the new rate. There is no resampling; the song is
+  only not played if the device does not support its rate (the tab says so).
 - WAVs must be mono with 8, 16, 24 or 32 bit integer or 32 bit float samples. A track with
-  another sample rate than the first readable track stays silent. There is no resampling: if the
-  sample rate of the song differs from the one of the audio device, the song is not played and
-  the tab says so.
+  another sample rate than the first readable track stays silent.
 - If the song is renamed, deleted or saved in the song editor while it is loaded, the player
   stops and unloads it and the tab asks you to load it again.
 - Export, import and library editing keep working while a song plays.
-- Without an audio device the tab shows a message.
+- Without a usable audio device the tab shows a message, and Play tries again. If the device
+  disappears during playback, playback stops, the position stays and the tab says "Audio device
+  lost"; after reconnecting, press Play and the output is opened again, no restart needed.
+
+### Audio output (Settings tab)
+
+The **Audio output** area of the Settings tab chooses where the stereo mix goes. Changes are saved
+at once in `lp16-tool.toml` and used the next time the stream is opened (a playing song is not
+interrupted). The program starts without a message even if the saved device is missing; the
+message comes when you press Play or Test tone.
+
+| Setting | Key in `lp16-tool.toml` | Meaning | Default |
+|---|---|---|---|
+| Host | `audio_host` | audio system, today `WASAPI` (ASIO follows) | default host |
+| Device | `audio_device` | name of the output device | empty = default device |
+| Left / Right | `audio_out_left`, `audio_out_right` | output channels (1-based) for the left and right side of the stereo mix; the same channel twice gets (L+R)/2 | 1 / 2 |
+| Buffer | `audio_buffer` | frames: 0 = driver default, 64, 128, 256, 512, 1024, 2048 | 0 |
+
+- **Refresh** reads the list of devices again (e.g. after plugging in a device).
+- **Test tone** plays a 1 kHz tone at -20 dBFS, 1 s on the left channel, then 1 s on the right
+  channel, with the settings above (48 kHz, or the default rate of the device if it cannot do
+  that). The button is disabled while a song plays.
+- While a stream runs, the area shows "Running: <rate> Hz, buffer <N> frames". If the device
+  rejects the chosen buffer size, the driver default is used and a note says so.
+- Invalid values in the file (e.g. `audio_buffer = "333"`) are replaced by the default.
+
+**Behringer XR18:** put the stereo mix on two USB channels (e.g. 17 and 18, with the X-AIR
+driver the USB return channels) and in X Air Edit route a channel or an aux return with source
+USB to these channels.
 
 ## Command line
 
@@ -213,10 +248,11 @@ damaged. Nothing is deleted on the stick.
 | `src/project_lib.rs` | Project Library: list, create, rename, copy and delete songs and playlists. Renaming a song keeps the playlists pointing at it; a song that a playlist uses cannot be deleted. |
 | `src/sync.rs` | Stick Sync: `plan` (what an export would do), `run` (export and verify). Command line and user interface use the same process. |
 | `src/rehearsal.rs` | Playback engine of the rehearsal player (reading, mixing, transport), independent of any audio device (feature `player`) |
-| `src/audio_out.rs` | Audio output adapter: default device via `cpal`, commands and status between the user interface and the audio callback (feature `player`) |
+| `src/audio_out.rs` | Audio output adapter: hosts, devices and streams via `cpal`, channel distribution, test tone, commands and status between the user interface and the audio callback (feature `player`) |
 | `src/main.rs` | Command line |
 | `src/gui_app.rs` | User interface (egui 0.27) |
 | `src/gui_rehearsal.rs` | The Rehearsal tab |
+| `src/gui_audio.rs` | The "Audio output" area of the Settings tab |
 
 There are no dependencies apart from `eframe` and `rfd` for the user interface and `cpal` and
 `rtrb` for the rehearsal player (feature `player`, switched on by `gui`); XML, MD5, WAV and MIDI

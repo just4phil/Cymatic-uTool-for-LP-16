@@ -16,6 +16,8 @@
 #[cfg(feature = "gui")]
 mod gui_app;
 #[cfg(feature = "gui")]
+mod gui_audio;
+#[cfg(feature = "gui")]
 mod gui_rehearsal;
 
 #[cfg(feature = "gui")]
@@ -27,7 +29,9 @@ use std::path::Path;
 use std::process::exit;
 
 use lp16_tool::sync::{self, Action, ExportMode, Progress, SyncPlan};
-use lp16_tool::{generate_play, load_config, now_ms, parse_playlist, SongProject};
+#[cfg(feature = "gui")]
+use lp16_tool::load_config;
+use lp16_tool::{generate_play, now_ms, parse_playlist, SongProject};
 
 fn die(msg: String) -> ! {
     eprintln!("{}", msg);

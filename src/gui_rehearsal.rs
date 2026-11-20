@@ -5,8 +5,8 @@
 
 use crate::gui_app::{key, DIM, LINE, ORANGE, PANEL, RED, TEXT};
 use eframe::egui::{self, vec2, Align, Color32, Key, Layout, Modifiers, RichText, Sense, Stroke, Ui};
-use lp16_tool::audio_out::{Command, Player};
-use lp16_tool::rehearsal::{fmt_clock, PlayState, Status};
+use lp16_tool::audio_out::{AudioSettings, Command, Player, StreamInfo};
+use lp16_tool::rehearsal::{fmt_clock, Engine, LoadedSong, PlayState, Status};
 use lp16_tool::SongProject;
 use std::time::{Duration, Instant};
 
@@ -22,10 +22,18 @@ pub const CHANGED_NOTICE: &str = "The song was changed in the library \u{2013} l
 
 #[derive(Default)]
 pub struct RehearsalPanel {
-    /// opened with the first "Play in Rehearsal"
+    /// the audio stream, opened with the first Play and opened again when
+    /// the rate of the song or the audio settings change
     player: Option<Player>,
-    /// why the audio output could not be opened
+    /// the audio output chosen in the settings
+    settings: AudioSettings,
+    /// why the audio output could not be opened, or was lost
     device_error: Option<String>,
+    /// the loaded song, to open it again on a new stream
+    project: Option<SongProject>,
+    /// status of the loaded song while no stream is open (lost device,
+    /// test tone, failed open); the position is kept
+    parked: Option<Status>,
     /// .songprj of the loaded song
     song_path: Option<String>,
     notice: Option<String>,
@@ -36,25 +44,105 @@ pub struct RehearsalPanel {
 }
 
 impl RehearsalPanel {
-    /// Load `project` into the player and start it. Without an audio
-    /// device the tab shows why instead.
-    pub fn play_song(&mut self, project: &SongProject) {
-        if self.player.is_none() {
-            match Player::open() {
-                Ok(p) => {
-                    self.player = Some(p);
-                    self.device_error = None;
-                }
-                Err(e) => self.device_error = Some(e),
+    /// The audio output of the settings; used the next time a stream is
+    /// opened. A running stream is not touched.
+    pub fn set_settings(&mut self, settings: AudioSettings) {
+        self.settings = settings;
+    }
+
+    /// What the open stream runs with (for the settings).
+    pub fn stream_info(&self) -> Option<&StreamInfo> {
+        self.player.as_ref().map(|p| p.info())
+    }
+
+    /// The last error of the audio output, if any.
+    pub fn error(&self) -> Option<&str> {
+        self.device_error.as_deref()
+    }
+
+    /// Make sure a stream with `rate` and the current settings is open.
+    /// The old one is closed first (it may hold the device).
+    fn open_stream(&mut self, rate: u32) -> bool {
+        if self.player.as_ref().map(|p| p.matches(&self.settings, rate)).unwrap_or(false) {
+            return true;
+        }
+        self.player = None;
+        match Player::open(&self.settings, rate) {
+            Ok(p) => {
+                self.player = Some(p);
+                self.device_error = None;
+                true
+            }
+            Err(e) => {
+                self.device_error = Some(e);
+                false
             }
         }
-        let Some(player) = &self.player else { return };
-        player.load(project);
-        player.send(Command::Play);
+    }
+
+    /// Load `project` into the player and start it. If the audio output
+    /// cannot be opened the tab shows why, and Play tries again.
+    pub fn play_song(&mut self, project: &SongProject) {
+        let loaded = LoadedSong::open(project);
+        let rate = loaded.rate();
+        self.project = Some(project.clone());
         self.song_path = Some(project.path.clone());
         self.notice = None;
         self.drag_target = None;
         self.last_seek = None;
+        self.parked = None;
+        if self.open_stream(rate) {
+            if let Some(player) = &self.player {
+                player.send(Command::Load(Box::new(loaded)));
+                player.send(Command::Play);
+            }
+        } else {
+            // a throw-away engine gives the status of the song
+            let mut engine = Engine::new(rate);
+            drop(engine.set_song(loaded));
+            self.parked = Some(engine.status());
+        }
+    }
+
+    /// Close the stream but keep the song and its position, so Play opens
+    /// the output again (lost device, test tone).
+    pub fn park(&mut self) {
+        let Some(player) = self.player.take() else { return };
+        let mut st = player.status();
+        drop(player);
+        if self.project.is_some() && st.state != PlayState::Empty {
+            if st.state == PlayState::Playing {
+                st.state = PlayState::Paused;
+            }
+            self.parked = Some(st);
+        }
+    }
+
+    /// Open the stream again for the parked song at its position.
+    fn resume(&mut self, play: bool) {
+        let (Some(project), Some(parked)) = (self.project.clone(), self.parked.clone()) else { return };
+        let loaded = LoadedSong::open(&project);
+        if !self.open_stream(loaded.rate()) {
+            return;
+        }
+        if let Some(player) = &self.player {
+            player.send(Command::Load(Box::new(loaded)));
+            if parked.position_seconds > 0.0 {
+                player.send(Command::Seek(parked.position_seconds));
+            }
+            if play {
+                player.send(Command::Play);
+            }
+        }
+        self.parked = None;
+    }
+
+    /// The stream failed (device unplugged): keep the message and the
+    /// position and close the stream.
+    fn check_stream(&mut self) {
+        let Some(e) = self.player.as_ref().and_then(|p| p.error()) else { return };
+        self.park();
+        self.device_error = Some(e);
     }
 
     /// The song file `path` is about to be renamed, deleted or saved: stop
@@ -69,6 +157,8 @@ impl RehearsalPanel {
             player.send(Command::Unload);
         }
         self.song_path = None;
+        self.project = None;
+        self.parked = None;
         self.notice = Some(CHANGED_NOTICE.to_string());
     }
 
@@ -86,6 +176,9 @@ impl RehearsalPanel {
         let target = seconds.clamp(0.0, length.max(0.0));
         if let Some(player) = &self.player {
             player.send(Command::Seek(target));
+        } else if let Some(st) = self.parked.as_mut() {
+            st.position_seconds = target;
+            st.position_frames = (target * st.song_rate as f64).round() as u64;
         }
         self.last_seek = Some((target, Instant::now()));
     }
@@ -101,11 +194,22 @@ impl RehearsalPanel {
 
     /// Play or pause, as the big button does.
     pub fn toggle_play(&mut self, st: &Status) {
-        let Some(player) = &self.player else { return };
         if st.state == PlayState::Playing {
-            player.send(Command::Pause);
-        } else if st.song_rate == st.output_rate {
-            player.send(Command::Play);
+            if let Some(player) = &self.player {
+                player.send(Command::Pause);
+            }
+            return;
+        }
+        // no stream (lost, test tone) or one that does not fit the settings
+        // any more: open it again at the same position
+        let stale = self.player.as_ref().map(|p| !p.matches(&self.settings, st.song_rate)).unwrap_or(true);
+        if stale {
+            self.park();
+            self.resume(true);
+        } else if let Some(player) = &self.player {
+            if st.song_rate == st.output_rate {
+                player.send(Command::Play);
+            }
         }
     }
 
@@ -113,6 +217,9 @@ impl RehearsalPanel {
     pub fn stop(&mut self) {
         if let Some(player) = &self.player {
             player.send(Command::Stop);
+        } else if let Some(st) = self.parked.as_mut() {
+            st.position_seconds = 0.0;
+            st.position_frames = 0;
         }
         self.last_seek = None;
     }
@@ -146,7 +253,8 @@ impl RehearsalPanel {
     }
 
     pub fn ui(&mut self, ui: &mut Ui) {
-        let status = self.player.as_ref().map(|p| p.status());
+        self.check_stream();
+        let status = self.player.as_ref().map(|p| p.status()).or_else(|| self.parked.clone());
         let loaded = status.as_ref().map(|s| s.state != PlayState::Empty).unwrap_or(false);
         if let Some(st) = &status {
             self.keys(ui, st);
@@ -237,7 +345,6 @@ impl RehearsalPanel {
             .color(DIM),
         );
         ui.add_space(14.0);
-        let Some(player) = &self.player else { return };
         if st.underruns > 0 {
             ui.label(
                 RichText::new(format!("Dropouts: {} (the audio buffer ran empty)", st.underruns))
@@ -245,16 +352,13 @@ impl RehearsalPanel {
                     .color(RED),
             );
         }
-        ui.label(
-            RichText::new(format!(
-                "Output: {}, {} Hz \u{2013} song: {} Hz",
-                player.device_name(),
-                st.output_rate,
-                st.song_rate
-            ))
-            .size(12.0)
-            .color(DIM),
-        );
+        let output = match &self.player {
+            Some(player) => {
+                format!("Output: {}, {} Hz \u{2013} song: {} Hz", player.device_name(), st.output_rate, st.song_rate)
+            }
+            None => format!("No audio output open \u{2013} Play opens it. Song: {} Hz", st.song_rate),
+        };
+        ui.label(RichText::new(output).size(12.0).color(DIM));
     }
 }
 

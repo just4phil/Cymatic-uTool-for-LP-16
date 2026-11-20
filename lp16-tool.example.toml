@@ -6,3 +6,9 @@
 library = "E:\LP16_LIBRARY"
 # export target (chosen and remembered in the Export tab)
 stick_root = "F:\"
+# audio output of the rehearsal player (the Settings tab writes these)
+# audio_host = "WASAPI"        # empty = default host
+# audio_device = ""            # empty = default device
+# audio_out_left = "1"         # output channels of the stereo mix (1-based)
+# audio_out_right = "2"
+# audio_buffer = "0"           # frames: 0 (driver default), 64, 128, 256, 512, 1024, 2048

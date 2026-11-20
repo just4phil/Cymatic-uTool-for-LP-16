@@ -338,6 +338,11 @@ impl LoadedSong {
         }
     }
 
+    /// The sample rate of the song (that of its first readable track).
+    pub fn rate(&self) -> u32 {
+        self.song_rate
+    }
+
     /// path of the .songprj the song was loaded from
     pub fn path(&self) -> &str {
         &self.path
@@ -1011,6 +1016,34 @@ pub(crate) mod tests {
         assert_eq!(st.position_frames, 0);
         assert_eq!(st.song_rate, 44100);
         assert!(st.warnings.iter().any(|w| w == "Song sample rate 44100 Hz differs from output 48000 Hz"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// a song of another rate: the player opens a new stream and with it a
+    /// new engine with the song's rate, and then plays without a warning
+    #[test]
+    fn an_engine_of_the_song_rate_plays_without_a_rate_warning() {
+        let dir = temp_dir("rh-newrate");
+        let a = wav24(&dir, "a", 44100, 1, &constant(2000, 0.25));
+        let prj = song(&dir, &[&a]);
+        let first = LoadedSong::open(&prj);
+        assert_eq!(first.rate(), 44100);
+
+        let mut old = Engine::new(RATE);
+        assert!(old.set_song(LoadedSong::open(&prj)).is_none());
+        assert_eq!(old.status().warnings.len(), 1, "the old rate warns");
+
+        let mut e = Engine::new(first.rate());
+        assert!(e.set_song(first).is_none());
+        assert!(e.wait_ready(WAIT));
+        let st = e.status();
+        assert_eq!((st.output_rate, st.song_rate), (44100, 44100));
+        assert!(st.warnings.is_empty(), "{:?}", st.warnings);
+        e.play();
+        assert_eq!(e.status().state, PlayState::Playing);
+        let out = render(&mut e, 100);
+        assert!((out[0] - 0.25 * G).abs() < 1e-6 && (out[199] - 0.25 * G).abs() < 1e-6);
+        assert_eq!(e.status().position_frames, 100);
         let _ = fs::remove_dir_all(&dir);
     }
 

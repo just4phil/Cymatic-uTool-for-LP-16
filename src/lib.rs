@@ -2024,7 +2024,22 @@ pub struct Config {
     pub stick_root: String,
     /// "AudioLibrary" for the song import: <Song>\<Date + note>\*.wav + .mid
     pub import_lib: String,
+    /// name of the cpal audio host of the rehearsal player ("WASAPI");
+    /// empty = the default host
+    pub audio_host: String,
+    /// name of the output device; empty = the default device of the host
+    pub audio_device: String,
+    /// output channels (1-based) of the left and right side of the stereo mix
+    pub audio_out_left: u16,
+    pub audio_out_right: u16,
+    /// buffer size in frames, 0 = driver default (see `AUDIO_BUFFERS`)
+    pub audio_buffer: u32,
 }
+
+/// The buffer sizes (frames) the settings offer; 0 = driver default.
+pub const AUDIO_BUFFERS: [u32; 7] = [0, 64, 128, 256, 512, 1024, 2048];
+/// Largest channel number accepted for `audio_out_left` / `audio_out_right`.
+pub const AUDIO_MAX_CHANNEL: u16 = 128;
 
 impl Default for Config {
     fn default() -> Self {
@@ -2034,6 +2049,11 @@ impl Default for Config {
             project_lib: String::new(),
             stick_root: String::new(),
             import_lib: String::new(),
+            audio_host: String::new(),
+            audio_device: String::new(),
+            audio_out_left: 1,
+            audio_out_right: 2,
+            audio_buffer: 0,
         }
     }
 }
@@ -2074,6 +2094,24 @@ pub fn load_config(path: &std::path::Path) -> Config {
                     "project_lib" => config.project_lib = value,
                     "stick_root" => config.stick_root = value,
                     "import_lib" => config.import_lib = value,
+                    "audio_host" => config.audio_host = value,
+                    "audio_device" => config.audio_device = value,
+                    // invalid values keep the default
+                    "audio_out_left" => {
+                        if let Some(c) = parse_audio_channel(&value) {
+                            config.audio_out_left = c;
+                        }
+                    }
+                    "audio_out_right" => {
+                        if let Some(c) = parse_audio_channel(&value) {
+                            config.audio_out_right = c;
+                        }
+                    }
+                    "audio_buffer" => {
+                        if let Some(b) = value.parse::<u32>().ok().filter(|b| AUDIO_BUFFERS.contains(b)) {
+                            config.audio_buffer = b;
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -2081,6 +2119,10 @@ pub fn load_config(path: &std::path::Path) -> Config {
     }
     config.apply_library();
     config
+}
+
+fn parse_audio_channel(value: &str) -> Option<u16> {
+    value.parse::<u16>().ok().filter(|c| (1..=AUDIO_MAX_CHANNEL).contains(c))
 }
 
 /// With a base folder only `library` is written (the rest is derived),
@@ -2100,7 +2142,18 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
             config.library.trim()
         )
     };
-    let text = format!("{}stick_root = \"{}\"\r\n", paths, config.stick_root);
+    let text = format!(
+        "{}stick_root = \"{}\"\r\n\
+         audio_host = \"{}\"\r\naudio_device = \"{}\"\r\n\
+         audio_out_left = \"{}\"\r\naudio_out_right = \"{}\"\r\naudio_buffer = \"{}\"\r\n",
+        paths,
+        config.stick_root,
+        config.audio_host,
+        config.audio_device,
+        config.audio_out_left,
+        config.audio_out_right,
+        config.audio_buffer
+    );
     fs::write(path, text.as_bytes())
 }
 
@@ -2925,6 +2978,59 @@ mod tests {
         assert_eq!(back.audio_lib, "E:\\x\\LIB_2027\\AudioLibrary");
         assert_eq!(back.project_lib, "E:\\x\\LIB_2027\\CymaticProjectLib");
         assert_eq!(back.stick_root, "F:\\");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn config_audio_fields() {
+        let dir = temp_dir("config-audio");
+        let path = dir.join("lp16-tool.toml");
+        // an old file without the fields: defaults
+        fs::write(&path, "library = \"E:\\x\"\r\nstick_root = \"F:\\\"\r\n").unwrap();
+        let old = load_config(&path);
+        assert_eq!((old.audio_host.as_str(), old.audio_device.as_str()), ("", ""));
+        assert_eq!((old.audio_out_left, old.audio_out_right, old.audio_buffer), (1, 2, 0));
+        assert_eq!(old.stick_root, "F:\\");
+
+        // roundtrip of all fields, together with both path styles
+        for library in ["E:\\x\\LIB", ""] {
+            let own = library.is_empty();
+            let c = Config {
+                library: library.to_string(),
+                audio_lib: if own { "A:\\audio".into() } else { String::new() },
+                project_lib: if own { "P:\\prj".into() } else { String::new() },
+                import_lib: if own { "I:\\imp".into() } else { String::new() },
+                stick_root: "F:\\".into(),
+                audio_host: "WASAPI".into(),
+                audio_device: "Speakers (Realtek(R) Audio)".into(),
+                audio_out_left: 4,
+                audio_out_right: 3,
+                audio_buffer: 256,
+            };
+            save_config(&path, &c).unwrap();
+            let text = fs::read_to_string(&path).unwrap();
+            assert_eq!(text.contains("library ="), !own);
+            assert_eq!(text.contains("audio_lib ="), own);
+            let b = load_config(&path);
+            assert_eq!((b.audio_host.as_str(), b.audio_device.as_str()), ("WASAPI", "Speakers (Realtek(R) Audio)"));
+            assert_eq!((b.audio_out_left, b.audio_out_right, b.audio_buffer), (4, 3, 256));
+            assert_eq!(b.stick_root, "F:\\");
+            assert_eq!(b.audio_lib, if own { "A:\\audio" } else { "E:\\x\\LIB\\AudioLibrary" });
+            assert_eq!(b.project_lib, if own { "P:\\prj" } else { "E:\\x\\LIB\\CymaticProjectLib" });
+        }
+
+        // invalid values give the defaults, valid neighbours stay
+        fs::write(
+            &path,
+            "audio_buffer = \"333\"\r\naudio_out_left = \"x\"\r\naudio_out_right = \"0\"\r\naudio_host = \"ASIO\"\r\n",
+        )
+        .unwrap();
+        let bad = load_config(&path);
+        assert_eq!((bad.audio_out_left, bad.audio_out_right, bad.audio_buffer), (1, 2, 0));
+        assert_eq!(bad.audio_host, "ASIO");
+        fs::write(&path, "audio_out_left = \"999\"\r\naudio_buffer = \"-64\"\r\naudio_out_right = \"18\"\r\n").unwrap();
+        let bad = load_config(&path);
+        assert_eq!((bad.audio_out_left, bad.audio_out_right, bad.audio_buffer), (1, 18, 0));
         let _ = fs::remove_dir_all(&dir);
     }
 
