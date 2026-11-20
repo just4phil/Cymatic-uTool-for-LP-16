@@ -46,7 +46,7 @@ Dazu gibt es eine Oberfläche, die der von uTool2 nachgebaut ist, und eine Komma
 - [Rust](https://www.rust-lang.org/tools/install) (stable), nur zum Bauen
 - Eine uTool2-Projektbibliothek oder ein leerer Ordner, den lp16-tool anlegt
 
-Eine fertig gebaute exe gibt es unter [Releases](../../releases).
+Eine fertig gebaute exe gibt es unter [Releases](../../releases). Sie enthält die ASIO-Ausgabe.
 
 ## Bauen und starten
 
@@ -58,6 +58,30 @@ target\release\lp16-tool.exe
 Ohne Argumente (auch per Doppelklick) startet die Oberfläche. Ohne die Oberfläche (und ohne die
 Audio- und MIDI-Abhängigkeiten `cpal`, `rtrb` und `midir` des Probe-Players) bauen:
 `cargo build --release --no-default-features`.
+
+### Mit ASIO bauen
+
+Der Standard-Build gibt über WASAPI aus und braucht weder das ASIO-SDK noch LLVM. Die
+**ASIO**-Ausgabe (z. B. für den Behringer XR18 mit dem „X-AIR ASIO Driver“) ist das Cargo-Feature
+`asio`. Öffentliche Releases enthalten es. Selbst bauen (Windows):
+
+1. LLVM installieren (seine libclang wird zum Übersetzen der ASIO-Anbindung gebraucht):
+   `winget install --id LLVM.LLVM -e`
+2. Das ASIO-SDK von [steinberg.net/asiosdk](https://www.steinberg.net/asiosdk) herunterladen (die
+   Version mit GPLv3-Option) und entpacken, z. B. nach `C:\SDKssiosdk`, sodass die Ordner
+   `common`, `host` usw. direkt darin liegen.
+3. Umgebungsvariablen setzen (für neue Shells; `setx` speichert sie für den Benutzer):
+   ```
+   setx LIBCLANG_PATH "C:\Program Files\LLVMin"
+   setx CPAL_ASIO_DIR "C:\SDKssiosdk"
+   ```
+4. Bauen:
+   ```
+   cargo build --release --features asio
+   ```
+
+Mit dem Feature erscheint „ASIO“ in der Host-Liste im Reiter Settings, und die Geräteliste zeigt die
+installierten ASIO-Treiber.
 
 ## Einrichtung
 
@@ -114,8 +138,8 @@ Vor dem ersten Export auf einen echten Stick `Recording\` sichern.
 ## Probe-Player
 
 Der Player spielt einen Song der Projektbibliothek über den **Audioausgang** ab, den man im Reiter
-Settings wählt (WASAPI), zum Proben zu Hause. Er schickt außerdem die MIDI-Datei des Songs an einen
-**MIDI-Ausgang** (siehe [MIDI-Ausgang](#midi-ausgang-reiter-settings)). ASIO folgt.
+Settings wählt (WASAPI oder ASIO), zum Proben zu Hause. Er schickt außerdem die MIDI-Datei des Songs an einen
+**MIDI-Ausgang** (siehe [MIDI-Ausgang](#midi-ausgang-reiter-settings)).
 
 - Im Home-Reiter mit der rechten Maustaste auf einen Song klicken und **Play in Rehearsal**
   wählen. Das lädt den Song, wechselt in den Reiter **Rehearsal** und startet die Wiedergabe.
@@ -221,7 +245,7 @@ Gerät fehlt; die Meldung kommt bei Play oder Test tone.
 
 | Einstellung | Schlüssel in `lp16-tool.toml` | Bedeutung | Standard |
 |---|---|---|---|
-| Host | `audio_host` | Audiosystem, heute `WASAPI` (ASIO folgt) | Standard-Host |
+| Host | `audio_host` | Audiosystem: `WASAPI`, und `ASIO` in einem Build mit dem Feature `asio` | Standard-Host |
 | Device | `audio_device` | Name des Ausgabegeräts | leer = Standardgerät |
 | Left / Right | `audio_out_left`, `audio_out_right` | Ausgangskanäle (ab 1) für die linke und rechte Seite des Stereo-Mix; derselbe Kanal zweimal bekommt (L+R)/2 | 1 / 2 |
 | Buffer | `audio_buffer` | Frames: 0 = Treiber-Standard, 64, 128, 256, 512, 1024, 2048 | 0 |
@@ -233,6 +257,14 @@ Gerät fehlt; die Meldung kommt bei Play oder Test tone.
 - Läuft ein Stream, zeigt der Bereich „Running: <Rate> Hz, buffer <N> frames“. Lehnt das Gerät die
   gewählte Puffergröße ab, wird der Treiber-Standard benutzt und ein Hinweis sagt das.
 - Ungültige Werte in der Datei (z. B. `audio_buffer = "333"`) werden durch den Standard ersetzt.
+
+**ASIO** (Build mit `--features asio`): Die Geräteliste zeigt die installierten ASIO-Treiber, und
+Left / Right wählen unter den Ausgangskanälen des Treibers (18 beim XR18). Die Samplerate des Songs
+wird beim Treiber angefordert; lehnt er ab, sagt eine Meldung das. Nimmt der Treiber die Puffergröße
+nicht an, gilt seine eigene Einstellung, und der Hinweis nennt die Einstellung im Control Panel des
+ASIO-Treibers. Viele ASIO-Treiber bedienen nur eine Anwendung: Nutzt die DAW den Treiber, schlägt das
+Öffnen mit einer Meldung fehl, die das nahelegt. Die Sample-Formate `i16`, `i32`, `f32` und `f64` des
+Treibers werden alle unterstützt.
 
 **Behringer XR18:** den Stereo-Mix auf zwei USB-Kanäle legen (z. B. 17 und 18, beim X-AIR-Treiber die
 USB-Return-Kanäle) und in X Air Edit einen Kanal oder Aux-Return mit Quelle USB auf diese Kanäle routen.
@@ -433,5 +465,9 @@ Ob der LP-16 den `validationcode` prüft, ist nicht bekannt; lp16-tool erzeugt i
 
 ## Lizenz
 
-[MIT](LICENSE): frei nutzen, ändern und weitergeben, auch kommerziell. Der Copyright- und
-Lizenzhinweis muss erhalten bleiben. Ohne Gewähr.
+[GPL-3.0-or-later](LICENSE). Die ASIO-Ausgabe nutzt das ASIO-SDK, das Steinberg unter der GPLv3
+(oder einer proprietären Lizenz) anbietet; damit öffentliche Releases ASIO enthalten können, steht
+lp16-tool selbst seit Version 0.2.0 unter der GPL-3.0-or-later. Versionen bis 0.1.2 bleiben unter der
+MIT-Lizenz.
+
+ASIO is a trademark and software of Steinberg Media Technologies GmbH.

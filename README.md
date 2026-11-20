@@ -45,7 +45,7 @@ interface modelled on uTool2 and a command line.
 - [Rust](https://www.rust-lang.org/tools/install) (stable), only for building
 - A uTool2 project library, or an empty folder that lp16-tool sets up
 
-A ready-built exe is available under [Releases](../../releases).
+A ready-built exe is available under [Releases](../../releases). It includes ASIO output.
 
 ## Build and run
 
@@ -57,6 +57,30 @@ target\release\lp16-tool.exe
 Without arguments (also by double-click) the user interface starts. To build without it (and
 without the audio and MIDI dependencies `cpal`, `rtrb` and `midir` of the rehearsal player):
 `cargo build --release --no-default-features`.
+
+### Building with ASIO
+
+The standard build outputs through WASAPI and needs neither the ASIO SDK nor LLVM. The
+**ASIO** output (e.g. for the Behringer XR18 with the "X-AIR ASIO Driver") is the Cargo feature
+`asio`. Public releases contain it. To build it yourself (Windows):
+
+1. Install LLVM (its libclang is needed to compile the ASIO bindings):
+   `winget install --id LLVM.LLVM -e`
+2. Download the ASIO SDK from [steinberg.net/asiosdk](https://www.steinberg.net/asiosdk) (the
+   version with the GPLv3 option) and unpack it, e.g. to `C:\SDKssiosdk`, so that the folders
+   `common`, `host` etc. are directly in it.
+3. Set the environment variables (for new shells; `setx` saves them for the user):
+   ```
+   setx LIBCLANG_PATH "C:\Program Files\LLVMin"
+   setx CPAL_ASIO_DIR "C:\SDKssiosdk"
+   ```
+4. Build:
+   ```
+   cargo build --release --features asio
+   ```
+
+With the feature, "ASIO" appears in the host list of the Settings tab and the device list shows
+the installed ASIO drivers.
 
 ## Setup
 
@@ -113,8 +137,8 @@ Back up `Recording\` before the first export to a real stick.
 ## Rehearsal player
 
 The player plays a song of the project library on the **audio output** you choose in the
-Settings tab (WASAPI), for rehearsing at home. It also sends the MIDI file of the song to a
-**MIDI output** (see [MIDI output](#midi-output-settings-tab)). ASIO follows.
+Settings tab (WASAPI or ASIO), for rehearsing at home. It also sends the MIDI file of the song to a
+**MIDI output** (see [MIDI output](#midi-output-settings-tab)).
 
 - In the Home tab, right-click a song and choose **Play in Rehearsal**. This loads the song,
   switches to the **Rehearsal** tab and starts playing.
@@ -216,7 +240,7 @@ message comes when you press Play or Test tone.
 
 | Setting | Key in `lp16-tool.toml` | Meaning | Default |
 |---|---|---|---|
-| Host | `audio_host` | audio system, today `WASAPI` (ASIO follows) | default host |
+| Host | `audio_host` | audio system: `WASAPI`, and `ASIO` in a build with the `asio` feature | default host |
 | Device | `audio_device` | name of the output device | empty = default device |
 | Left / Right | `audio_out_left`, `audio_out_right` | output channels (1-based) for the left and right side of the stereo mix; the same channel twice gets (L+R)/2 | 1 / 2 |
 | Buffer | `audio_buffer` | frames: 0 = driver default, 64, 128, 256, 512, 1024, 2048 | 0 |
@@ -228,6 +252,14 @@ message comes when you press Play or Test tone.
 - While a stream runs, the area shows "Running: <rate> Hz, buffer <N> frames". If the device
   rejects the chosen buffer size, the driver default is used and a note says so.
 - Invalid values in the file (e.g. `audio_buffer = "333"`) are replaced by the default.
+
+**ASIO** (build with `--features asio`): the device list shows the installed ASIO drivers, and
+Left / Right choose among the output channels of the driver (18 for the XR18). The song's sample
+rate is requested from the driver; if it refuses, a message says so. If the driver does not take
+the buffer size, its own setting is used and the note says to set the buffer size in the ASIO
+driver's control panel. Many ASIO drivers serve only one application: if your DAW uses the
+driver, opening it fails with a message that suggests this. The driver's sample formats `i16`,
+`i32`, `f32` and `f64` are all supported.
 
 **Behringer XR18:** put the stereo mix on two USB channels (e.g. 17 and 18, with the X-AIR
 driver the USB return channels) and in X Air Edit route a channel or an aux return with source
@@ -427,5 +459,9 @@ uTool2 does.
 
 ## License
 
-[MIT](LICENSE): free to use, modify and distribute, including commercially. The copyright and
-license notice must be kept. No warranty.
+[GPL-3.0-or-later](LICENSE). The ASIO output uses the ASIO SDK, which Steinberg offers under
+the GPLv3 (or a proprietary license); so that public releases can contain ASIO, lp16-tool itself
+is licensed under the GPL-3.0-or-later since version 0.2.0. Versions up to 0.1.2 remain under the
+MIT license.
+
+ASIO is a trademark and software of Steinberg Media Technologies GmbH.

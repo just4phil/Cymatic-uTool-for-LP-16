@@ -1,13 +1,15 @@
 [package]
 name = "lp16-tool"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
-license = "MIT"
+license = "GPL-3.0-or-later"
 
 [features]
 default = ["gui"]
 gui = ["dep:eframe", "dep:rfd", "player"]
 player = ["dep:cpal", "dep:rtrb", "dep:midir"]
+# ASIO output; needs the ASIO SDK (CPAL_ASIO_DIR) and LLVM (LIBCLANG_PATH) to build
+asio = ["player", "cpal/asio"]
 
 [dependencies]
 eframe = { version = "0.27", optional = true }
