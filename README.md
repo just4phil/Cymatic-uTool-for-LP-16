@@ -36,7 +36,7 @@ interface modelled on uTool2 and a command line.
 - **Batch import of songs:** creates songs from new folders of the AudioLibrary in one go, see
   [Import](#import-batch-import-of-songs).
 - **Edit Target:** the contents of the stick as a tree, with details on songs and playlists.
-- **Rehearsal player (first version):** plays a song of the library on an audio output of your
+- **Rehearsal player:** plays songs and playlists of the library on an audio output of your
   choice, with a 16-channel rehearsal mix, see [Rehearsal player](#rehearsal-player).
 
 ## Requirements
@@ -111,11 +111,14 @@ Back up `Recording\` before the first export to a real stick.
 ## Rehearsal player
 
 The player plays a song of the project library on the **audio output** you choose in the
-Settings tab (WASAPI), for rehearsing at home. It is the first version; the playlist,
-MIDI and ASIO follow.
+Settings tab (WASAPI), for rehearsing at home. MIDI and ASIO follow.
 
 - In the Home tab, right-click a song and choose **Play in Rehearsal**. This loads the song,
   switches to the **Rehearsal** tab and starts playing.
+- To play a playlist, right-click it in the Home tab and choose **Play in Rehearsal**, or pick it
+  in the **Playlist** combo at the left of the Rehearsal tab. This loads the first song and
+  switches to the tab; it does **not** start by itself, because live the first song waits for the
+  button, too. The combo also shows "(single song)" while a single song is loaded.
 - The tab shows the song name, position and length, a progress bar (click or drag to jump), Play/Pause,
   Stop and "−10 s" / "+10 s" buttons. A counter appears when the audio buffer ran empty (dropouts). Warnings name
   the track and the reason, e.g. a missing or unreadable WAV. The song plays with the other
@@ -132,7 +135,32 @@ MIDI and ASIO follow.
   | Home | jump to 0, the state stays |
   | Esc | Stop |
 
-  Up/Down are reserved for playlists.
+  | Up / Down | previous / next song |
+
+  The same functions are on the buttons next to Play.
+- **Playlists:** the song list at the left shows number, name, length and a note symbol if the song
+  has a MIDI file. The current song has a coloured background, the next one is marked with a frame
+  and an arrow. A song that cannot be read (e.g. its `.songprj` is missing) is red, with the reason
+  as tooltip, and is skipped. Double-click a song to start it. The buttons ⏮ and ⏭ (keys Up and
+  Down) go to the previous and next song:
+  - Next: while a song plays the next one starts at once; otherwise it is loaded at position 0 and
+    stopped. At the last song nothing happens.
+  - Previous: further than 3 s into the song it jumps to its start, otherwise the song before is
+    loaded (it starts at once if the player was playing).
+- **Start modes:** the start mode of a song in the playlist (`start_mode`) tells how it starts after
+  the one before it. `wait_for_button_press` (or empty): when the song before has ended, the player
+  waits (the tab says "Next: <song> – press Play") and the next song starts with Play. Any other value
+  (the library only contains `wait_for_button_press` so far; this is an assumption): the next song starts by itself
+  after `start_mode_delay` seconds of silence (the tab says "Next: <song> in <n> s"). Play during the
+  countdown starts it at once, Pause cancels it. After the last song the player stops; Play then starts
+  the playlist again from the first song.
+- The next song is opened while the current one has less than 10 s left (and while waiting), so it
+  starts without a noticeable delay. If it has another sample rate, the output is opened again with
+  that rate before it starts.
+- If the loaded playlist is saved in the playlist editor, the queue is built again; the song that
+  plays goes on at the same position if it is still in the playlist, otherwise the player stops on
+  the first song. A renamed playlist stays selected under its new name. If it is deleted, the player
+  stops and unloads it, with a message.
 - All tracks are streamed from disk in sync (nothing is loaded into memory up front) and mixed
   to stereo by the [rehearsal mix](#rehearsal-mix); the result is limited to full scale.
 - The stream is opened with the **sample rate of the song**. If the next song has another rate,
@@ -140,8 +168,8 @@ MIDI and ASIO follow.
   only not played if the device does not support its rate (the tab says so).
 - WAVs must be mono with 8, 16, 24 or 32 bit integer or 32 bit float samples. A track with
   another sample rate than the first readable track stays silent.
-- If the song is renamed, deleted or saved in the song editor while it is loaded, the player
-  stops and unloads it and the tab asks you to load it again.
+- If a song is renamed, deleted or saved in the song editor while it is in the loaded queue, the
+  player stops and unloads it and the tab asks you to load it again.
 - Export, import and library editing keep working while a song plays.
 - Without a usable audio device the tab shows a message, and Play tries again. If the device
   disappears during playback, playback stops, the position stays and the tab says "Audio device
@@ -281,11 +309,13 @@ damaged. Nothing is deleted on the stick.
 | `src/project_lib.rs` | Project Library: list, create, rename, copy and delete songs and playlists. Renaming a song keeps the playlists pointing at it; a song that a playlist uses cannot be deleted. |
 | `src/sync.rs` | Stick Sync: `plan` (what an export would do), `run` (export and verify). Command line and user interface use the same process. |
 | `src/mix.rs` | The rehearsal mix: strips, presets, config lines, saving timer |
-| `src/rehearsal.rs` | Playback engine of the rehearsal player (reading, mixing, meters, transport), independent of any audio device (feature `player`) |
+| `src/rehearsal.rs` | Playback engine of the rehearsal player (reading, mixing, meters, transport, playlist queue with start modes and preloading), independent of any audio device (feature `player`) |
+| `src/rehearsal_queue.rs` | The queue of the player: entries, the mailbox that opens songs for the engine, rows of the song list (feature `player`) |
 | `src/audio_out.rs` | Audio output adapter: hosts, devices and streams via `cpal`, channel distribution, test tone, commands and status between the user interface and the audio callback (feature `player`) |
 | `src/main.rs` | Command line |
 | `src/gui_app.rs` | User interface (egui 0.27) |
 | `src/gui_rehearsal.rs` | The Rehearsal tab |
+| `src/gui_playlist.rs` | Playlist combo and song list in the Rehearsal tab |
 | `src/gui_mixer.rs` | The rehearsal mix in the Rehearsal tab |
 | `src/gui_audio.rs` | The "Audio output" area of the Settings tab |
 

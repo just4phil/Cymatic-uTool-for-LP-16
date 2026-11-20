@@ -37,7 +37,7 @@ Dazu gibt es eine Oberfläche, die der von uTool2 nachgebaut ist, und eine Komma
 - **Batch-Import von Songs:** legt aus neuen Ordnern der AudioLibrary auf einen Schlag Songs an,
   siehe [Import](#import-batch-import-von-songs).
 - **Edit Target:** Inhalt des Sticks als Baum, mit Details zu Songs und Playlists.
-- **Probe-Player (erste Version):** spielt einen Song der Bibliothek über einen wählbaren
+- **Probe-Player:** spielt Songs und Playlists der Bibliothek über einen wählbaren
   Audioausgang ab, mit einem 16-Kanal-Proben-Mix, siehe [Probe-Player](#probe-player).
 
 ## Voraussetzungen
@@ -112,11 +112,15 @@ Vor dem ersten Export auf einen echten Stick `Recording\` sichern.
 ## Probe-Player
 
 Der Player spielt einen Song der Projektbibliothek über den **Audioausgang** ab, den man im Reiter
-Settings wählt (WASAPI), zum Proben zu Hause. Das ist die erste Version; Playlist,
-MIDI und ASIO folgen.
+Settings wählt (WASAPI), zum Proben zu Hause. MIDI und ASIO folgen.
 
 - Im Home-Reiter mit der rechten Maustaste auf einen Song klicken und **Play in Rehearsal**
   wählen. Das lädt den Song, wechselt in den Reiter **Rehearsal** und startet die Wiedergabe.
+- Für eine Playlist: im Home-Reiter mit der rechten Maustaste auf sie klicken und **Play in
+  Rehearsal** wählen, oder sie im Combo **Playlist** links im Reiter Rehearsal auswählen. Das lädt den
+  ersten Song und wechselt in den Reiter; es startet **nicht** von selbst, weil der erste Song live
+  auch auf die Taste wartet. Das Combo zeigt außerdem „(single song)“, solange ein einzelner Song
+  geladen ist.
 - Der Reiter zeigt Songname, Position und Länge, einen Fortschrittsbalken (Klicken oder Ziehen springt),
   Play/Pause, Stop und die Knöpfe "−10 s" / "+10 s". Ein Zähler erscheint, wenn der Audiopuffer leer lief (Aussetzer).
   Warnungen nennen Spur und Grund, z. B. eine fehlende oder nicht lesbare WAV. Der Song spielt
@@ -133,7 +137,32 @@ MIDI und ASIO folgen.
   | Pos1 | auf 0 springen, der Zustand bleibt |
   | Esc | Stop |
 
-  Hoch/Runter sind für Playlists reserviert.
+  | Hoch / Runter | voriger / nächster Song |
+
+  Dieselben Funktionen liegen auf den Knöpfen neben Play.
+- **Playlists:** Die Songliste links zeigt Nummer, Name, Länge und ein Notensymbol, wenn der Song
+  eine MIDI-Datei hat. Der aktuelle Song ist farbig hinterlegt, der nächste mit Rahmen und Pfeil
+  markiert. Ein Song, der nicht gelesen werden kann (z. B. fehlende `.songprj`), ist rot, mit dem
+  Grund als Tooltip, und wird übersprungen. Doppelklick startet einen Song. Die Knöpfe ⏮ und ⏭
+  (Tasten Hoch und Runter) springen zum vorigen und nächsten Song:
+  - Nächster: Läuft gerade ein Song, startet der nächste sofort; sonst wird er auf Position 0
+    geladen und bleibt gestoppt. Beim letzten Song passiert nichts.
+  - Voriger: Weiter als 3 s im Song springt er an seinen Anfang, sonst wird der Song davor geladen
+    (und startet sofort, wenn der Player gespielt hat).
+- **Startmodi:** Der Startmodus eines Songs in der Playlist (`start_mode`) sagt, wie er nach dem
+  Song davor startet. `wait_for_button_press` (oder leer): Nach dem Ende des Songs davor wartet der
+  Player (der Reiter zeigt „Next: <Song> – press Play“), und der nächste Song startet mit Play. Jeder
+  andere Wert (in der Bibliothek kommt bisher nur `wait_for_button_press` vor, das ist eine Annahme): Der nächste Song
+  startet von selbst nach `start_mode_delay` Sekunden Stille (der Reiter zeigt „Next: <Song> in <n> s“).
+  Play während des Countdowns startet sofort, Pause bricht ihn ab. Nach dem letzten Song bleibt der
+  Player stehen; Play startet die Playlist dann wieder beim ersten Song.
+- Der nächste Song wird geöffnet, sobald vom aktuellen weniger als 10 s übrig sind (und während
+  des Wartens), damit er ohne spürbare Verzögerung startet. Hat er eine andere Samplerate, wird der
+  Ausgang vor dem Start mit dieser Rate neu geöffnet.
+- Wird die geladene Playlist im Playlist-Editor gespeichert, wird die Warteschlange neu aufgebaut;
+  der spielende Song läuft an derselben Position weiter, wenn er noch in der Playlist ist, sonst
+  stoppt der Player beim ersten Song. Eine umbenannte Playlist bleibt unter dem neuen Namen
+  ausgewählt. Wird sie gelöscht, stoppt der Player und entlädt sie, mit einem Hinweis.
 - Alle Spuren werden synchron von der Platte gestreamt (nichts wird vorab in den Speicher
   geladen) und zu Stereo gemischt, und zwar vom [Proben-Mix](#proben-mix); das Ergebnis wird auf
   Vollaussteuerung begrenzt.
@@ -142,8 +171,8 @@ MIDI und ASIO folgen.
   wird nur dann nicht gespielt, wenn das Gerät seine Rate nicht unterstützt (der Reiter sagt das).
 - WAVs müssen mono sein, mit 8, 16, 24 oder 32 Bit Integer oder 32 Bit Float. Eine Spur mit
   anderer Samplerate als die erste lesbare Spur bleibt still.
-- Wird der Song umbenannt, gelöscht oder im Song-Editor gespeichert, während er geladen ist,
-  stoppt der Player und entlädt ihn, und der Reiter fordert auf, ihn neu zu laden.
+- Wird ein Song umbenannt, gelöscht oder im Song-Editor gespeichert, während er in der geladenen
+  Warteschlange ist, stoppt der Player und entlädt sie, und der Reiter fordert auf, sie neu zu laden.
 - Export, Import und Bibliotheksbearbeitung bleiben während der Wiedergabe benutzbar.
 - Ohne nutzbares Audiogerät zeigt der Reiter eine Meldung, und Play versucht es erneut. Verschwindet
   das Gerät während der Wiedergabe, stoppt sie, die Position bleibt und der Reiter meldet „Audio
@@ -285,11 +314,13 @@ Dateien auf dem Stick beschädigt sein könnten. Gelöscht wird auf dem Stick ni
 | `src/project_lib.rs` | Projektbibliothek: Songs und Playlists auflisten, anlegen, umbenennen, kopieren und löschen. Beim Umbenennen eines Songs zeigen die Playlists weiter auf ihn; ein Song, den eine Playlist nutzt, lässt sich nicht löschen. |
 | `src/sync.rs` | Stick Sync: `plan` (was ein Export tun würde), `run` (exportieren und prüfen). Kommandozeile und Oberfläche nutzen denselben Ablauf. |
 | `src/mix.rs` | Der Proben-Mix: Kanalzüge, Presets, Config-Zeilen, Speicher-Timer |
-| `src/rehearsal.rs` | Abspiel-Engine des Probe-Players (Lesen, Mischen, Pegelanzeigen, Transport), unabhängig von jedem Audiogerät (Feature `player`) |
+| `src/rehearsal.rs` | Abspiel-Engine des Probe-Players (Lesen, Mischen, Pegelanzeigen, Transport, Playlist-Warteschlange mit Startmodi und Vorladen), unabhängig von jedem Audiogerät (Feature `player`) |
+| `src/rehearsal_queue.rs` | Die Warteschlange des Players: Einträge, der Briefkasten, der Songs für die Engine öffnet, Zeilen der Songliste (Feature `player`) |
 | `src/audio_out.rs` | Adapter für den Audioausgang: Hosts, Geräte und Streams über `cpal`, Kanalverteilung, Testton, Befehle und Status zwischen Oberfläche und Audio-Callback (Feature `player`) |
 | `src/main.rs` | Kommandozeile |
 | `src/gui_app.rs` | Oberfläche (egui 0.27) |
 | `src/gui_rehearsal.rs` | Der Reiter Rehearsal |
+| `src/gui_playlist.rs` | Playlist-Combo und Songliste im Reiter Rehearsal |
 | `src/gui_mixer.rs` | Der Proben-Mix im Reiter Rehearsal |
 | `src/gui_audio.rs` | Der Bereich „Audio output“ im Reiter Settings |
 

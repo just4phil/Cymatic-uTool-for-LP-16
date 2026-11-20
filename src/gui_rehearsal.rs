@@ -1,15 +1,19 @@
-//! The "Rehearsal" tab: shows the song in the rehearsal player and controls
-//! it. All the logic (mixing, transport, reading) is in the library
-//! (`lp16_tool::rehearsal`, `lp16_tool::audio_out`); this only draws and
-//! sends commands.
+//! The "Rehearsal" tab: the playlist and song list on the left, the song in
+//! the rehearsal player in the middle, the rehearsal mix below. All the
+//! logic (mixing, transport, the queue, reading) is in the library
+//! (`lp16_tool::rehearsal`, `lp16_tool::rehearsal_queue`,
+//! `lp16_tool::audio_out`); this only draws and sends commands.
 
-use crate::gui_app::{key, DIM, LINE, ORANGE, PANEL, RED, TEXT};
+use crate::gui_app::{DIM, LINE, ORANGE, PANEL, RED, TEXT};
 use crate::gui_mixer::MixerPanel;
+use crate::gui_playlist;
 use eframe::egui::{self, vec2, Align, Color32, Key, Layout, Modifiers, RichText, Sense, Stroke, Ui};
 use lp16_tool::audio_out::{AudioSettings, Command, Player, StreamInfo};
 use lp16_tool::mix::{MixLibrary, MixParams, STRIPS};
-use lp16_tool::rehearsal::{fmt_clock, Engine, LoadedSong, PlayState, Status};
-use lp16_tool::SongProject;
+use lp16_tool::rehearsal::{fmt_clock, Engine, PlayState, Status};
+use lp16_tool::rehearsal_queue::{entries_from_playlist, find_path, next_caption, same_songs, song_rows, QueueEntry};
+use lp16_tool::{PlaylistSong, SongProject};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// Seconds a key press or button jumps by (Shift: the long jump).
@@ -18,6 +22,8 @@ const LONG_STEP_SECONDS: f64 = 30.0;
 /// Quick jumps add up to the last target for this long, because the status
 /// only shows it after the next audio block.
 const SEEK_MEMORY: Duration = Duration::from_millis(400);
+/// Width of the left part (playlist and song list).
+const LIST_WIDTH: f32 = 290.0;
 
 /// Shown after the loaded song was renamed, deleted or saved.
 pub const CHANGED_NOTICE: &str = "The song was changed in the library \u{2013} load it again.";
@@ -31,13 +37,19 @@ pub struct RehearsalPanel {
     settings: AudioSettings,
     /// why the audio output could not be opened, or was lost
     device_error: Option<String>,
-    /// the loaded song, to open it again on a new stream
-    project: Option<SongProject>,
+    /// the queue: the songs of the loaded playlist, or one single song
+    entries: Arc<Vec<QueueEntry>>,
+    /// name of the loaded playlist; None for a single song
+    playlist: Option<String>,
+    /// the playlist as the queue was built from it, to see a change
+    loaded_songs: Vec<PlaylistSong>,
+    /// {$AudioLib} of the library, and its playlists (kept up to date by
+    /// `set_library`)
+    audio_lib: String,
+    library: Vec<(String, Vec<PlaylistSong>)>,
     /// status of the loaded song while no stream is open (lost device,
-    /// test tone, failed open); the position is kept
+    /// test tone, nothing played yet); the position is kept
     parked: Option<Status>,
-    /// .songprj of the loaded song
-    song_path: Option<String>,
     notice: Option<String>,
     /// target time while the progress bar is being dragged
     drag_target: Option<f64>,
@@ -47,8 +59,10 @@ pub struct RehearsalPanel {
     mixer: MixerPanel,
     /// the mix the engine should use; sent again to every new stream
     mix: MixParams,
-    /// per LP-16 output the names of the tracks of the loaded song
+    /// per LP-16 output the names of the tracks of the loaded song, and the
+    /// queue index they are for
     track_names: [String; STRIPS],
+    names_for: Option<usize>,
 }
 
 /// The track names per strip: tracks on the same output are joined.
@@ -92,6 +106,117 @@ impl RehearsalPanel {
         self.device_error.as_deref()
     }
 
+    // -- the library -----------------------------------------------------------
+
+    /// The playlists of the project library (called whenever the library is
+    /// read again). If the loaded playlist was saved with other songs, the
+    /// queue is rebuilt: the song that plays goes on, if it is still in it.
+    pub fn set_library(&mut self, audio_lib: &str, playlists: Vec<(String, Vec<PlaylistSong>)>) {
+        self.audio_lib = audio_lib.to_string();
+        self.library = playlists;
+        let Some(name) = self.playlist.clone() else { return };
+        let changed = self
+            .library
+            .iter()
+            .find(|(n, _)| *n == name)
+            .filter(|(_, songs)| !same_songs(songs, &self.loaded_songs))
+            .map(|(_, songs)| songs.clone());
+        if let Some(songs) = changed {
+            self.rebuild(songs);
+        }
+    }
+
+    /// The loaded playlist was renamed: the combo follows.
+    pub fn playlist_renamed(&mut self, old: &str, new: &str) {
+        if self.playlist.as_deref() == Some(old) {
+            self.playlist = Some(new.to_string());
+        }
+    }
+
+    /// The loaded playlist was deleted: stop, unload, tell the user.
+    pub fn playlist_deleted(&mut self, name: &str) {
+        if self.playlist.as_deref() != Some(name) {
+            return;
+        }
+        self.clear(format!("The playlist \"{}\" was deleted \u{2013} the player stopped.", name));
+    }
+
+    /// The song file `path` is about to be renamed, deleted or saved: stop
+    /// and unload the queue if the song is in it.
+    pub fn song_changed(&mut self, path: &str) {
+        if find_path(&self.entries, path, None).is_some() {
+            self.clear(CHANGED_NOTICE.to_string());
+        }
+    }
+
+    /// Stop, unload everything and show `notice`.
+    fn clear(&mut self, notice: String) {
+        if let Some(player) = &self.player {
+            player.send(Command::Stop);
+            player.send(Command::SetQueue(Arc::new(Vec::new())));
+        }
+        self.entries = Arc::new(Vec::new());
+        self.playlist = None;
+        self.loaded_songs.clear();
+        self.parked = None;
+        self.names_for = None;
+        self.track_names = Default::default();
+        self.notice = Some(notice);
+    }
+
+    /// The playlist `songs` was saved: build the queue again.
+    fn rebuild(&mut self, songs: Vec<PlaylistSong>) {
+        let current = self.current_status();
+        let current_path = current
+            .as_ref()
+            .and_then(|st| st.index)
+            .and_then(|i| self.entries.get(i))
+            .and_then(|e| e.path())
+            .map(str::to_string);
+        let new = Arc::new(entries_from_playlist(&songs, &self.audio_lib));
+        let loaded = current.as_ref().map(|st| st.state != PlayState::Empty).unwrap_or(false);
+        let at = current_path.as_deref().and_then(|p| find_path(&new, p, current.as_ref().and_then(|s| s.index)));
+        self.loaded_songs = songs;
+        self.entries = new.clone();
+        self.names_for = None;
+        if let Some(player) = &self.player {
+            player.send(Command::ReplaceQueue(new));
+        } else if loaded {
+            match (at, self.parked.as_mut()) {
+                (Some(i), Some(st)) => st.index = Some(i),
+                _ => self.parked = None,
+            }
+            if at.is_none() {
+                if let Some(first) = self.first_readable(0) {
+                    self.parked = Some(self.offline_status(first, 0.0));
+                }
+            }
+        }
+        if loaded && at.is_none() {
+            self.notice = Some(
+                "The playlist was changed and the song that was loaded is no longer in it \u{2013} the player stopped."
+                    .to_string(),
+            );
+        }
+    }
+
+    /// Load playlist `name` of the library, stopped on its first song. It
+    /// does not start by itself: live, the first song waits for the button,
+    /// too.
+    pub fn play_playlist(&mut self, name: &str) {
+        let Some(songs) = self.library.iter().find(|(n, _)| n == name).map(|(_, s)| s.clone()) else { return };
+        let entries = entries_from_playlist(&songs, &self.audio_lib);
+        self.load_queue(entries, Some(name.to_string()), songs, false);
+    }
+
+    /// Load `project` as a queue of one song and start it. If the audio
+    /// output cannot be opened the tab shows why, and Play tries again.
+    pub fn play_song(&mut self, project: &SongProject) {
+        self.load_queue(vec![QueueEntry::single(project.clone())], None, Vec::new(), true);
+    }
+
+    // -- the stream ------------------------------------------------------------
+
     /// Make sure a stream with `rate` and the current settings is open.
     /// The old one is closed first (it may hold the device).
     fn open_stream(&mut self, rate: u32) -> bool {
@@ -113,28 +238,114 @@ impl RehearsalPanel {
         }
     }
 
-    /// Load `project` into the player and start it. If the audio output
-    /// cannot be opened the tab shows why, and Play tries again.
-    pub fn play_song(&mut self, project: &SongProject) {
-        let loaded = LoadedSong::open(project);
-        let rate = loaded.rate();
-        self.project = Some(project.clone());
-        self.track_names = track_names(project);
-        self.song_path = Some(project.path.clone());
+    fn stream_fits(&self, rate: u32) -> bool {
+        self.player.as_ref().map(|p| p.matches(&self.settings, rate)).unwrap_or(false)
+    }
+
+    /// The sample rate to open the stream with for queue entry `index`.
+    fn rate_of(&self, index: usize) -> u32 {
+        self.entries
+            .get(index)
+            .and_then(|e| e.project.as_ref().ok())
+            .map(|p| p.sampling_rate)
+            .filter(|r| *r > 0)
+            .unwrap_or(48000)
+    }
+
+    fn first_readable(&self, from: usize) -> Option<usize> {
+        (from..self.entries.len()).find(|&i| self.entries[i].readable())
+    }
+
+    /// The queue goes to a stream that was just opened.
+    fn send_queue(&self) {
+        if let Some(player) = &self.player {
+            player.send(Command::SetQueue(self.entries.clone()));
+        }
+    }
+
+    /// A status for the song `index` without any output device: a
+    /// throw-away engine opens it. `position` is kept.
+    fn offline_status(&self, index: usize, position: f64) -> Status {
+        let mut engine = Engine::new(self.rate_of(index));
+        drop(engine.set_queue_arc(self.entries.clone()));
+        engine.goto(index, false);
+        engine.settle();
+        if position > 0.0 {
+            engine.seek(position);
+            engine.settle();
+        }
+        engine.status()
+    }
+
+    /// Change what the parked song (no stream) does, with a throw-away engine.
+    fn offline(&mut self, f: impl FnOnce(&mut Engine)) {
+        let Some(parked) = self.parked.clone() else { return };
+        let index = parked.index.unwrap_or(0);
+        let mut engine = Engine::new(self.rate_of(index));
+        drop(engine.set_queue_arc(self.entries.clone()));
+        engine.goto(index, false);
+        engine.settle();
+        if parked.position_seconds > 0.0 {
+            engine.seek(parked.position_seconds);
+        }
+        f(&mut engine);
+        engine.settle();
+        self.parked = Some(engine.status());
+    }
+
+    /// Use `entries` as the queue and load its first readable song:
+    /// playing (`autoplay`) or stopped.
+    fn load_queue(&mut self, entries: Vec<QueueEntry>, playlist: Option<String>, songs: Vec<PlaylistSong>, autoplay: bool) {
+        self.entries = Arc::new(entries);
+        self.playlist = playlist;
+        self.loaded_songs = songs;
         self.notice = None;
         self.drag_target = None;
         self.last_seek = None;
         self.parked = None;
-        if self.open_stream(rate) {
+        self.names_for = None;
+        let Some(first) = self.first_readable(0) else {
+            // nothing to play: the status carries the warnings
+            if self.player.is_some() {
+                self.send_queue();
+            } else {
+                self.parked = Some(self.offline_status(0, 0.0));
+            }
+            return;
+        };
+        if autoplay {
+            self.start(first, true, true);
+        } else if self.stream_fits(self.rate_of(first)) {
+            self.send_queue();
             if let Some(player) = &self.player {
-                player.send(Command::Load(Box::new(loaded)));
-                player.send(Command::Play);
+                player.send(Command::Goto(first, false));
             }
         } else {
-            // a throw-away engine gives the status of the song
-            let mut engine = Engine::new(rate);
-            drop(engine.set_song(loaded));
-            self.parked = Some(engine.status());
+            // no need to hold the audio device before Play
+            self.player = None;
+            self.parked = Some(self.offline_status(first, 0.0));
+        }
+    }
+
+    /// Start song `index` (or the next readable one) at its beginning on a
+    /// stream of its rate, opening one if needed. `new_queue`: the engine
+    /// has to be given the queue even if the stream is kept.
+    fn start(&mut self, index: usize, autoplay: bool, new_queue: bool) {
+        let Some(i) = self.first_readable(index) else { return };
+        let rate = self.rate_of(i);
+        if !self.stream_fits(rate) {
+            if !self.open_stream(rate) {
+                self.parked = Some(self.offline_status(i, 0.0));
+                return;
+            }
+            self.send_queue();
+        } else if new_queue {
+            self.send_queue();
+        }
+        self.parked = None;
+        self.last_seek = None;
+        if let Some(player) = &self.player {
+            player.send(Command::Goto(i, autoplay));
         }
     }
 
@@ -144,7 +355,7 @@ impl RehearsalPanel {
         let Some(player) = self.player.take() else { return };
         let mut st = player.status();
         drop(player);
-        if self.project.is_some() && st.state != PlayState::Empty {
+        if !self.entries.is_empty() && st.state != PlayState::Empty {
             if st.state == PlayState::Playing {
                 st.state = PlayState::Paused;
             }
@@ -154,15 +365,21 @@ impl RehearsalPanel {
 
     /// Open the stream again for the parked song at its position.
     fn resume(&mut self, play: bool) {
-        let (Some(project), Some(parked)) = (self.project.clone(), self.parked.clone()) else { return };
-        let loaded = LoadedSong::open(&project);
-        if !self.open_stream(loaded.rate()) {
+        let Some(parked) = self.parked.clone() else { return };
+        let index = parked.index.unwrap_or(0);
+        if !self.open_stream(self.rate_of(index)) {
             return;
         }
+        self.send_queue();
         if let Some(player) = &self.player {
-            player.send(Command::Load(Box::new(loaded)));
+            player.send(Command::Goto(index, false));
             if parked.position_seconds > 0.0 {
                 player.send(Command::Seek(parked.position_seconds));
+            }
+            match parked.state {
+                PlayState::Waiting => player.send(Command::Hold(None)),
+                PlayState::Countdown => player.send(Command::Hold(Some(parked.countdown_seconds))),
+                _ => {}
             }
             if play {
                 player.send(Command::Play);
@@ -179,22 +396,35 @@ impl RehearsalPanel {
         self.device_error = Some(e);
     }
 
-    /// The song file `path` is about to be renamed, deleted or saved: stop
-    /// and unload it if it is the loaded one.
-    pub fn song_changed(&mut self, path: &str) {
-        let loaded = self.song_path.as_deref().map(|p| key(p) == key(path)).unwrap_or(false);
-        if !loaded {
+    /// The song that is loaded has another sample rate than the stream
+    /// (the next song of the playlist): open the stream again with the new
+    /// rate, carry the queue over and go on in the same state.
+    fn check_rate(&mut self) {
+        let Some(player) = &self.player else { return };
+        let st = player.status();
+        let (Some(rate), Some(index)) = (st.needs_rate, st.index) else { return };
+        if player.output_rate() == rate {
             return;
         }
-        if let Some(player) = &self.player {
-            player.send(Command::Stop);
-            player.send(Command::Unload);
+        self.player = None;
+        if !self.open_stream(rate) {
+            self.parked = Some(self.offline_status(index, 0.0));
+            return;
         }
-        self.song_path = None;
-        self.project = None;
-        self.track_names = Default::default();
-        self.parked = None;
-        self.notice = Some(CHANGED_NOTICE.to_string());
+        self.send_queue();
+        if let Some(player) = &self.player {
+            player.send(Command::Goto(index, st.state == PlayState::Playing));
+            match st.state {
+                PlayState::Waiting => player.send(Command::Hold(None)),
+                PlayState::Countdown => player.send(Command::Hold(Some(st.countdown_seconds))),
+                _ => {}
+            }
+        }
+    }
+
+    /// The status of the player, or of the parked song.
+    fn current_status(&self) -> Option<Status> {
+        self.player.as_ref().map(|p| p.status()).or_else(|| self.parked.clone())
     }
 
     pub fn is_playing(&self) -> bool {
@@ -205,6 +435,8 @@ impl RehearsalPanel {
     pub fn shutdown(&mut self) {
         self.player = None;
     }
+
+    // -- transport -------------------------------------------------------------
 
     /// Jump to `seconds` (clamped to the song) in the player.
     pub fn seek(&mut self, seconds: f64, length: f64) {
@@ -229,6 +461,13 @@ impl RehearsalPanel {
 
     /// Play or pause, as the big button does.
     pub fn toggle_play(&mut self, st: &Status) {
+        if st.state == PlayState::Empty {
+            // a playlist is selected but nothing is loaded
+            if let Some(first) = self.first_readable(0) {
+                self.start(first, true, true);
+            }
+            return;
+        }
         if st.state == PlayState::Playing {
             if let Some(player) = &self.player {
                 player.send(Command::Pause);
@@ -255,6 +494,30 @@ impl RehearsalPanel {
         } else if let Some(st) = self.parked.as_mut() {
             st.position_seconds = 0.0;
             st.position_frames = 0;
+            if matches!(st.state, PlayState::Waiting | PlayState::Countdown) {
+                st.state = PlayState::Stopped;
+            }
+        }
+        self.last_seek = None;
+    }
+
+    /// The next song, as the button and the Down key do.
+    pub fn next_song(&mut self) {
+        if let Some(player) = &self.player {
+            player.send(Command::Next);
+        } else {
+            self.offline(|e| e.next());
+        }
+        self.last_seek = None;
+    }
+
+    /// The previous song (or the start of this one), as the button and the
+    /// Up key do.
+    pub fn prev_song(&mut self) {
+        if let Some(player) = &self.player {
+            player.send(Command::Prev);
+        } else {
+            self.offline(|e| e.prev());
         }
         self.last_seek = None;
     }
@@ -276,6 +539,11 @@ impl RehearsalPanel {
         } else if pressed(ui, Modifiers::NONE, Key::ArrowRight) {
             self.seek_by(st, STEP_SECONDS);
         }
+        if pressed(ui, Modifiers::NONE, Key::ArrowUp) {
+            self.prev_song();
+        } else if pressed(ui, Modifiers::NONE, Key::ArrowDown) {
+            self.next_song();
+        }
         if pressed(ui, Modifiers::NONE, Key::Space) {
             self.toggle_play(st);
         }
@@ -287,15 +555,50 @@ impl RehearsalPanel {
         }
     }
 
-    /// Draw the tab: the player, below it the rehearsal mix `mixes`.
-    /// Returns true if the mix (values or presets) was changed, so the
-    /// caller saves the config.
+    // -- drawing ---------------------------------------------------------------
+
+    /// Draw the tab: the playlist and the player, below them the rehearsal
+    /// mix `mixes`. Returns true if the mix (values or presets) was changed,
+    /// so the caller saves the config.
     pub fn ui(&mut self, ui: &mut Ui, mixes: &mut MixLibrary) -> bool {
         self.check_stream();
+        self.check_rate();
+        let status = self.current_status();
+        // the names on the strips follow the song
+        let index = status.as_ref().and_then(|s| s.index);
+        if index != self.names_for {
+            self.names_for = index;
+            self.track_names = index
+                .and_then(|i| self.entries.get(i))
+                .and_then(|e| e.project.as_ref().ok())
+                .map(track_names)
+                .unwrap_or_default();
+        }
+        if let Some(st) = &status {
+            if st.state == PlayState::Countdown {
+                ui.ctx().request_repaint_after(Duration::from_millis(100));
+            } else if st.state != PlayState::Empty && st.length_frames == 0 {
+                // the song is still being opened
+                ui.ctx().request_repaint_after(Duration::from_millis(30));
+            }
+        }
         let levels = self.player.as_ref().map(|p| p.take_levels()).unwrap_or_default();
         let mut changed = false;
         egui::ScrollArea::vertical().id_source("rehearsal_scroll").auto_shrink([false, false]).show(ui, |ui| {
-            self.player_area(ui);
+            ui.horizontal_top(|ui| {
+                let total = ui.available_width();
+                let left = LIST_WIDTH.min(total * 0.4);
+                ui.allocate_ui_with_layout(vec2(left, 10.0), Layout::top_down(Align::LEFT), |ui| {
+                    ui.set_width(left);
+                    self.list_area(ui, status.as_ref());
+                });
+                ui.separator();
+                let right = ui.available_width().max(300.0);
+                ui.allocate_ui_with_layout(vec2(right, 10.0), Layout::top_down(Align::Center), |ui| {
+                    ui.set_width(right);
+                    self.player_area(ui, status.as_ref());
+                });
+            });
             ui.add_space(10.0);
             ui.separator();
             ui.add_space(6.0);
@@ -313,53 +616,101 @@ impl RehearsalPanel {
         changed
     }
 
-    fn player_area(&mut self, ui: &mut Ui) {
-        let status = self.player.as_ref().map(|p| p.status()).or_else(|| self.parked.clone());
-        let loaded = status.as_ref().map(|s| s.state != PlayState::Empty).unwrap_or(false);
-        if let Some(st) = &status {
+    /// Playlist combo and song list.
+    fn list_area(&mut self, ui: &mut Ui, status: Option<&Status>) {
+        let waiting = status.map(|s| matches!(s.state, PlayState::Waiting | PlayState::Countdown)).unwrap_or(false);
+        let loaded = status.map(|s| s.state != PlayState::Empty).unwrap_or(false);
+        let (index, next) = match status {
+            Some(s) if loaded => (s.index, s.next_index),
+            _ => (None, None),
+        };
+        let rows = song_rows(&self.entries, index, next, waiting);
+        let names: Vec<String> = self.library.iter().map(|(n, _)| n.clone()).collect();
+        let single = self.playlist.is_none() && !self.entries.is_empty();
+        let out = gui_playlist::ui(ui, &names, self.playlist.as_deref(), single, &rows);
+        if let Some(name) = out.select {
+            self.play_playlist(&name);
+        }
+        if let Some(i) = out.play {
+            self.start(i, true, false);
+        }
+        if let Some(st) = status {
+            for w in st.queue_warnings.iter() {
+                ui.add_space(4.0);
+                ui.add(egui::Label::new(RichText::new(format!("Warning: {}", w)).size(12.0).color(ORANGE)).wrap(true));
+            }
+        }
+    }
+
+    fn player_area(&mut self, ui: &mut Ui, status: Option<&Status>) {
+        let loaded = status.map(|s| s.state != PlayState::Empty).unwrap_or(false);
+        if let Some(st) = status {
             self.keys(ui, st);
         }
-        ui.with_layout(Layout::top_down(Align::Center), |ui| {
-            ui.add_space(12.0);
-            match (&status, loaded) {
-                (Some(st), true) => self.song_view(ui, st),
-                _ => self.empty_view(ui),
-            }
-            if let Some(e) = &self.device_error {
-                ui.add_space(16.0);
-                ui.add(egui::Label::new(RichText::new(e).size(15.0).color(RED)).wrap(true));
-            }
-            if let Some(st) = &status {
-                if loaded && !st.warnings.is_empty() {
-                    ui.add_space(14.0);
-                    for w in st.warnings.iter() {
-                        ui.add(egui::Label::new(RichText::new(format!("Warning: {}", w)).size(13.0).color(ORANGE)).wrap(true));
-                    }
-                } else if !loaded {
-                    for w in st.warnings.iter() {
-                        ui.add(egui::Label::new(RichText::new(w).size(13.0).color(ORANGE)).wrap(true));
-                    }
+        ui.add_space(12.0);
+        if let Some(n) = &self.notice {
+            ui.add(egui::Label::new(RichText::new(n).size(15.0).color(ORANGE)).wrap(true));
+            ui.add_space(10.0);
+        }
+        match (status, loaded) {
+            (Some(st), true) => self.song_view(ui, st),
+            _ => self.empty_view(ui),
+        }
+        if let Some(e) = &self.device_error {
+            ui.add_space(16.0);
+            ui.add(egui::Label::new(RichText::new(e).size(15.0).color(RED)).wrap(true));
+        }
+        if let Some(st) = status {
+            if loaded && !st.warnings.is_empty() {
+                ui.add_space(14.0);
+                for w in st.warnings.iter() {
+                    ui.add(egui::Label::new(RichText::new(format!("Warning: {}", w)).size(13.0).color(ORANGE)).wrap(true));
+                }
+            } else if !loaded {
+                for w in st.warnings.iter() {
+                    ui.add(egui::Label::new(RichText::new(w).size(13.0).color(ORANGE)).wrap(true));
                 }
             }
-        });
+        }
     }
 
     fn empty_view(&mut self, ui: &mut Ui) {
         ui.label(RichText::new("Rehearsal").size(30.0).color(TEXT));
         ui.add_space(16.0);
-        if let Some(n) = &self.notice {
-            ui.label(RichText::new(n).size(15.0).color(ORANGE));
-        } else {
-            ui.label(
-                RichText::new("No song loaded. Right-click a song in Home and choose \"Play in Rehearsal\".")
+        let has_queue = !self.entries.is_empty();
+        if has_queue && self.first_readable(0).is_none() {
+            ui.add(
+                egui::Label::new(RichText::new("None of the songs of this playlist can be played.").size(15.0).color(RED))
+                    .wrap(true),
+            );
+        } else if has_queue {
+            // a playlist is chosen, nothing is loaded yet
+            if big_button(ui, "Play", true, 110.0).clicked() {
+                if let Some(first) = self.first_readable(0) {
+                    self.start(first, true, true);
+                }
+            }
+        } else if self.notice.is_none() {
+            ui.add(
+                egui::Label::new(
+                    RichText::new(
+                        "No song loaded. Choose a playlist on the left, or right-click a song or a playlist in Home \
+                         and choose \"Play in Rehearsal\".",
+                    )
                     .size(15.0)
                     .color(DIM),
+                )
+                .wrap(true),
             );
         }
     }
 
     fn song_view(&mut self, ui: &mut Ui, st: &Status) {
-        ui.label(RichText::new(&*st.song_name).size(32.0).strong().color(TEXT));
+        if let Some(caption) = next_caption(st.state, &st.song_name, st.countdown_seconds) {
+            ui.add(egui::Label::new(RichText::new(caption).size(28.0).strong().color(ORANGE)).wrap(true));
+            ui.add_space(10.0);
+        }
+        ui.add(egui::Label::new(RichText::new(&*st.song_name).size(32.0).strong().color(TEXT)).wrap(true));
         ui.add_space(14.0);
         // while dragging, the time shows where the jump will go
         let shown = self.drag_target.unwrap_or(st.position_seconds);
@@ -373,17 +724,30 @@ impl RehearsalPanel {
             self.seek(target, st.length_seconds);
         }
         ui.add_space(18.0);
+        let (mut prev, mut next) = (false, false);
         let (mut back, mut forward, mut toggle, mut stop) = (false, false, false, false);
         ui.horizontal(|ui| {
-            let w = 110.0;
-            ui.add_space(((ui.available_width() - 4.0 * w - 3.0 * ui.spacing().item_spacing.x) / 2.0).max(0.0));
+            let (w, small) = (100.0, 56.0);
+            ui.add_space(((ui.available_width() - 4.0 * w - 2.0 * small - 5.0 * ui.spacing().item_spacing.x) / 2.0).max(0.0));
             // a song of another sample rate cannot be played
             let can_play = st.song_rate == st.output_rate;
-            back = big_button(ui, "\u{2212}10 s", true, w);
-            toggle = big_button(ui, if st.state == PlayState::Playing { "Pause" } else { "Play" }, can_play, w);
-            stop = big_button(ui, "Stop", true, w);
-            forward = big_button(ui, "+10 s", true, w);
+            let has_prev = st.index.map(|i| i > 0).unwrap_or(false);
+            let has_next = st.next_index.is_some();
+            prev = big_button(ui, "\u{23ee}", has_prev || st.position_seconds > 0.0, small)
+                .on_hover_text("Previous song (Up)")
+                .clicked();
+            back = big_button(ui, "\u{2212}10 s", true, w).clicked();
+            toggle = big_button(ui, if st.state == PlayState::Playing { "Pause" } else { "Play" }, can_play, w).clicked();
+            stop = big_button(ui, "Stop", true, w).clicked();
+            forward = big_button(ui, "+10 s", true, w).clicked();
+            next = big_button(ui, "\u{23ed}", has_next, small).on_hover_text("Next song (Down)").clicked();
         });
+        if prev {
+            self.prev_song();
+        }
+        if next {
+            self.next_song();
+        }
         if back {
             self.seek_by(st, -STEP_SECONDS);
         }
@@ -397,12 +761,16 @@ impl RehearsalPanel {
             self.stop();
         }
         ui.add_space(10.0);
-        ui.label(
-            RichText::new(
-                "Space: play/pause   \u{2190} \u{2192}: \u{b1}10 s   Shift + \u{2190} \u{2192}: \u{b1}30 s   Home: to start   Esc: stop",
+        ui.add(
+            egui::Label::new(
+                RichText::new(
+                    "Space: play/pause   \u{2190} \u{2192}: \u{b1}10 s   Shift + \u{2190} \u{2192}: \u{b1}30 s   \
+                     \u{2191} \u{2193}: previous/next song   Home: to start   Esc: stop",
+                )
+                .size(13.0)
+                .color(DIM),
             )
-            .size(13.0)
-            .color(DIM),
+            .wrap(true),
         );
         ui.add_space(14.0);
         if st.underruns > 0 {
@@ -422,7 +790,7 @@ impl RehearsalPanel {
     }
 }
 
-fn big_button(ui: &mut Ui, text: &str, enabled: bool, width: f32) -> bool {
+fn big_button(ui: &mut Ui, text: &str, enabled: bool, width: f32) -> egui::Response {
     ui.add_enabled(
         enabled,
         egui::Button::new(RichText::new(text).size(22.0).color(TEXT))
@@ -431,7 +799,6 @@ fn big_button(ui: &mut Ui, text: &str, enabled: bool, width: f32) -> bool {
             .rounding(4.0)
             .min_size(vec2(width, 44.0)),
     )
-    .clicked()
 }
 
 /// Position in the song. Click or drag to jump: while dragging `drag`

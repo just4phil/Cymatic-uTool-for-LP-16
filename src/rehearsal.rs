@@ -30,8 +30,21 @@
 //! target), then changes the position, waits in silence (`Fade::Wait`) and
 //! fades in over 5 ms (`Fade::In`). Several seeks in a row only replace the
 //! target; there is one fade-out and one fade-in.
+//!
+//! The queue (`set_queue`, `goto`, `next`, `prev`) plays the songs of a
+//! playlist one after the other. After the end of a song the next readable
+//! one becomes the current song at position 0 and the state is `Waiting`
+//! (start mode "wait_for_button_press": `play` starts it) or `Countdown`
+//! (any other mode: it starts after round(delay x rate) frames of silence,
+//! counted in `render`). The song after the current one is opened early (in
+//! the last 10 s of a song, or while waiting) into a second slot; the swap
+//! at the end of a song touches no file. Files are never opened in `render`:
+//! the engine posts requests to an `Opener` (see `rehearsal_queue.rs`) and
+//! takes the result with `try_lock`. Songs the engine replaces go to a small
+//! garbage list that the caller empties (dropping one joins its thread).
 
 use crate::mix::{MixParams, StripGains, STRIPS};
+use crate::rehearsal_queue::{find_path, Opener, QueueEntry, Request};
 use crate::{SongProject, WavReader};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -45,6 +58,12 @@ const READ_BLOCK: usize = 4096;
 const MIX_CHUNK: usize = 1024;
 /// Length of the ramp to the gains of a new mix.
 const MIX_RAMP_SECONDS: f64 = 0.01;
+/// A song is opened early when less than this is left of the current one.
+const PRELOAD_SECONDS: f64 = 10.0;
+/// `prev` restarts the song when it is further than this into it.
+pub const PREV_RESTART_SECONDS: f64 = 3.0;
+/// Songs the engine can hand back without allocating.
+const GARBAGE_SLOTS: usize = 8;
 /// Length of the fade-out and fade-in around a jump while playing.
 const FADE_SECONDS: f64 = 0.005;
 /// How long the reader thread sleeps when every ring is full.
@@ -57,8 +76,13 @@ pub enum PlayState {
     Stopped,
     Playing,
     Paused,
-    /// the longest track is over; silence follows
+    /// the longest track is over; silence follows (queue: after the last song)
     Ended,
+    /// queue: the next song is loaded at position 0 and starts with `play`
+    Waiting,
+    /// queue: the next song is loaded and starts by itself when the
+    /// countdown (`Status::countdown_seconds`) is over
+    Countdown,
 }
 
 /// The meters. The peaks are absolute values (1.0 = full scale), the
@@ -107,6 +131,20 @@ pub struct Status {
     pub underruns: u64,
     pub warnings: Arc<Vec<String>>,
     pub levels: Levels,
+    /// queue: index of the current song (while `Waiting` or `Countdown`:
+    /// the song that starts next); the target of a switch that is still
+    /// opening the song
+    pub index: Option<usize>,
+    /// queue: the readable song after `index`
+    pub next_index: Option<usize>,
+    pub queue_len: usize,
+    /// remaining time of the `Countdown`
+    pub countdown_seconds: f64,
+    /// the current song has another rate than the output: the owner has to
+    /// open the output with this rate (`Engine::set_output_rate` in tests)
+    pub needs_rate: Option<u32>,
+    /// queue: one line per entry that cannot be played (skipped)
+    pub queue_warnings: Arc<Vec<String>>,
 }
 
 /// "m:ss" for a time in seconds (rounded down).
@@ -498,6 +536,17 @@ impl Gains {
     }
 }
 
+/// A request to the opener that has not been answered yet.
+#[derive(Clone, Copy)]
+struct Outstanding {
+    ticket: u64,
+    index: usize,
+    /// the song is wanted as the current one (else: preload into the slot)
+    switch: bool,
+    /// the opener has the request
+    posted: bool,
+}
+
 pub struct Engine {
     output_rate: u32,
     /// frames of a fade: round(5 ms x rate)
@@ -519,6 +568,36 @@ pub struct Engine {
     clip: bool,
     no_name: Arc<str>,
     no_warnings: Arc<Vec<String>>,
+    // queue
+    queue: Arc<Vec<QueueEntry>>,
+    /// index of the song in `song`
+    cur: Option<usize>,
+    /// a switch to this song waits for the opener; `song` is the old one
+    /// and untouched until the new one arrives, `render` gives silence
+    pending: Option<usize>,
+    /// a `seek` that came while the song was still opening
+    pending_seek: Option<f64>,
+    outstanding: Option<Outstanding>,
+    ticket: u64,
+    /// the song after the current one, opened early
+    slot: Option<(usize, LoadedSong)>,
+    /// frames of silence left in `Countdown`
+    countdown: u64,
+    opener: Arc<Opener>,
+    /// replaced songs; the owner drops them (`take_garbage`)
+    garbage: Vec<LoadedSong>,
+    skipped: Arc<Vec<String>>,
+}
+
+/// The lines of `Status::queue_warnings`.
+fn skip_messages(queue: &[QueueEntry]) -> Vec<String> {
+    queue
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| {
+            e.project.as_ref().err().map(|why| format!("Song {} \"{}\" is skipped: {}", i + 1, e.name, why))
+        })
+        .collect()
 }
 
 impl Engine {
@@ -539,6 +618,43 @@ impl Engine {
             clip: false,
             no_name: Arc::from(""),
             no_warnings: Arc::new(Vec::new()),
+            queue: Arc::new(Vec::new()),
+            cur: None,
+            pending: None,
+            pending_seek: None,
+            outstanding: None,
+            ticket: 0,
+            slot: None,
+            countdown: 0,
+            opener: Arc::new(Opener::default()),
+            garbage: Vec::with_capacity(GARBAGE_SLOTS),
+            skipped: Arc::new(Vec::new()),
+        }
+    }
+
+    /// The mailbox through which the engine gets songs opened. Whoever
+    /// moves the engine into an audio callback keeps this and calls
+    /// `Opener::work` on another thread (`OpenerThread`).
+    pub fn opener(&self) -> Arc<Opener> {
+        self.opener.clone()
+    }
+
+    /// The engine runs at another output rate from now on (the owner
+    /// opened the device again). Nothing is audible then: the mix gains
+    /// jump to their targets.
+    pub fn set_output_rate(&mut self, rate: u32) {
+        self.output_rate = rate;
+        self.fade_len = ((FADE_SECONDS * rate as f64).round() as usize).max(1);
+        self.ramp_len = ((MIX_RAMP_SECONDS * rate as f64).round() as usize).max(1);
+        self.ramp_done = self.ramp_len;
+        self.ramp_start = self.ramp_target;
+        self.gains = self.ramp_target;
+        if let Some(song) = self.song.as_mut() {
+            if song.song_rate == rate && song.warnings.iter().any(|w| w.starts_with("Song sample rate")) {
+                let kept: Vec<String> =
+                    song.warnings.iter().filter(|w| !w.starts_with("Song sample rate")).cloned().collect();
+                song.warnings = Arc::new(kept);
+            }
         }
     }
 
@@ -551,8 +667,10 @@ impl Engine {
 
     /// Take a song that was opened elsewhere (`LoadedSong::open`). Returns
     /// the previous one so the caller decides where it is dropped (dropping
-    /// joins its thread, which an audio callback must not do).
+    /// joins its thread, which an audio callback must not do). This leaves
+    /// the queue: the song is the whole "queue" then.
     pub fn set_song(&mut self, mut song: LoadedSong) -> Option<LoadedSong> {
+        self.leave_queue();
         if song.song_rate != self.output_rate {
             Arc::make_mut(&mut song.warnings).push(format!(
                 "Song sample rate {} Hz differs from output {} Hz",
@@ -566,6 +684,7 @@ impl Engine {
 
     /// Remove the current song, see `set_song` about who drops it.
     pub fn take_song(&mut self) -> Option<LoadedSong> {
+        self.leave_queue();
         self.state = PlayState::Empty;
         self.song.take()
     }
@@ -575,23 +694,323 @@ impl Engine {
         drop(self.take_song());
     }
 
+    // -- queue ---------------------------------------------------------------
+
+    /// Forget the queue (not the current song).
+    fn leave_queue(&mut self) {
+        if let Some((_, s)) = self.slot.take() {
+            self.discard(s);
+        }
+        if !self.queue.is_empty() {
+            self.queue = Arc::new(Vec::new());
+            self.skipped = Arc::new(Vec::new());
+        }
+        self.cur = None;
+        self.pending = None;
+        self.pending_seek = None;
+        self.outstanding = None;
+        self.countdown = 0;
+    }
+
+    /// Hand a replaced song to the garbage list (no allocation, no join).
+    fn discard(&mut self, song: LoadedSong) {
+        if self.garbage.len() < GARBAGE_SLOTS {
+            self.garbage.push(song);
+        }
+        // else the song is dropped here, which joins its thread; only if
+        // the owner did not empty the list for a long time
+    }
+
+    /// A song the engine has replaced, for the owner to drop.
+    pub fn take_garbage(&mut self) -> Option<LoadedSong> {
+        self.garbage.pop()
+    }
+
+    /// Use `entries` as the queue (see `set_queue_arc`).
+    pub fn set_queue(&mut self, entries: Vec<QueueEntry>) {
+        drop(self.set_queue_arc(Arc::new(entries)));
+    }
+
+    /// Use a new queue. The current song is unloaded and the state is
+    /// `Empty`; `goto` loads a song. Returns the old queue so the caller
+    /// decides where it is dropped.
+    pub fn set_queue_arc(&mut self, queue: Arc<Vec<QueueEntry>>) -> Arc<Vec<QueueEntry>> {
+        if let Some(s) = self.song.take() {
+            self.discard(s);
+        }
+        if let Some((_, s)) = self.slot.take() {
+            self.discard(s);
+        }
+        self.cur = None;
+        self.pending = None;
+        self.pending_seek = None;
+        self.outstanding = None;
+        self.countdown = 0;
+        self.state = PlayState::Empty;
+        self.underruns = 0;
+        self.skipped = Arc::new(skip_messages(&queue));
+        std::mem::replace(&mut self.queue, queue)
+    }
+
+    /// The playlist was changed: use `queue` instead. If the song that is
+    /// loaded is still in it, it goes on undisturbed (same position, same
+    /// state, now at its new index) and true is returned. Otherwise the
+    /// player stops on the first song (`Stopped`). Returns the old queue.
+    pub fn replace_queue(&mut self, queue: Arc<Vec<QueueEntry>>) -> (Arc<Vec<QueueEntry>>, bool) {
+        let path = match (self.pending, self.cur) {
+            (None, Some(c)) if self.song.is_some() => self.queue.get(c).and_then(|e| e.path()).map(str::to_string),
+            _ => None,
+        };
+        let found = path.and_then(|p| find_path(&queue, &p, self.cur));
+        match found {
+            Some(i) => {
+                if let Some((_, s)) = self.slot.take() {
+                    self.discard(s);
+                }
+                self.outstanding = None;
+                self.cur = Some(i);
+                self.skipped = Arc::new(skip_messages(&queue));
+                (std::mem::replace(&mut self.queue, queue), true)
+            }
+            None => {
+                let old = self.set_queue_arc(queue);
+                self.goto(0, false);
+                (old, false)
+            }
+        }
+    }
+
+    /// First readable entry at or after `from`.
+    fn next_readable(&self, from: usize) -> Option<usize> {
+        (from..self.queue.len()).find(|&i| self.queue[i].readable())
+    }
+
+    /// Last readable entry before `before`.
+    fn prev_readable(&self, before: usize) -> Option<usize> {
+        (0..before.min(self.queue.len())).rev().find(|&i| self.queue[i].readable())
+    }
+
+    /// Start song `index` at position 0: playing if `autoplay`, else
+    /// `Stopped`. Unreadable entries are skipped (forward); nothing happens
+    /// if there is no readable one from `index` on.
+    pub fn goto(&mut self, index: usize, autoplay: bool) {
+        if self.queue.is_empty() {
+            return;
+        }
+        let i = index.min(self.queue.len() - 1);
+        if let Some(j) = self.next_readable(i) {
+            self.switch_to(j, if autoplay { PlayState::Playing } else { PlayState::Stopped }, 0);
+        }
+    }
+
+    /// The next song. While playing it starts at once; otherwise it is
+    /// loaded at position 0 and the state is `Stopped`. At the last song
+    /// nothing happens.
+    pub fn next(&mut self) {
+        let Some(base) = self.pending.or(self.cur) else { return };
+        let Some(n) = self.next_readable(base + 1) else { return };
+        let st = if self.state == PlayState::Playing { PlayState::Playing } else { PlayState::Stopped };
+        self.switch_to(n, st, 0);
+    }
+
+    /// Further than 3 s into the song: back to its start. Otherwise the
+    /// song before (state as for `next`); at the first song: its start.
+    pub fn prev(&mut self) {
+        let Some(base) = self.pending.or(self.cur) else { return };
+        let pos = match (&self.song, self.pending) {
+            (Some(s), None) => s.shown_pos() as f64 / s.song_rate.max(1) as f64,
+            _ => 0.0,
+        };
+        if pos > PREV_RESTART_SECONDS {
+            self.seek(0.0);
+            return;
+        }
+        match self.prev_readable(base) {
+            None => self.seek(0.0),
+            Some(p) => {
+                let st = if self.state == PlayState::Playing { PlayState::Playing } else { PlayState::Stopped };
+                self.switch_to(p, st, 0);
+            }
+        }
+    }
+
+    /// Wait with the current song at position 0 (`Waiting`), or let it
+    /// start by itself after `countdown` seconds (`Countdown`). For the
+    /// owner that opened the output again and carries the queue over.
+    pub fn hold(&mut self, countdown: Option<f64>) {
+        if self.song.is_none() && self.pending.is_none() {
+            return;
+        }
+        match countdown {
+            None => {
+                self.state = PlayState::Waiting;
+                self.countdown = 0;
+            }
+            Some(secs) => {
+                self.countdown = (secs.max(0.0) * self.output_rate as f64).round() as u64;
+                self.state = if self.countdown == 0 { PlayState::Playing } else { PlayState::Countdown };
+            }
+        }
+    }
+
+    /// Make `idx` the current song and enter `state` (`Countdown` with
+    /// `countdown` frames; 0 frames start at once).
+    fn switch_to(&mut self, idx: usize, state: PlayState, countdown: u64) {
+        self.state = if state == PlayState::Countdown && countdown == 0 { PlayState::Playing } else { state };
+        self.countdown = countdown;
+        if self.pending.is_none() && self.cur == Some(idx) {
+            if let Some(song) = self.song.as_mut() {
+                // the song that is loaded: from its start
+                song.fade = Fade::None;
+                song.seek_to(0);
+                return;
+            }
+        }
+        if matches!(&self.slot, Some((i, _)) if *i == idx) {
+            if let Some((_, new)) = self.slot.take() {
+                self.install(idx, new);
+            }
+            return;
+        }
+        self.pending = Some(idx);
+        self.pending_seek = None;
+        self.request(idx, true);
+    }
+
+    /// `song` (queue entry `idx`) becomes the current song.
+    fn install(&mut self, idx: usize, song: LoadedSong) {
+        if let Some(old) = self.song.replace(song) {
+            self.discard(old);
+        }
+        self.cur = Some(idx);
+        self.pending = None;
+        if let Some(seconds) = self.pending_seek.take() {
+            self.seek(seconds);
+        }
+    }
+
+    /// Ask the opener for entry `idx`.
+    fn request(&mut self, idx: usize, switch: bool) {
+        if let Some(o) = self.outstanding.as_mut() {
+            if o.index == idx {
+                o.switch |= switch;
+                return;
+            }
+        }
+        self.ticket += 1;
+        self.outstanding = Some(Outstanding { ticket: self.ticket, index: idx, switch, posted: false });
+    }
+
+    /// Hand the request to the opener and take its result. No blocking.
+    fn poll_opener(&mut self) {
+        if let Some(o) = self.outstanding.as_mut() {
+            if !o.posted {
+                let request = Request { ticket: o.ticket, queue: self.queue.clone(), index: o.index };
+                if self.opener.post(request).is_ok() {
+                    o.posted = true;
+                }
+            }
+        }
+        if let Some(done) = self.opener.take() {
+            match self.outstanding {
+                Some(o) if o.ticket == done.ticket => {
+                    self.outstanding = None;
+                    if o.switch {
+                        self.install(done.index, done.song);
+                    } else if let Some((_, old)) = self.slot.replace((done.index, done.song)) {
+                        self.discard(old);
+                    }
+                }
+                _ => self.discard(done.song),
+            }
+        }
+    }
+
+    /// Open the next song early: in the last 10 s of the current one, or
+    /// while waiting for it to start.
+    fn maybe_preload(&mut self) {
+        if self.pending.is_some() || self.outstanding.is_some() {
+            return;
+        }
+        let (Some(cur), Some(song)) = (self.cur, self.song.as_ref()) else { return };
+        let remaining = song.length_frames.saturating_sub(song.pos) as f64 / song.song_rate.max(1) as f64;
+        let want = match self.state {
+            PlayState::Playing | PlayState::Paused | PlayState::Stopped => remaining < PRELOAD_SECONDS,
+            PlayState::Waiting | PlayState::Countdown => true,
+            _ => false,
+        };
+        if !want {
+            return;
+        }
+        let next = self.next_readable(cur + 1);
+        let in_slot = self.slot.as_ref().map(|s| s.0);
+        if in_slot.is_some() && in_slot != next {
+            if let Some((_, s)) = self.slot.take() {
+                self.discard(s);
+            }
+        }
+        if let (Some(n), true) = (next, self.slot.is_none()) {
+            self.request(n, false);
+        }
+    }
+
+    /// The current song played to its end: the next readable one is loaded
+    /// and waits or counts down; after the last one the state is `Ended`.
+    fn end_of_song(&mut self) {
+        let next = self.cur.and_then(|c| self.next_readable(c + 1));
+        match next {
+            None => self.state = PlayState::Ended,
+            Some(n) => {
+                let e = &self.queue[n];
+                if e.auto_start() {
+                    let frames = (e.delay * self.output_rate as f64).round() as u64;
+                    self.switch_to(n, PlayState::Countdown, frames);
+                } else {
+                    self.switch_to(n, PlayState::Waiting, 0);
+                }
+            }
+        }
+    }
+
+    // -- transport -------------------------------------------------------------
+
     /// Start or continue. Without a song, or if the song rate differs from
-    /// the output rate, nothing happens. After the end it starts again at 0.
+    /// the output rate, nothing happens. After the end it starts again at 0
+    /// (a queue: at its first readable song). `Waiting` and `Countdown`
+    /// start the loaded song now.
     pub fn play(&mut self) {
-        let Some(song) = self.song.as_mut() else { return };
-        if song.song_rate != self.output_rate {
+        if self.pending.is_some() {
+            self.state = PlayState::Playing;
+            self.countdown = 0;
+            return;
+        }
+        let Some(rate) = self.song.as_ref().map(|s| s.song_rate) else { return };
+        if rate != self.output_rate {
             return;
         }
         if self.state == PlayState::Ended {
-            song.fade = Fade::None;
-            song.seek_to(0);
+            if let Some(first) = self.next_readable(0) {
+                self.switch_to(first, PlayState::Playing, 0);
+                return;
+            }
+            if let Some(song) = self.song.as_mut() {
+                song.fade = Fade::None;
+                song.seek_to(0);
+            }
         }
+        self.countdown = 0;
         self.state = PlayState::Playing;
     }
 
     pub fn pause(&mut self) {
-        if self.state == PlayState::Playing {
-            self.state = PlayState::Paused;
+        match self.state {
+            PlayState::Playing => self.state = PlayState::Paused,
+            // the countdown is cancelled; Play starts the song
+            PlayState::Countdown => {
+                self.state = PlayState::Waiting;
+                self.countdown = 0;
+            }
+            _ => {}
         }
         if let Some(song) = self.song.as_mut() {
             if matches!(song.fade, Fade::Out(_)) {
@@ -601,14 +1020,21 @@ impl Engine {
     }
 
     /// Jump to `seconds` (clamped to 0 ..= length, rounded to whole frames).
-    /// The length itself gives `Ended`. While playing the sound is faded out
+    /// The length itself gives `Ended` (in a queue: the end of the song, so
+    /// the next one follows). While playing the sound is faded out
     /// over 5 ms, the position changes, and after a silent wait it is faded
     /// in over 5 ms; the status shows the target at once. Paused, stopped
     /// or ended, only the position changes (`Ended` becomes `Paused` if the
     /// target is before the end). Several calls in a row: the last target
-    /// counts.
+    /// counts. While a song of the queue is still being opened the jump
+    /// waits for it.
     pub fn seek(&mut self, seconds: f64) {
         let fade_len = self.fade_len;
+        let queued = !self.queue.is_empty();
+        if self.pending.is_some() {
+            self.pending_seek = Some(seconds);
+            return;
+        }
         let Some(song) = self.song.as_mut() else { return };
         if self.state == PlayState::Empty {
             return;
@@ -616,7 +1042,8 @@ impl Engine {
         let target = if seconds > 0.0 { (seconds * song.song_rate as f64).round() as u64 } else { 0 };
         let target = target.min(song.length_frames);
         let end = song.length_frames > 0 && target >= song.length_frames;
-        let playing_state = if end { PlayState::Ended } else { PlayState::Playing };
+        // in a queue the end of the song goes on with the next song
+        let playing_state = if end && !queued { PlayState::Ended } else { PlayState::Playing };
         match (self.state, song.fade) {
             // a fade-out is running: only the target changes
             (_, Fade::Out(_)) => {
@@ -645,13 +1072,17 @@ impl Engine {
             (state, _) => {
                 song.fade = Fade::None;
                 song.seek_to(target);
-                self.state = if end {
-                    PlayState::Ended
-                } else if state == PlayState::Ended {
-                    PlayState::Paused
+                if end && queued {
+                    self.end_of_song();
                 } else {
-                    state
-                };
+                    self.state = if end {
+                        PlayState::Ended
+                    } else if state == PlayState::Ended {
+                        PlayState::Paused
+                    } else {
+                        state
+                    };
+                }
             }
         }
     }
@@ -678,40 +1109,86 @@ impl Engine {
         self.clip = false;
     }
 
-    /// Pause plus position 0. No fade: silence follows anyway.
+    /// Pause plus position 0 (also ends a countdown). No fade: silence
+    /// follows anyway.
     pub fn stop(&mut self) {
         if let Some(song) = self.song.as_mut() {
             song.fade = Fade::None;
             song.seek_to(0);
             self.state = PlayState::Stopped;
+            self.countdown = 0;
         }
     }
+
+    // -- rendering -------------------------------------------------------------
 
     /// Fill `out` (interleaved stereo, 2 x frames) completely: the mix
     /// while playing, silence otherwise. No allocation, no file access, no
     /// blocking lock.
     pub fn render(&mut self, out: &mut [f32]) {
         out.fill(0.0);
+        self.poll_opener();
+        self.maybe_preload();
+        let frames = out.len() / 2;
+        let mut done = 0;
+        while done < frames {
+            if self.pending.is_some() {
+                // the next song is not here yet: silence, the countdown goes on
+                if self.state == PlayState::Countdown {
+                    self.countdown = self.countdown.saturating_sub((frames - done) as u64);
+                    if self.countdown == 0 {
+                        self.state = PlayState::Playing;
+                    }
+                }
+                break;
+            }
+            // a jump to the end sets `Ended` at once but still fades out
+            let fading_out = self.song.as_ref().map(|s| matches!(s.fade, Fade::Out(_))).unwrap_or(false);
+            if self.state == PlayState::Playing || fading_out {
+                let (used, ended) = self.render_playing(&mut out[done * 2..]);
+                done += used;
+                if ended {
+                    self.end_of_song();
+                } else {
+                    break;
+                }
+            } else if self.state == PlayState::Countdown {
+                let n = ((frames - done) as u64).min(self.countdown);
+                self.countdown -= n;
+                done += n as usize;
+                if self.countdown == 0 {
+                    self.state = PlayState::Playing;
+                }
+            } else {
+                // keep the tracks in step, so `wait_ready` sees the progress
+                if let Some(song) = self.song.as_mut() {
+                    song.filled(1);
+                }
+                break;
+            }
+        }
+    }
+
+    /// Mix the current song into `out`. Returns the frames of `out` that
+    /// belong to this song and whether the song has ended (the rest of
+    /// `out` is then for what follows).
+    fn render_playing(&mut self, out: &mut [f32]) -> (usize, bool) {
         let fade_len = self.fade_len;
-        let Some(song) = self.song.as_mut() else { return };
-        // a jump to the end sets `Ended` at once but still fades out
-        let active = self.state == PlayState::Playing || matches!(song.fade, Fade::Out(_));
-        if !active {
-            // keep the tracks in step, so `wait_ready` sees the progress
-            song.filled(1);
-            return;
+        let frames = out.len() / 2;
+        let Some(song) = self.song.as_mut() else { return (frames, false) };
+        if song.song_rate != self.output_rate {
+            return (frames, false); // waiting for an output with the song's rate
         }
         if !song.primed {
             // 0.5 s (a quarter of the ring) is enough to start
             if !song.filled(4) {
-                return; // waiting is no dropout
+                return (frames, false); // waiting is no dropout
             }
             song.primed = true;
             if song.fade == Fade::Wait {
                 song.fade = Fade::In(0);
             }
         }
-        let frames = out.len() / 2;
         let mut done = 0;
         let mut underrun = false;
         while done < frames && song.pos < song.length_frames {
@@ -798,8 +1275,11 @@ impl Engine {
         }
         if matches!(song.fade, Fade::Out(_)) && song.pos >= song.length_frames {
             song.finish_fade_out(); // the song ended during the fade-out
+            (frames, false)
         } else if song.fade != Fade::Wait && song.pos >= song.length_frames {
-            self.state = PlayState::Ended;
+            (done, true)
+        } else {
+            (frames, false)
         }
     }
 
@@ -813,7 +1293,8 @@ impl Engine {
 
     pub fn status(&self) -> Status {
         let levels = Levels { clip: self.clip, ..self.peaks };
-        match &self.song {
+        let index = self.pending.or(self.cur);
+        let mut st = match &self.song {
             None => Status {
                 state: self.state,
                 song_name: self.no_name.clone(),
@@ -826,45 +1307,96 @@ impl Engine {
                 underruns: self.underruns,
                 warnings: self.no_warnings.clone(),
                 levels,
+                index: None,
+                next_index: None,
+                queue_len: 0,
+                countdown_seconds: 0.0,
+                needs_rate: None,
+                queue_warnings: self.no_warnings.clone(),
             },
             Some(s) => {
                 let rate = s.song_rate.max(1) as f64;
+                // while the next song is opening: position 0, length unknown
+                let opening = self.pending.is_some();
+                let (pos, len) = if opening { (0, 0) } else { (s.shown_pos(), s.length_frames) };
+                let rate_differs = !opening && s.song_rate != 0 && s.song_rate != self.output_rate;
                 Status {
                     state: self.state,
                     song_name: s.name.clone(),
-                    position_frames: s.shown_pos(),
-                    position_seconds: s.shown_pos() as f64 / rate,
-                    length_frames: s.length_frames,
-                    length_seconds: s.length_frames as f64 / rate,
+                    position_frames: pos,
+                    position_seconds: pos as f64 / rate,
+                    length_frames: len,
+                    length_seconds: len as f64 / rate,
                     output_rate: self.output_rate,
                     song_rate: s.song_rate,
                     underruns: self.underruns,
                     warnings: s.warnings.clone(),
                     levels,
+                    index: None,
+                    next_index: None,
+                    queue_len: 0,
+                    countdown_seconds: 0.0,
+                    needs_rate: if rate_differs { Some(s.song_rate) } else { None },
+                    queue_warnings: self.no_warnings.clone(),
                 }
+            }
+        };
+        st.index = index;
+        st.next_index = index.and_then(|i| self.next_readable(i + 1));
+        st.queue_len = self.queue.len();
+        st.countdown_seconds = self.countdown as f64 / self.output_rate.max(1) as f64;
+        st.queue_warnings = self.skipped.clone();
+        st
+    }
+
+    /// Let the opener finish what the engine asked for (no waiting for the
+    /// buffers to fill). For the owner of an engine that is not in a
+    /// callback.
+    pub fn settle(&mut self) {
+        for _ in 0..5000 {
+            self.poll_opener();
+            if self.outstanding.is_none() {
+                return;
+            }
+            if !self.opener.work() {
+                std::thread::sleep(Duration::from_millis(1));
             }
         }
     }
 
-    /// Blocks until the ring of every track is full or at its file end, or
-    /// `timeout` has passed (false). For tests and for the start after
-    /// `load` or a position change; never call it from the audio callback.
+    /// Blocks until the ring of every track (of the current song, and of
+    /// the one opened early) is full or at its file end, or `timeout` has
+    /// passed (false). Also opens the songs the engine asked for. For tests
+    /// and for the start after `load` or a position change; never call it
+    /// from the audio callback.
     pub fn wait_ready(&mut self, timeout: Duration) -> bool {
         let start = Instant::now();
         loop {
-            match self.song.as_mut() {
-                None => return true,
-                Some(song) => {
-                    if song.filled(1) {
-                        return true;
-                    }
-                }
+            self.opener.work();
+            self.poll_opener();
+            self.maybe_preload();
+            if self.ready() {
+                return true;
             }
             if start.elapsed() >= timeout {
                 return false;
             }
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+
+    fn ready(&mut self) -> bool {
+        if self.pending.is_some() || self.outstanding.is_some() {
+            return false;
+        }
+        let mut ok = true;
+        if let Some(song) = self.song.as_mut() {
+            ok &= song.filled(1);
+        }
+        if let Some((_, song)) = self.slot.as_mut() {
+            ok &= song.filled(1);
+        }
+        ok
     }
 }
 
@@ -1684,5 +2216,556 @@ pub(crate) mod tests {
         assert_eq!(fmt_clock(61.0), "1:01");
         assert_eq!(fmt_clock(3725.0), "62:05");
         assert_eq!(fmt_clock(-3.0), "0:00");
+    }
+
+    // -- queue ---------------------------------------------------------------
+
+    use crate::rehearsal_queue::entries_from_playlist;
+    use crate::{generate_playlistprj, parse_playlist, PlaylistSong};
+
+    /// A song project `name` in `dir` with one mono track of `frames`
+    /// frames of the constant `v`; returns the path of the .songprj.
+    fn qsong(dir: &Path, name: &str, rate: u32, frames: usize, v: f32) -> String {
+        let audio_lib = dir.to_str().unwrap();
+        let wav = wav24(dir, &format!("{}-t0", name), rate, 1, &constant(frames, v));
+        let xml = generate_songprj(name, 0, rate, 24, 1);
+        let mut prj = SongProject::parse(&xml, audio_lib);
+        prj.tracks = vec![ProjectTrack::new(0, &wav, audio_lib)];
+        let file = dir.join(format!("{}.songprj", name));
+        prj.save_as(file.to_str().unwrap()).unwrap();
+        file.to_str().unwrap().to_string()
+    }
+
+    /// A .playlistprj with the songs `(name, start mode, delay)`, written
+    /// and read back with `parse_playlist`; a song whose .songprj does not
+    /// exist is unreadable.
+    fn queue_of(dir: &Path, specs: &[(&str, &str, &str)]) -> Vec<QueueEntry> {
+        let lib = dir.to_str().unwrap();
+        let songs: Vec<PlaylistSong> = specs
+            .iter()
+            .map(|(name, mode, delay)| PlaylistSong {
+                name: name.to_string(),
+                songprj: dir.join(format!("{}.songprj", name)).to_str().unwrap().to_string(),
+                mode: mode.to_string(),
+                delay: delay.to_string(),
+            })
+            .collect();
+        let xml = generate_playlistprj("List", 0, lib, &songs);
+        let file = dir.join("list.playlistprj");
+        fs::write(&file, &xml).unwrap();
+        let (name, parsed) = parse_playlist(&fs::read_to_string(&file).unwrap(), lib);
+        assert_eq!(name, "List");
+        entries_from_playlist(&parsed, lib)
+    }
+
+    /// three songs of 0.5 s with the constants 0.1, 0.2 and 0.3
+    fn three(dir: &Path, rate: u32, modes: [(&str, &str); 3]) -> Vec<QueueEntry> {
+        for (i, v) in [0.1f32, 0.2, 0.3].iter().enumerate() {
+            qsong(dir, &format!("s{}", i + 1), rate, rate as usize / 2, *v);
+        }
+        queue_of(dir, &[("s1", modes[0].0, modes[0].1), ("s2", modes[1].0, modes[1].1), ("s3", modes[2].0, modes[2].1)])
+    }
+
+    const WAIT_MODES: [(&str, &str); 3] = [("wait_for_button_press", "0"); 3];
+
+    fn queue_engine(entries: Vec<QueueEntry>) -> Engine {
+        let mut e = Engine::new(RATE);
+        e.set_queue(entries);
+        e
+    }
+
+    /// render `total` frames in blocks of `block`
+    fn pump(e: &mut Engine, total: usize, block: usize) -> Vec<f32> {
+        let mut all = Vec::with_capacity(total * 2);
+        while all.len() < total * 2 {
+            let n = block.min(total - all.len() / 2);
+            all.extend_from_slice(&render(e, n));
+        }
+        all
+    }
+
+    /// the left value of a constant song at the centre
+    fn lv(v: f32) -> f32 {
+        v * G
+    }
+
+    #[test]
+    fn the_start_mode_and_delay_come_from_a_parsed_playlistprj() {
+        let dir = temp_dir("q-parse");
+        let q = three(&dir, RATE, [("wait_for_button_press", "0"), ("", ""), ("auto_start", "1.5")]);
+        assert_eq!(q.len(), 3);
+        assert!(q.iter().all(|e| e.readable()));
+        assert_eq!(q[0].name, "s1");
+        assert!(!q[0].auto_start() && q[0].delay == 0.0);
+        assert!(!q[1].auto_start() && q[1].delay == 0.0);
+        assert!(q[2].auto_start() && q[2].delay == 1.5);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wait_mode_waits_after_the_end_and_play_starts_the_next_song_without_a_gap() {
+        let dir = temp_dir("q-wait");
+        let mut e = queue_engine(three(&dir, RATE, WAIT_MODES));
+        assert_eq!(e.status().state, PlayState::Empty);
+        e.goto(0, false);
+        assert!(e.wait_ready(WAIT));
+        assert_eq!(e.status().state, PlayState::Stopped);
+        e.play();
+        let out = pump(&mut e, 24000, 1000);
+        assert!((out[0] - lv(0.1)).abs() < 1e-6 && (out[47998] - lv(0.1)).abs() < 1e-6);
+        let st = e.status();
+        assert_eq!(st.state, PlayState::Waiting);
+        assert_eq!((st.index, st.song_name.to_string(), st.position_frames), (Some(1), "s2".to_string(), 0));
+        assert_eq!(st.next_index, Some(2));
+        // ten seconds of blocks: only silence
+        assert!(e.wait_ready(WAIT));
+        let quiet = pump(&mut e, 10 * RATE as usize, 4800);
+        assert!(quiet.iter().all(|s| *s == 0.0));
+        assert_eq!(e.status().state, PlayState::Waiting);
+        assert_eq!(e.status().position_frames, 0);
+        // Play: the very first frame is song 2
+        e.play();
+        let out = render(&mut e, 64);
+        assert!((out[0] - lv(0.2)).abs() < 1e-6 && (out[1] - lv(0.2)).abs() < 1e-6, "no silent gap");
+        assert_eq!(e.status().state, PlayState::Playing);
+        assert_eq!(e.status().underruns, 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_automatic_mode_starts_the_next_song_after_exactly_the_delay_in_frames() {
+        let dir = temp_dir("q-auto");
+        let modes = [("wait_for_button_press", "0"), ("auto", "1.5"), ("wait_for_button_press", "0")];
+        let mut e = queue_engine(three(&dir, RATE, modes));
+        e.goto(0, false);
+        assert!(e.wait_ready(WAIT));
+        e.play();
+        // odd block size, so the end of the song is inside a block
+        let total = 24000 + 72000 + 2000;
+        let out = pump(&mut e, total, 777);
+        let first_of = |from: usize| (from..total).find(|&i| out[2 * i] != 0.0);
+        assert!((out[2 * 23999] - lv(0.1)).abs() < 1e-6);
+        assert_eq!(first_of(24000), Some(24000 + (1.5 * RATE as f64).round() as usize));
+        assert!((out[2 * 96000] - lv(0.2)).abs() < 1e-6);
+        assert_eq!(e.status().state, PlayState::Playing);
+        assert_eq!(e.status().index, Some(1));
+        assert_eq!(e.status().underruns, 0);
+        // the countdown is visible while it runs
+        let mut e = queue_engine(three(&temp_dir("q-auto2"), RATE, modes));
+        e.goto(0, false);
+        assert!(e.wait_ready(WAIT));
+        e.play();
+        pump(&mut e, 24000 + 4800, 1000);
+        let st = e.status();
+        assert_eq!(st.state, PlayState::Countdown);
+        assert!((st.countdown_seconds - (72000.0 - 4800.0) / 48000.0).abs() < 1e-9);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_zero_delay_in_an_automatic_mode_continues_at_once() {
+        let dir = temp_dir("q-auto0");
+        let mut e = queue_engine(three(&dir, RATE, [("w", "0"), ("auto", ""), ("w", "0")]));
+        e.goto(0, false);
+        assert!(e.wait_ready(WAIT));
+        e.play();
+        let out = pump(&mut e, 24000 + 100, 24100);
+        assert!((out[2 * 23999] - lv(0.1)).abs() < 1e-6);
+        assert!((out[2 * 24000] - lv(0.2)).abs() < 1e-6);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn after_the_last_song_the_state_is_ended_and_play_starts_song_1() {
+        let dir = temp_dir("q-ended");
+        let mut e = queue_engine(three(&dir, RATE, WAIT_MODES));
+        e.goto(2, true);
+        assert!(e.wait_ready(WAIT));
+        let out = pump(&mut e, 24000 + 500, 1000);
+        assert!((out[0] - lv(0.3)).abs() < 1e-6);
+        assert!(out[2 * 24000..].iter().all(|s| *s == 0.0));
+        assert_eq!(e.status().state, PlayState::Ended);
+        assert_eq!(e.status().index, Some(2));
+        e.play();
+        assert!(e.wait_ready(WAIT));
+        assert_eq!(e.status().index, Some(0));
+        let out = render(&mut e, 32);
+        assert!((out[0] - lv(0.1)).abs() < 1e-6);
+        assert_eq!(e.status().state, PlayState::Playing);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_single_song_is_a_queue_of_one_that_waits_for_the_button() {
+        let dir = temp_dir("q-single");
+        let path = qsong(&dir, "only", RATE, 4800, 0.25);
+        let mut e = queue_engine(vec![QueueEntry::single(SongProject::load(&path, dir.to_str().unwrap()).unwrap())]);
+        e.goto(0, true);
+        assert!(e.wait_ready(WAIT));
+        pump(&mut e, 4800, 512);
+        assert_eq!(e.status().state, PlayState::Ended);
+        e.play();
+        assert!(e.wait_ready(WAIT));
+        assert!((render(&mut e, 4)[0] - lv(0.25)).abs() < 1e-6);
+        assert_eq!(e.status().queue_len, 1);
+        assert_eq!(e.status().next_index, None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unreadable_entry_is_skipped_at_the_end_and_by_next_and_prev_with_a_warning() {
+        let dir = temp_dir("q-skip");
+        qsong(&dir, "a", RATE, 24000, 0.1);
+        qsong(&dir, "c", RATE, 24000, 0.3);
+        // "b" has no .songprj
+        let q = queue_of(&dir, &[("a", "", ""), ("b", "", ""), ("c", "", "")]);
+        assert!(!q[1].readable());
+        let mut e = queue_engine(q);
+        let st = e.status();
+        assert_eq!(st.queue_warnings.len(), 1);
+        assert!(st.queue_warnings[0].contains("Song 2") && st.queue_warnings[0].contains("b"), "{:?}", st.queue_warnings);
+        // song end
+        e.goto(0, true);
+        assert!(e.wait_ready(WAIT));
+        pump(&mut e, 24000, 1000);
+        let st = e.status();
+        assert_eq!((st.state, st.index), (PlayState::Waiting, Some(2)));
+        // prev skips it backwards, next forwards
+        e.prev();
+        assert!(e.wait_ready(WAIT));
+        assert_eq!((e.status().index, e.status().state), (Some(0), PlayState::Stopped));
+        e.next();
+        assert!(e.wait_ready(WAIT));
+        assert_eq!(e.status().index, Some(2));
+        // goto an unreadable entry goes on to the next readable one
+        e.goto(1, false);
+        assert!(e.wait_ready(WAIT));
+        assert_eq!(e.status().index, Some(2));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_queue_without_a_readable_entry_is_empty_with_a_warning() {
+        let dir = temp_dir("q-none");
+        let q = queue_of(&dir, &[("x", "", ""), ("y", "", "")]);
+        let mut e = queue_engine(q);
+        e.goto(0, true);
+        e.next();
+        e.play();
+        assert!(e.wait_ready(WAIT));
+        let st = e.status();
+        assert_eq!(st.state, PlayState::Empty);
+        assert_eq!(st.queue_warnings.len(), 2);
+        assert_eq!(st.queue_len, 2);
+        assert!(render(&mut e, 16).iter().all(|s| *s == 0.0));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn next_plays_at_once_while_playing_and_stops_at_position_0_otherwise() {
+        let dir = temp_dir("q-next");
+        let mut e = queue_engine(three(&dir, RATE, WAIT_MODES));
+        e.goto(0, true);
+        assert!(e.wait_ready(WAIT));
+        render(&mut e, 100);
+        e.next();
+        assert_eq!(e.status().state, PlayState::Playing);
+        let out = render(&mut e, 16);
+        assert!((out[0] - lv(0.2)).abs() < 1e-6, "the preloaded song starts at once");
+        assert_eq!((e.status().index, e.status().position_frames), (Some(1), 16));
+        assert!(e.wait_ready(WAIT));
+        // paused: the next song is loaded, state Stopped, position 0
+        e.pause();
+        render(&mut e, 100);
+        e.next();
+        let st = e.status();
+        assert_eq!((st.state, st.index, st.position_frames), (PlayState::Stopped, Some(2), 0));
+        assert!(render(&mut e, 64).iter().all(|s| *s == 0.0));
+        e.play();
+        assert!(e.wait_ready(WAIT));
+        assert!((render(&mut e, 4)[0] - lv(0.3)).abs() < 1e-6);
+        // at the last song nothing changes
+        e.pause();
+        e.next();
+        let st = e.status();
+        assert_eq!((st.state, st.index), (PlayState::Paused, Some(2)));
+        assert!(st.position_frames > 0);
+        // stopped and waiting behave like paused
+        e.stop();
+        e.prev();
+        assert!(e.wait_ready(WAIT));
+        assert_eq!((e.status().state, e.status().index), (PlayState::Stopped, Some(1)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn next_while_waiting_skips_the_waiting_song() {
+        let dir = temp_dir("q-next-wait");
+        let mut e = queue_engine(three(&dir, RATE, WAIT_MODES));
+        e.goto(0, true);
+        assert!(e.wait_ready(WAIT));
+        pump(&mut e, 24000, 1000);
+        assert_eq!(e.status().state, PlayState::Waiting);
+        assert_eq!(e.status().index, Some(1));
+        assert!(e.wait_ready(WAIT));
+        e.next();
+        assert!(e.wait_ready(WAIT));
+        let st = e.status();
+        assert_eq!((st.state, st.index, st.position_frames), (PlayState::Stopped, Some(2), 0));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn prev_restarts_after_3_s_and_goes_back_before_that() {
+        // 5 s songs at 8 kHz
+        let dir = temp_dir("q-prev");
+        for (i, v) in [0.1f32, 0.2, 0.3].iter().enumerate() {
+            qsong(&dir, &format!("s{}", i + 1), 8000, 40000, *v);
+        }
+        let q = queue_of(&dir, &[("s1", "", ""), ("s2", "", ""), ("s3", "", "")]);
+        let mut e = Engine::new(8000);
+        e.set_queue(q);
+        e.goto(1, false);
+        assert!(e.wait_ready(WAIT));
+        // further than 3 s: back to 0 of the same song
+        e.seek(4.0);
+        assert!(e.wait_ready(WAIT));
+        e.prev();
+        assert!(e.wait_ready(WAIT));
+        let st = e.status();
+        assert_eq!((st.index, st.position_frames, st.state), (Some(1), 0, PlayState::Stopped));
+        // 3 s or less: the song before, at 0
+        e.seek(3.0);
+        e.prev();
+        assert!(e.wait_ready(WAIT));
+        let st = e.status();
+        assert_eq!((st.index, st.position_frames, st.state), (Some(0), 0, PlayState::Stopped));
+        // at the first song: back to 0
+        e.seek(2.0);
+        e.prev();
+        assert!(e.wait_ready(WAIT));
+        let st = e.status();
+        assert_eq!((st.index, st.position_frames), (Some(0), 0));
+        // while playing the state stays
+        e.play();
+        let _ = render(&mut e, 100);
+        e.prev();
+        assert_eq!(e.status().state, PlayState::Playing);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn goto_plays_the_song_from_the_start() {
+        let dir = temp_dir("q-goto");
+        let mut e = queue_engine(three(&dir, RATE, WAIT_MODES));
+        e.goto(0, false);
+        assert!(e.wait_ready(WAIT));
+        e.goto(2, true);
+        assert_eq!(e.status().state, PlayState::Playing);
+        assert_eq!(e.status().index, Some(2));
+        // the song is still being opened: silence, no dropout
+        assert!(render(&mut e, 256).iter().all(|s| *s == 0.0));
+        assert!(e.wait_ready(WAIT));
+        let out = render(&mut e, 64);
+        assert!((out[0] - lv(0.3)).abs() < 1e-6 && (out[127] - lv(0.3)).abs() < 1e-6);
+        assert_eq!(e.status().position_frames, 64);
+        assert_eq!(e.status().underruns, 0);
+        // goto the song that is loaded: from its start
+        e.goto(2, false);
+        assert_eq!((e.status().state, e.status().position_frames), (PlayState::Stopped, 0));
+        // beyond the end: the last song
+        e.goto(99, false);
+        assert_eq!(e.status().index, Some(2));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_next_song_is_preloaded_and_the_change_needs_no_file_access() {
+        let dir = temp_dir("q-preload");
+        let mut e = queue_engine(three(&dir, RATE, [("w", "0"), ("auto", "0"), ("w", "0")]));
+        e.goto(0, false);
+        assert!(e.wait_ready(WAIT)); // opens song 1, preloads song 2
+        e.play();
+        // the callback never opens a file: without an opener nothing could arrive
+        let out = pump(&mut e, 24000 - 500, 1000);
+        assert!((out[0] - lv(0.1)).abs() < 1e-6);
+        let out = render(&mut e, 1000);
+        assert!((out[2 * 499] - lv(0.1)).abs() < 1e-6);
+        assert!((out[2 * 500] - lv(0.2)).abs() < 1e-6, "the first block after the change has the data of song 2");
+        assert_eq!(e.status().underruns, 0);
+        assert_eq!(e.status().index, Some(1));
+        // the replaced song is handed back, not dropped in render
+        assert!(e.take_garbage().is_some());
+        assert!(e.take_garbage().is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_song_that_is_not_preloaded_is_waited_for_in_silence() {
+        let dir = temp_dir("q-nopreload");
+        let mut e = queue_engine(three(&dir, RATE, [("w", "0"), ("auto", "0"), ("w", "0")]));
+        e.goto(0, false);
+        e.settle(); // opens song 1 only; nobody preloads song 2
+        while !e.ready() {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        e.play();
+        let out = pump(&mut e, 24000 + 2000, 1000);
+        assert!(out[2 * 24000..].iter().all(|s| *s == 0.0));
+        let st = e.status();
+        assert_eq!((st.index, st.position_frames, st.state), (Some(1), 0, PlayState::Playing));
+        assert!(e.wait_ready(WAIT));
+        let out = render(&mut e, 8);
+        assert!((out[0] - lv(0.2)).abs() < 1e-6);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_next_song_of_another_rate_asks_for_the_rate_and_plays_after_the_change() {
+        let dir = temp_dir("q-rate");
+        qsong(&dir, "s1", RATE, 24000, 0.1);
+        qsong(&dir, "s2", 44100, 22050, 0.2);
+        let q = queue_of(&dir, &[("s1", "", ""), ("s2", "", "")]);
+        let mut e = queue_engine(q);
+        e.goto(0, false);
+        assert!(e.wait_ready(WAIT));
+        assert_eq!(e.status().needs_rate, None);
+        e.play();
+        pump(&mut e, 24000, 1000);
+        let st = e.status();
+        assert_eq!((st.state, st.index, st.needs_rate), (PlayState::Waiting, Some(1), Some(44100)));
+        // it does not play at the wrong rate
+        assert!(e.wait_ready(WAIT));
+        e.play();
+        assert_eq!(e.status().state, PlayState::Waiting);
+        assert!(pump(&mut e, 1000, 100).iter().all(|s| *s == 0.0));
+        // the output was opened again with the new rate
+        e.set_output_rate(44100);
+        let st = e.status();
+        assert_eq!((st.needs_rate, st.output_rate), (None, 44100));
+        assert!(!st.warnings.iter().any(|w| w.contains("sample rate")));
+        e.play();
+        let out = render(&mut e, 64);
+        assert!((out[0] - lv(0.2)).abs() < 1e-6 && (out[127] - lv(0.2)).abs() < 1e-6);
+        assert_eq!(e.status().state, PlayState::Playing);
+        // the length is that of the song at its own rate
+        pump(&mut e, 22050 - 64, 1000);
+        assert_eq!(e.status().state, PlayState::Ended);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_countdown_can_be_cancelled_or_cut_short() {
+        let dir = temp_dir("q-countdown");
+        let modes = [("w", "0"), ("auto", "5"), ("w", "0")];
+        let mut e = queue_engine(three(&dir, RATE, modes));
+        e.goto(0, true);
+        assert!(e.wait_ready(WAIT));
+        pump(&mut e, 24000 + 100, 1000);
+        assert_eq!(e.status().state, PlayState::Countdown);
+        // Pause: waiting for the button
+        e.pause();
+        assert_eq!((e.status().state, e.status().countdown_seconds), (PlayState::Waiting, 0.0));
+        assert!(pump(&mut e, 6 * RATE as usize, 4800).iter().all(|s| *s == 0.0));
+        // Play during a countdown starts at once
+        e.goto(0, true);
+        assert!(e.wait_ready(WAIT));
+        pump(&mut e, 24000 + 100, 1000);
+        assert_eq!(e.status().state, PlayState::Countdown);
+        e.play();
+        assert!(e.wait_ready(WAIT));
+        assert!((render(&mut e, 4)[0] - lv(0.2)).abs() < 1e-6);
+        // Stop ends it, too
+        e.goto(0, true);
+        assert!(e.wait_ready(WAIT));
+        pump(&mut e, 24000 + 100, 1000);
+        e.stop();
+        assert_eq!((e.status().state, e.status().position_frames), (PlayState::Stopped, 0));
+        // hold carries a countdown over to another engine
+        e.hold(Some(0.5));
+        assert_eq!(e.status().state, PlayState::Countdown);
+        assert!((e.status().countdown_seconds - 0.5).abs() < 1e-9);
+        e.hold(None);
+        assert_eq!(e.status().state, PlayState::Waiting);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_jump_before_the_song_is_open_is_done_when_it_arrives() {
+        let dir = temp_dir("q-pendingseek");
+        let mut e = queue_engine(three(&dir, RATE, WAIT_MODES));
+        e.goto(1, false);
+        e.seek(0.25); // still opening
+        assert_eq!(e.status().position_frames, 0);
+        assert!(e.wait_ready(WAIT));
+        let st = e.status();
+        assert_eq!((st.index, st.state, st.position_frames), (Some(1), PlayState::Stopped, 12000));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn jumping_to_the_end_of_a_song_goes_on_with_the_next_one() {
+        let dir = temp_dir("q-seekend");
+        let mut e = queue_engine(three(&dir, RATE, WAIT_MODES));
+        e.goto(0, true);
+        assert!(e.wait_ready(WAIT));
+        render(&mut e, 100);
+        e.seek(100.0); // the end, while playing: fade out, then the change
+        pump(&mut e, 1000, 100);
+        assert!(e.wait_ready(WAIT));
+        pump(&mut e, 1000, 100);
+        let st = e.status();
+        assert_eq!((st.state, st.index), (PlayState::Waiting, Some(1)));
+        // paused at the end of the song
+        let mut e = queue_engine(three(&temp_dir("q-seekend2"), RATE, WAIT_MODES));
+        e.goto(0, false);
+        assert!(e.wait_ready(WAIT));
+        e.seek(100.0);
+        assert_eq!((e.status().state, e.status().index), (PlayState::Waiting, Some(1)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_changed_playlist_keeps_the_loaded_song_or_stops() {
+        let dir = temp_dir("q-replace");
+        let q = three(&dir, RATE, WAIT_MODES);
+        let mut e = queue_engine(q.clone());
+        e.goto(1, true);
+        assert!(e.wait_ready(WAIT));
+        render(&mut e, 1000);
+        // the song moved to index 0: it plays on at the same position
+        let new = queue_of(&dir, &[("s2", "", ""), ("s3", "", "")]);
+        let (_old, kept) = e.replace_queue(Arc::new(new));
+        assert!(kept);
+        let st = e.status();
+        assert_eq!((st.state, st.index, st.queue_len, st.position_frames), (PlayState::Playing, Some(0), 2, 1000));
+        assert_eq!(st.next_index, Some(1));
+        let out = render(&mut e, 4);
+        assert!((out[0] - lv(0.2)).abs() < 1e-6);
+        // the song is gone: stopped on the first song
+        let new = queue_of(&dir, &[("s1", "", ""), ("s3", "", "")]);
+        let (_old, kept) = e.replace_queue(Arc::new(new));
+        assert!(!kept);
+        assert!(e.wait_ready(WAIT));
+        let st = e.status();
+        assert_eq!((st.state, st.index, st.position_frames), (PlayState::Stopped, Some(0), 0));
+        assert_eq!(&*st.song_name, "s1");
+        // an empty playlist unloads everything
+        e.set_queue(Vec::new());
+        assert_eq!(e.status().state, PlayState::Empty);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn songs_set_without_a_queue_still_end_with_ended() {
+        let dir = temp_dir("q-legacy");
+        let wav = wav24(&dir, "w", RATE, 1, &constant(2400, 0.5));
+        let prj = song(&dir, &[&wav]);
+        let mut e = ready_engine(&prj);
+        e.play();
+        pump(&mut e, 2400, 500);
+        assert_eq!(e.status().state, PlayState::Ended);
+        assert_eq!(e.status().index, None);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

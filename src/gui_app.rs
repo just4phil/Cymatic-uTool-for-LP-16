@@ -1159,6 +1159,9 @@ impl Lp16App {
             Sel::Playlist(i) if i >= self.playlists.len() => self.sel = Sel::PlaylistsFolder,
             _ => {}
         }
+        // the Rehearsal tab plays these playlists
+        let for_player = self.playlists.iter().map(|p| (p.name.clone(), to_pl_songs(&p.songs))).collect();
+        self.rehearsal.set_library(&audio_lib, for_player);
         self.x_songs.retain(|&i| i < self.songs.len());
         self.x_playlists.retain(|&i| i < self.playlists.len());
         self.drives = list_drives();
@@ -1230,6 +1233,9 @@ impl Lp16App {
         let old = self.playlists[index].name.clone();
         let result = self.lib().rename_playlist(&old, new_name, copy);
         if self.lib_ok(result) {
+            if !copy {
+                self.rehearsal.playlist_renamed(&old, new_name);
+            }
             self.refresh();
             self.select_playlist_name(new_name);
         }
@@ -1251,6 +1257,7 @@ impl Lp16App {
         let name = self.playlists[index].name.clone();
         let result = self.lib().delete_playlist(&name);
         if self.lib_ok(result) {
+            self.rehearsal.playlist_deleted(&name);
             self.sel = Sel::PlaylistsFolder;
             self.refresh();
         }
@@ -1307,6 +1314,11 @@ impl Lp16App {
         };
         if !self.lib_ok(result) {
             return;
+        }
+        if let (Some(i), false, Some(false)) = (index, same_name, copy_or_rename) {
+            // saved under a new name and the old one removed: a rename
+            let old = self.playlists[i].name.clone();
+            self.rehearsal.playlist_renamed(&old, &name);
         }
         self.refresh();
         self.select_playlist_name(&name);
@@ -1772,7 +1784,17 @@ impl Lp16App {
                                     paint_warn(p, rect)
                                 }
                             });
-                            if r.double {
+                            let mut play = false;
+                            r.resp.context_menu(|ui| {
+                                if ui.button("Play in Rehearsal").clicked() {
+                                    play = true;
+                                    ui.close_menu();
+                                }
+                            });
+                            if play {
+                                self.sel = Sel::Playlist(i);
+                                self.play_playlist_in_rehearsal(i);
+                            } else if r.double {
                                 self.open_playlist_editor(Some(i));
                             } else if r.clicked {
                                 self.sel = Sel::Playlist(i);
@@ -3473,6 +3495,14 @@ impl Lp16App {
             Err(e) => self.message("Play in Rehearsal", format!("The Song can't be opened:
 {}", e)),
         }
+    }
+
+    /// Home > playlist > Play in Rehearsal: load the playlist, wait on its
+    /// first song, show the tab.
+    fn play_playlist_in_rehearsal(&mut self, index: usize) {
+        let name = self.playlists[index].name.clone();
+        self.rehearsal.play_playlist(&name);
+        self.tab = Tab::Rehearsal;
     }
 
     fn open_song_editor(&mut self, i: usize) {
