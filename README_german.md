@@ -37,6 +37,8 @@ Dazu gibt es eine Oberfläche, die der von uTool2 nachgebaut ist, und eine Komma
 - **Batch-Import von Songs:** legt aus neuen Ordnern der AudioLibrary auf einen Schlag Songs an,
   siehe [Import](#import-batch-import-von-songs).
 - **Edit Target:** Inhalt des Sticks als Baum, mit Details zu Songs und Playlists.
+- **Probe-Player (erste Version):** spielt einen Song der Bibliothek über das Standard-Audiogerät
+  ab, siehe [Probe-Player](#probe-player).
 
 ## Voraussetzungen
 
@@ -53,7 +55,8 @@ cargo build --release
 target\release\lp16-tool.exe
 ```
 
-Ohne Argumente (auch per Doppelklick) startet die Oberfläche. Ohne die Oberfläche bauen:
+Ohne Argumente (auch per Doppelklick) startet die Oberfläche. Ohne die Oberfläche (und ohne die
+Audio-Abhängigkeiten `cpal` und `rtrb` des Probe-Players) bauen:
 `cargo build --release --no-default-features`.
 
 ## Einrichtung
@@ -94,6 +97,30 @@ Aufbau des Basisordners:
 gelesen.
 
 Vor dem ersten Export auf einen echten Stick `Recording\` sichern.
+
+## Probe-Player
+
+Der Player spielt einen Song der Projektbibliothek über den **Standard-Audioausgang von Windows**
+(WASAPI) ab, zum Proben zu Hause. Das ist die erste Version; Playlist, Proben-Mix, MIDI und ASIO
+folgen.
+
+- Im Home-Reiter mit der rechten Maustaste auf einen Song klicken und **Play in Rehearsal**
+  wählen. Das lädt den Song, wechselt in den Reiter **Rehearsal** und startet die Wiedergabe.
+- Der Reiter zeigt Songname, Position und Länge, einen Fortschrittsbalken (nur Anzeige), einen
+  Play/Pause-Knopf und Stop. Ein Zähler erscheint, wenn der Audiopuffer leer lief (Aussetzer).
+  Warnungen nennen Spur und Grund, z. B. eine fehlende oder nicht lesbare WAV. Der Song spielt
+  trotzdem mit den übrigen Spuren.
+- Alle Spuren werden synchron von der Platte gestreamt (nichts wird vorab in den Speicher
+  geladen) und zu Stereo gemischt. Vorerst hat jede Spur 0 dB und Panorama Mitte (Constant-Power-
+  Gesetz); der Mix wird auf Vollaussteuerung begrenzt.
+- WAVs müssen mono sein, mit 8, 16, 24 oder 32 Bit Integer oder 32 Bit Float. Eine Spur mit
+  anderer Samplerate als die erste lesbare Spur bleibt still. Es gibt kein Resampling: weicht die
+  Samplerate des Songs von der des Audiogeräts ab, wird der Song nicht gespielt und der Reiter
+  sagt das.
+- Wird der Song umbenannt, gelöscht oder im Song-Editor gespeichert, während er geladen ist,
+  stoppt der Player und entlädt ihn, und der Reiter fordert auf, ihn neu zu laden.
+- Export, Import und Bibliotheksbearbeitung bleiben während der Wiedergabe benutzbar.
+- Ohne Audiogerät zeigt der Reiter eine Meldung.
 
 ## Kommandozeile
 
@@ -174,11 +201,15 @@ Dateien auf dem Stick beschädigt sein könnten. Gelöscht wird auf dem Stick ni
 | `src/lib.rs` | Dateiformate: `SongProject` (eine `.songprj`, daraus `song.set` und `validationcode`), `.play`, `.playlistprj`, WAV- und MIDI-Lesen, Import, Einstellungen |
 | `src/project_lib.rs` | Projektbibliothek: Songs und Playlists auflisten, anlegen, umbenennen, kopieren und löschen. Beim Umbenennen eines Songs zeigen die Playlists weiter auf ihn; ein Song, den eine Playlist nutzt, lässt sich nicht löschen. |
 | `src/sync.rs` | Stick Sync: `plan` (was ein Export tun würde), `run` (exportieren und prüfen). Kommandozeile und Oberfläche nutzen denselben Ablauf. |
+| `src/rehearsal.rs` | Abspiel-Engine des Probe-Players (Lesen, Mischen, Transport), unabhängig von jedem Audiogerät (Feature `player`) |
+| `src/audio_out.rs` | Adapter für den Audioausgang: Standardgerät über `cpal`, Befehle und Status zwischen Oberfläche und Audio-Callback (Feature `player`) |
 | `src/main.rs` | Kommandozeile |
 | `src/gui_app.rs` | Oberfläche (egui 0.27) |
+| `src/gui_rehearsal.rs` | Der Reiter Rehearsal |
 
-Es gibt keine Abhängigkeiten außer `eframe` und `rfd` für die Oberfläche; XML, MD5, WAV und MIDI
-sind selbst geschrieben.
+Es gibt keine Abhängigkeiten außer `eframe` und `rfd` für die Oberfläche sowie `cpal` und `rtrb`
+für den Probe-Player (Feature `player`, wird von `gui` eingeschaltet); XML, MD5, WAV und MIDI sind
+selbst geschrieben.
 
 ## Tests
 
@@ -216,8 +247,9 @@ gibt es nur „LP-16“.
 **Noch nicht umgesetzt:**
 
 - Stereo-Songs und -Playlists (nur Multitrack)
-- Mixer bzw. Pegel und Panorama pro Spur (vorhandene Werte aus der `.songprj` werden aber
-  übernommen)
+- Mixer bzw. Pegel und Panorama pro Spur im Song (vorhandene Werte aus der `.songprj` werden
+  aber übernommen). Für den Probe-Player ist ein Proben-Mix geplant; der Song-Mixer bleibt
+  nicht umgesetzt.
 - Song-Editor: Name, Sampling Rate und Resolution eines bestehenden Songs ändern
 - Playlist-Editor: Start Mode und Delay pro Song einstellen (vorhandene Werte bleiben erhalten)
 - Undo/Redo, Ordner in der Bibliothek („New folder“)

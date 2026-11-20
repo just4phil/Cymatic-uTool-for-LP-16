@@ -11,6 +11,10 @@ use std::path::Path;
 use std::time::UNIX_EPOCH;
 
 pub mod project_lib;
+#[cfg(feature = "player")]
+pub mod audio_out;
+#[cfg(feature = "player")]
+pub mod rehearsal;
 pub mod sync;
 
 // ---------------------------------------------------------------------------

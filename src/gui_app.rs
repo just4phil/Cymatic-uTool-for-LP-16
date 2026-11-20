@@ -2,7 +2,8 @@
 //!
 //! Layout, colours and wording follow the screenshots of the original in
 //! uTool2 V2.0.062 (kept locally in _private/docs/utool2-screens):
-//! - six tabs (Home, Export, Import, Edit Target, Settings, Support)
+//! - seven tabs (Home, Rehearsal, Export, Import, Edit Target, Settings, Support);
+//!   Rehearsal is new (the player), see gui_rehearsal.rs
 //! - two-column pages: explorer tree on the left, details on the right
 //! - editors and dialogs are overlays inside the main window: black
 //!   backdrop, orange title, dark rounded box, orange-framed buttons.
@@ -10,6 +11,7 @@
 //! Everything goes through the same lp16_tool library that the CLI uses.
 
 use crate::config_path;
+use crate::gui_rehearsal::RehearsalPanel;
 use eframe::egui::{
     self, pos2, vec2, Align, Align2, Color32, FontId, Layout, Margin, Rect, RichText, Sense,
     Stroke, Ui,
@@ -33,20 +35,20 @@ use std::time::Instant;
 // colours (sampled from the uTool2 screenshots)
 // ---------------------------------------------------------------------------
 
-const ORANGE: Color32 = Color32::from_rgb(0xf0, 0x6b, 0x19);
+pub(crate) const ORANGE: Color32 = Color32::from_rgb(0xf0, 0x6b, 0x19);
 const BG: Color32 = Color32::from_rgb(0x30, 0x30, 0x30);
-const PANEL: Color32 = Color32::from_rgb(0x40, 0x40, 0x40);
+pub(crate) const PANEL: Color32 = Color32::from_rgb(0x40, 0x40, 0x40);
 const TAB_IDLE: Color32 = Color32::from_rgb(0x48, 0x48, 0x48);
 const TAB_HOVER: Color32 = Color32::from_rgb(0x58, 0x58, 0x58);
 const FIELD: Color32 = Color32::from_rgb(0x60, 0x60, 0x60);
 const LIST: Color32 = Color32::from_rgb(0x30, 0x30, 0x30);
 const SEL: Color32 = Color32::from_rgb(0x5a, 0x5a, 0x5a);
 const HOVER: Color32 = Color32::from_rgb(0x4a, 0x4a, 0x4a);
-const LINE: Color32 = Color32::from_rgb(0x4c, 0x4c, 0x4c);
-const TEXT: Color32 = Color32::from_rgb(0xf0, 0xf0, 0xf0);
-const DIM: Color32 = Color32::from_rgb(0x9a, 0x9a, 0x9a);
+pub(crate) const LINE: Color32 = Color32::from_rgb(0x4c, 0x4c, 0x4c);
+pub(crate) const TEXT: Color32 = Color32::from_rgb(0xf0, 0xf0, 0xf0);
+pub(crate) const DIM: Color32 = Color32::from_rgb(0x9a, 0x9a, 0x9a);
 const GREEN: Color32 = Color32::from_rgb(0x6c, 0xd8, 0x6c);
-const RED: Color32 = Color32::from_rgb(0xf0, 0x5a, 0x5a);
+pub(crate) const RED: Color32 = Color32::from_rgb(0xf0, 0x5a, 0x5a);
 const MARK_FILL: Color32 = Color32::from_rgb(0xfb, 0xd9, 0xc4);
 
 const ROW_H: f32 = 22.0;
@@ -58,6 +60,7 @@ const ROW_H: f32 = 22.0;
 #[derive(Clone, Copy, PartialEq)]
 enum Tab {
     Home,
+    Rehearsal,
     Export,
     Import,
     EditTarget,
@@ -65,8 +68,9 @@ enum Tab {
     Support,
 }
 
-const TABS: [(Tab, &str); 6] = [
+const TABS: [(Tab, &str); 7] = [
     (Tab::Home, "Home"),
+    (Tab::Rehearsal, "Rehearsal"),
     (Tab::Export, "Export"),
     (Tab::Import, "Import"),
     (Tab::EditTarget, "Edit Target"),
@@ -327,13 +331,15 @@ pub struct Lp16App {
     import_check: Vec<bool>,
     import_show_all: bool,
     pl_update: Option<PlUpdate>,
+    // rehearsal player
+    rehearsal: RehearsalPanel,
 }
 
 // ---------------------------------------------------------------------------
 // helpers: paths, formatting, Windows bits
 // ---------------------------------------------------------------------------
 
-fn key(path: &str) -> String {
+pub(crate) fn key(path: &str) -> String {
     path.to_lowercase()
 }
 
@@ -1085,6 +1091,7 @@ impl Lp16App {
             import_check: Vec::new(),
             import_show_all: false,
             pl_update: None,
+            rehearsal: RehearsalPanel::default(),
         };
         app.refresh();
         app
@@ -1197,6 +1204,9 @@ impl Lp16App {
     fn song_name_change(&mut self, index: usize, new_name: &str, copy: bool) {
         let lib = self.lib();
         let old = PathBuf::from(&self.songs[index].path);
+        if !copy {
+            self.rehearsal.song_changed(&self.songs[index].path);
+        }
         let result = if copy { lib.copy_song(&old, new_name) } else { lib.rename_song(&old, new_name) };
         let ok = self.lib_ok(result);
         self.refresh();
@@ -1215,6 +1225,7 @@ impl Lp16App {
     }
 
     fn delete_song(&mut self, index: usize) {
+        self.rehearsal.song_changed(&self.songs[index].path);
         let path = PathBuf::from(&self.songs[index].path);
         match self.lib().delete_song(&path) {
             Ok(()) => {
@@ -1544,6 +1555,7 @@ impl eframe::App for Lp16App {
             .frame(egui::Frame::none().fill(BG).inner_margin(Margin::same(10.0)))
             .show(ctx, |ui| match self.tab {
                 Tab::Home => self.home(ui),
+                Tab::Rehearsal => self.rehearsal.ui(ui),
                 Tab::Export => self.export(ui),
                 Tab::Import => self.import(ui),
                 Tab::EditTarget => self.edit_target(ui),
@@ -1555,6 +1567,14 @@ impl eframe::App for Lp16App {
         self.song_editor(ctx, frame);
         self.export_overlay(ctx);
         self.dialogs(ctx);
+        // the position display moves while a song plays
+        if self.rehearsal.is_playing() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(33));
+        }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        self.rehearsal.shutdown();
     }
 }
 
@@ -1678,7 +1698,17 @@ impl Lp16App {
                             let r = tree_row(ui, 2, None, None, "♫", &s.name, self.sel == Sel::Song(i), true, |p, rect| {
                                 paint_song_cols(p, rect, s)
                             });
-                            if r.double {
+                            let mut play = false;
+                            r.resp.context_menu(|ui| {
+                                if ui.button("Play in Rehearsal").clicked() {
+                                    play = true;
+                                    ui.close_menu();
+                                }
+                            });
+                            if play {
+                                self.sel = Sel::Song(i);
+                                self.play_in_rehearsal(i);
+                            } else if r.double {
                                 self.open_song_editor(i);
                             } else if r.clicked {
                                 self.sel = Sel::Song(i);
@@ -3383,6 +3413,20 @@ impl Lp16App {
         }
     }
 
+    /// Load a song of the library into the rehearsal player, switch to its
+    /// tab and start playing.
+    fn play_in_rehearsal(&mut self, index: usize) {
+        let path = self.songs[index].path.clone();
+        match SongProject::load(&path, &self.config.audio_lib) {
+            Ok(prj) => {
+                self.rehearsal.play_song(&prj);
+                self.tab = Tab::Rehearsal;
+            }
+            Err(e) => self.message("Play in Rehearsal", format!("The Song can't be opened:
+{}", e)),
+        }
+    }
+
     fn open_song_editor(&mut self, i: usize) {
         if let Some(s) = self.songs.get(i) {
             match SongEditor::load(&s.path, &self.config.audio_lib) {
@@ -3436,6 +3480,7 @@ impl Lp16App {
         self.song_ed = Some(ed);
         match clicked {
             Some(0) => {
+                self.rehearsal.song_changed(&path);
                 let ed = self.song_ed.as_mut().unwrap();
                 match ed.save() {
                     Ok(()) => {
