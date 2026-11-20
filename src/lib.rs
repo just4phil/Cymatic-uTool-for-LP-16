@@ -327,10 +327,13 @@ fn generate_song_set(p: &SongProject, validation: &str) -> String {
     lines.push(format!("  <channel_count>{}</channel_count>", tracks.len()));
     lines.push(format!("  <sampling_rate>{}</sampling_rate>", sampling_rate));
     lines.push(format!("  <resolution>{}</resolution>", resolution));
-    lines.push(format!("  <midi_file>{}</midi_file>", midi_name));
-    lines.push(format!("  <midi_length>{}</midi_length>", midi_length));
-    lines.push(format!("  <midi_length_samples>{}</midi_length_samples>", midi_samples));
-    lines.push("  <midi_offset>0</midi_offset>".into());
+    // uTool2 leaves the MIDI block out entirely when the song has no MIDI file
+    if !midi_name.is_empty() {
+        lines.push(format!("  <midi_file>{}</midi_file>", midi_name));
+        lines.push(format!("  <midi_length>{}</midi_length>", midi_length));
+        lines.push(format!("  <midi_length_samples>{}</midi_length_samples>", midi_samples));
+        lines.push("  <midi_offset>0</midi_offset>".into());
+    }
 
     let sections: [(&str, fn(&ProjectTrack) -> String); 3] = [
         ("output_level", |t| xml_escape(&t.monitor_level)),
@@ -2169,6 +2172,24 @@ mod tests {
         let play = generate_play("A & B", 0, &songs, |_| 1.0);
         assert!(play.contains("<playlistname>A &amp; B</playlistname>"));
         assert!(play.contains("<name>R &amp; R</name>"));
+    }
+
+    #[test]
+    fn song_set_has_midi_block_only_with_midi_file() {
+        // uTool2 leaves the MIDI tags out when the song has no MIDI file
+        let without = SongProject::parse("<ns0:SongProject><ns0:song_name>A</ns0:song_name></ns0:SongProject>", "")
+            .song_set();
+        for t in ["midi_file", "midi_length", "midi_length_samples", "midi_offset"] {
+            assert!(!without.contains(&format!("<{}>", t)), "{} in {}", t, without);
+        }
+
+        let with = SongProject::parse(
+            "<ns0:SongProject><ns0:song_name>A</ns0:song_name><ns0:midi_file>{$AudioLib}\\x\\song.mid</ns0:midi_file></ns0:SongProject>",
+            "",
+        )
+        .song_set();
+        assert!(with.contains("  <midi_file>song.mid</midi_file>\r\n  <midi_length>"), "{}", with);
+        assert!(with.contains("<midi_offset>0</midi_offset>"), "{}", with);
     }
 
     // -----------------------------------------------------------------------
