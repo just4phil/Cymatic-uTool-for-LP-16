@@ -26,6 +26,8 @@ pub enum Command {
     Play,
     Pause,
     Stop,
+    /// jump to a position in seconds (`Engine::seek`)
+    Seek(f64),
 }
 
 /// A device sample format the engine's `f32` can be converted to.
@@ -107,6 +109,10 @@ impl Callback {
             }
             Command::Stop => {
                 self.engine.stop();
+                None
+            }
+            Command::Seek(seconds) => {
+                self.engine.seek(seconds);
                 None
             }
         };
@@ -353,6 +359,25 @@ mod tests {
         let guard = status.lock().unwrap();
         cb.fill(&mut out, 2);
         drop(guard);
+        drop(cb);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_seek_command_moves_the_position() {
+        let dir = temp_dir("ao-seek");
+        let a = wav24(&dir, "a", RATE, 1, &constant(48000, 0.25));
+        let (tx, rx) = channel();
+        let (trash_tx, _trash_rx) = channel();
+        let engine = Engine::new(RATE);
+        let status = Arc::new(Mutex::new(engine.status()));
+        let mut cb = Callback::new(engine, rx, trash_tx, status.clone());
+        tx.send(Command::Load(Box::new(LoadedSong::open(&song(&dir, &[&a]))))).unwrap();
+        tx.send(Command::Seek(0.5)).unwrap();
+        let mut out = [0.0f32; 8];
+        cb.fill(&mut out, 2);
+        let st = status.lock().unwrap().clone();
+        assert_eq!((st.state, st.position_frames), (PlayState::Stopped, 24000));
         drop(cb);
         let _ = std::fs::remove_dir_all(&dir);
     }

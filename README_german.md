@@ -106,10 +106,23 @@ folgen.
 
 - Im Home-Reiter mit der rechten Maustaste auf einen Song klicken und **Play in Rehearsal**
   wählen. Das lädt den Song, wechselt in den Reiter **Rehearsal** und startet die Wiedergabe.
-- Der Reiter zeigt Songname, Position und Länge, einen Fortschrittsbalken (nur Anzeige), einen
-  Play/Pause-Knopf und Stop. Ein Zähler erscheint, wenn der Audiopuffer leer lief (Aussetzer).
+- Der Reiter zeigt Songname, Position und Länge, einen Fortschrittsbalken (Klicken oder Ziehen springt),
+  Play/Pause, Stop und die Knöpfe "−10 s" / "+10 s". Ein Zähler erscheint, wenn der Audiopuffer leer lief (Aussetzer).
   Warnungen nennen Spur und Grund, z. B. eine fehlende oder nicht lesbare WAV. Der Song spielt
   trotzdem mit den übrigen Spuren.
+- Springen während der Wiedergabe blendet über 5 ms aus und wieder ein, damit nichts knackt.
+  Beim Ziehen des Fortschrittsbalkens zeigt die Zeit das Ziel; gesprungen wird beim Loslassen.
+- Tastenkürzel gelten, solange der Reiter Rehearsal angezeigt wird und kein Textfeld den Fokus hat:
+
+  | Taste | Funktion |
+  |---|---|
+  | Leertaste | Play/Pause |
+  | Links / Rechts | −10 s / +10 s |
+  | Umschalt + Links / Rechts | −30 s / +30 s |
+  | Pos1 | auf 0 springen, der Zustand bleibt |
+  | Esc | Stop |
+
+  Hoch/Runter sind für Playlists reserviert.
 - Alle Spuren werden synchron von der Platte gestreamt (nichts wird vorab in den Speicher
   geladen) und zu Stereo gemischt. Vorerst hat jede Spur 0 dB und Panorama Mitte (Constant-Power-
   Gesetz); der Mix wird auf Vollaussteuerung begrenzt.

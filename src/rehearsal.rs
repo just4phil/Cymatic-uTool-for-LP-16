@@ -16,6 +16,12 @@
 //! `start_count` and only then uses the track. Until all tracks are in the
 //! new generation (and sufficiently filled) a playing engine outputs silence
 //! and does not advance; that wait is no dropout.
+//!
+//! `seek` builds on this. While playing it first fades the audio out over
+//! 5 ms from the current position (`Fade::Out`; the status already shows the
+//! target), then changes the position, waits in silence (`Fade::Wait`) and
+//! fades in over 5 ms (`Fade::In`). Several seeks in a row only replace the
+//! target; there is one fade-out and one fade-in.
 
 use crate::{SongProject, WavReader};
 use rtrb::{Consumer, Producer, RingBuffer};
@@ -30,6 +36,8 @@ const CENTER_GAIN: f32 = 0.707_106_77;
 const READ_BLOCK: usize = 4096;
 /// Frames `render` mixes per round (size of the mix scratch buffer).
 const MIX_CHUNK: usize = 1024;
+/// Length of the fade-out and fade-in around a jump while playing.
+const FADE_SECONDS: f64 = 0.005;
 /// How long the reader thread sleeps when every ring is full.
 const READER_IDLE: Duration = Duration::from_millis(5);
 
@@ -213,6 +221,17 @@ impl PlayTrack {
     }
 }
 
+/// The fade around a jump while playing; the numbers are frames done.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fade {
+    None,
+    /// fading out, the jump to `pending` follows
+    Out(usize),
+    /// jumped; silence until the buffers are filled, then fade in
+    Wait,
+    In(usize),
+}
+
 /// A song opened for playing: its tracks, the reader thread, the facts.
 /// Building one opens the files, so it belongs on the user interface
 /// thread; the engine (in the audio callback) only takes the finished
@@ -231,6 +250,9 @@ pub struct LoadedSong {
     pos: u64,
     /// all tracks of the generation are filled enough to start
     primed: bool,
+    fade: Fade,
+    /// target of the jump that follows the fade-out
+    pending: u64,
 }
 
 impl LoadedSong {
@@ -311,6 +333,8 @@ impl LoadedSong {
             generation: 1,
             pos: 0,
             primed: false,
+            fade: Fade::None,
+            pending: 0,
         }
     }
 
@@ -334,6 +358,20 @@ impl LoadedSong {
         for t in self.tracks.iter_mut() {
             t.synced = false;
             t.debt = 0;
+        }
+    }
+
+    /// The fade-out is over (or the song ended during it): do the jump.
+    fn finish_fade_out(&mut self) {
+        self.seek_to(self.pending);
+        self.fade = Fade::Wait;
+    }
+
+    /// Position shown to the user: the target of a jump that is still fading out.
+    fn shown_pos(&self) -> u64 {
+        match self.fade {
+            Fade::Out(_) => self.pending,
+            _ => self.pos,
         }
     }
 
@@ -377,6 +415,8 @@ impl Drop for LoadedSong {
 
 pub struct Engine {
     output_rate: u32,
+    /// frames of a fade: round(5 ms x rate)
+    fade_len: usize,
     state: PlayState,
     song: Option<LoadedSong>,
     underruns: u64,
@@ -389,6 +429,7 @@ impl Engine {
     pub fn new(output_rate: u32) -> Engine {
         Engine {
             output_rate,
+            fade_len: ((FADE_SECONDS * output_rate as f64).round() as usize).max(1),
             state: PlayState::Empty,
             song: None,
             underruns: 0,
@@ -439,6 +480,7 @@ impl Engine {
             return;
         }
         if self.state == PlayState::Ended {
+            song.fade = Fade::None;
             song.seek_to(0);
         }
         self.state = PlayState::Playing;
@@ -448,11 +490,73 @@ impl Engine {
         if self.state == PlayState::Playing {
             self.state = PlayState::Paused;
         }
+        if let Some(song) = self.song.as_mut() {
+            if matches!(song.fade, Fade::Out(_)) {
+                song.finish_fade_out(); // the sound is gone anyway
+            }
+        }
     }
 
-    /// Pause plus position 0.
+    /// Jump to `seconds` (clamped to 0 ..= length, rounded to whole frames).
+    /// The length itself gives `Ended`. While playing the sound is faded out
+    /// over 5 ms, the position changes, and after a silent wait it is faded
+    /// in over 5 ms; the status shows the target at once. Paused, stopped
+    /// or ended, only the position changes (`Ended` becomes `Paused` if the
+    /// target is before the end). Several calls in a row: the last target
+    /// counts.
+    pub fn seek(&mut self, seconds: f64) {
+        let fade_len = self.fade_len;
+        let Some(song) = self.song.as_mut() else { return };
+        if self.state == PlayState::Empty {
+            return;
+        }
+        let target = if seconds > 0.0 { (seconds * song.song_rate as f64).round() as u64 } else { 0 };
+        let target = target.min(song.length_frames);
+        let end = song.length_frames > 0 && target >= song.length_frames;
+        let playing_state = if end { PlayState::Ended } else { PlayState::Playing };
+        match (self.state, song.fade) {
+            // a fade-out is running: only the target changes
+            (_, Fade::Out(_)) => {
+                song.pending = target;
+                self.state = playing_state;
+            }
+            (PlayState::Playing, fade) => {
+                self.state = playing_state;
+                if !song.primed {
+                    // nothing audible yet: jump at once
+                    song.seek_to(target);
+                } else {
+                    // from a fade-in the fade-out continues at the same gain
+                    let done = match fade {
+                        Fade::In(d) => fade_len.saturating_sub(d),
+                        _ => 0,
+                    };
+                    song.pending = target;
+                    if done >= fade_len {
+                        song.finish_fade_out();
+                    } else {
+                        song.fade = Fade::Out(done);
+                    }
+                }
+            }
+            (state, _) => {
+                song.fade = Fade::None;
+                song.seek_to(target);
+                self.state = if end {
+                    PlayState::Ended
+                } else if state == PlayState::Ended {
+                    PlayState::Paused
+                } else {
+                    state
+                };
+            }
+        }
+    }
+
+    /// Pause plus position 0. No fade: silence follows anyway.
     pub fn stop(&mut self) {
         if let Some(song) = self.song.as_mut() {
+            song.fade = Fade::None;
             song.seek_to(0);
             self.state = PlayState::Stopped;
         }
@@ -463,26 +567,33 @@ impl Engine {
     /// blocking lock.
     pub fn render(&mut self, out: &mut [f32]) {
         out.fill(0.0);
-        if self.state != PlayState::Playing {
+        let fade_len = self.fade_len;
+        let Some(song) = self.song.as_mut() else { return };
+        // a jump to the end sets `Ended` at once but still fades out
+        let active = self.state == PlayState::Playing || matches!(song.fade, Fade::Out(_));
+        if !active {
             // keep the tracks in step, so `wait_ready` sees the progress
-            if let Some(song) = self.song.as_mut() {
-                song.filled(1);
-            }
+            song.filled(1);
             return;
         }
-        let Some(song) = self.song.as_mut() else { return };
         if !song.primed {
             // 0.5 s (a quarter of the ring) is enough to start
             if !song.filled(4) {
                 return; // waiting is no dropout
             }
             song.primed = true;
+            if song.fade == Fade::Wait {
+                song.fade = Fade::In(0);
+            }
         }
         let frames = out.len() / 2;
         let mut done = 0;
         let mut underrun = false;
         while done < frames && song.pos < song.length_frames {
-            let m = (frames - done).min(MIX_CHUNK).min((song.length_frames - song.pos) as usize);
+            let mut m = (frames - done).min(MIX_CHUNK).min((song.length_frames - song.pos) as usize);
+            if let Fade::Out(d) | Fade::In(d) = song.fade {
+                m = m.min(fade_len - d);
+            }
             let mix = &mut self.mix[..m];
             mix.fill(0.0);
             for t in song.tracks.iter_mut() {
@@ -502,6 +613,19 @@ impl Engine {
                     underrun = true;
                 }
             }
+            match song.fade {
+                Fade::Out(d) => {
+                    for (i, s) in mix.iter_mut().enumerate() {
+                        *s *= 1.0 - (d + i) as f32 / fade_len as f32;
+                    }
+                }
+                Fade::In(d) => {
+                    for (i, s) in mix.iter_mut().enumerate() {
+                        *s *= (d + i) as f32 / fade_len as f32;
+                    }
+                }
+                _ => {}
+            }
             for (o, s) in out[done * 2..(done + m) * 2].chunks_exact_mut(2).zip(mix.iter()) {
                 let v = s.clamp(-1.0, 1.0);
                 o[0] = v;
@@ -509,11 +633,23 @@ impl Engine {
             }
             song.pos += m as u64;
             done += m;
+            match song.fade {
+                Fade::Out(d) if d + m >= fade_len => {
+                    song.finish_fade_out();
+                    break; // silence until the new position is ready
+                }
+                Fade::Out(d) => song.fade = Fade::Out(d + m),
+                Fade::In(d) if d + m >= fade_len => song.fade = Fade::None,
+                Fade::In(d) => song.fade = Fade::In(d + m),
+                _ => {}
+            }
         }
         if underrun {
             self.underruns += 1;
         }
-        if song.pos >= song.length_frames {
+        if matches!(song.fade, Fade::Out(_)) && song.pos >= song.length_frames {
+            song.finish_fade_out(); // the song ended during the fade-out
+        } else if song.fade != Fade::Wait && song.pos >= song.length_frames {
             self.state = PlayState::Ended;
         }
     }
@@ -537,8 +673,8 @@ impl Engine {
                 Status {
                     state: self.state,
                     song_name: s.name.clone(),
-                    position_frames: s.pos,
-                    position_seconds: s.pos as f64 / rate,
+                    position_frames: s.shown_pos(),
+                    position_seconds: s.shown_pos() as f64 / rate,
                     length_frames: s.length_frames,
                     length_seconds: s.length_frames as f64 / rate,
                     output_rate: self.output_rate,
@@ -916,6 +1052,224 @@ pub(crate) mod tests {
         assert_eq!(e.status().state, PlayState::Empty);
         assert!(render(&mut e, 10).iter().all(|&s| s == 0.0));
         assert!(e.wait_ready(Duration::from_millis(1)));
+    }
+
+    // ---- seek ----
+
+    const FADE: usize = 240; // round(0.005 x 48000)
+
+    /// like `ramp`, but never 0 (so zeros mean silence)
+    fn ramp1(frames: usize) -> Vec<i32> {
+        (0..frames as i32).map(|i| (i + 1) * 256).collect()
+    }
+
+    fn ramp1_value(i: usize) -> f32 {
+        (i + 1) as f32 / 32768.0
+    }
+
+    /// exactly `total` frames in blocks of `block`
+    fn render_exact(e: &mut Engine, total: usize, block: usize) -> Vec<f32> {
+        let mut all = Vec::new();
+        while all.len() < 2 * total {
+            let n = block.min(total - all.len() / 2);
+            all.extend(render(e, n));
+        }
+        all
+    }
+
+    #[test]
+    fn seek_while_stopped_gives_the_samples_from_the_target() {
+        let dir = temp_dir("rh-seek-stopped");
+        let a = wav24(&dir, "a", RATE, 1, &ramp(20000));
+        let mut e = ready_engine(&song(&dir, &[&a]));
+        e.seek(0.1);
+        let st = e.status();
+        assert_eq!((st.state, st.position_frames), (PlayState::Stopped, 4800));
+        assert!(e.wait_ready(WAIT));
+        e.play();
+        let out = render(&mut e, 300);
+        for i in 0..300 {
+            assert_eq!(out[2 * i], ramp_value(4800 + i) * G, "frame {}", i);
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn seek_rounds_to_whole_frames() {
+        let dir = temp_dir("rh-seek-round");
+        let a = wav24(&dir, "a", RATE, 1, &ramp(20000));
+        let mut e = ready_engine(&song(&dir, &[&a]));
+        e.seek(0.1 + 0.4 / 48000.0);
+        assert_eq!(e.status().position_frames, 4800);
+        e.seek(0.1 + 0.6 / 48000.0);
+        assert_eq!(e.status().position_frames, 4801);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn seek_while_playing_fades_out_and_in_over_5_ms() {
+        let dir = temp_dir("rh-seek-fade");
+        let a = wav24(&dir, "a", RATE, 1, &constant(30000, 0.5));
+        let mut e = ready_engine(&song(&dir, &[&a]));
+        let level = 0.5 * G;
+        e.play();
+        let mut all = render_exact(&mut e, 1000, 100);
+        e.seek(0.25);
+        // the status shows the target at once
+        assert_eq!(e.status().position_frames, 12000);
+        // like a device: small blocks, the reader thread gets time
+        let start = Instant::now();
+        while all.len() < 2 * (1000 + FADE + 20) || all.last() != Some(&level) {
+            all.extend(render(&mut e, 16));
+            assert!(start.elapsed() < WAIT, "the engine never came back");
+        }
+        let frames: Vec<f32> = all.chunks(2).map(|c| c[0]).collect();
+        for (i, v) in frames.iter().take(1000).enumerate() {
+            assert!((v - level).abs() < 1e-6, "before the jump, frame {}", i);
+        }
+        // fade out: exactly FADE frames, linear, from the full level
+        for i in 0..FADE {
+            let want = level * (1.0 - i as f32 / FADE as f32);
+            assert!((frames[1000 + i] - want).abs() < 1e-6, "fade-out frame {}", i);
+        }
+        // silence, then the fade-in starts at 0 and takes exactly FADE frames
+        let first = 1000 + FADE + frames[1000 + FADE..].iter().position(|&v| v > 0.0).unwrap();
+        assert!(frames[1000 + FADE..first].iter().all(|&v| v == 0.0));
+        for i in 0..FADE {
+            let want = level * i as f32 / FADE as f32;
+            assert!((frames[first - 1 + i] - want).abs() < 1e-6, "fade-in frame {}", i);
+        }
+        assert!((frames[first - 1 + FADE] - level).abs() < 1e-6);
+        // no step larger than 1/240 of the level
+        let max_step = frames.windows(2).map(|w| (w[1] - w[0]).abs()).fold(0.0f32, f32::max);
+        assert!(max_step <= level / FADE as f32 + 1e-6, "step {}", max_step);
+        let st = e.status();
+        assert_eq!(st.underruns, 0, "the wait after the jump is no dropout");
+        assert_eq!(st.state, PlayState::Playing);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn seek_while_playing_continues_at_the_target() {
+        let dir = temp_dir("rh-seek-play");
+        let a = wav24(&dir, "a", RATE, 1, &ramp(20000));
+        let mut e = ready_engine(&song(&dir, &[&a]));
+        e.play();
+        render_exact(&mut e, 500, 500);
+        e.seek(0.3);
+        render_exact(&mut e, FADE, 64);
+        assert!(e.wait_ready(WAIT));
+        let out = render(&mut e, 1000);
+        for i in 0..1000 {
+            let gain = if i < FADE { i as f32 / FADE as f32 } else { 1.0 };
+            let want = ramp_value(14400 + i) * G * gain;
+            assert!((out[2 * i] - want).abs() < 1e-5, "frame {}: {} vs {}", i, out[2 * i], want);
+        }
+        assert_eq!(e.status().position_frames, 14400 + 1000);
+        assert_eq!(e.status().underruns, 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn seek_beyond_the_length_ends_and_negative_goes_to_the_start() {
+        let dir = temp_dir("rh-seek-clamp");
+        let a = wav24(&dir, "a", RATE, 1, &ramp(20000));
+        let mut e = ready_engine(&song(&dir, &[&a]));
+        e.seek(1000.0);
+        let st = e.status();
+        assert_eq!((st.state, st.position_frames), (PlayState::Ended, 20000));
+        e.seek(-5.0);
+        let st = e.status();
+        assert_eq!(st.position_frames, 0);
+        assert_eq!(st.state, PlayState::Paused, "from Ended with a target before the end");
+        e.seek(f64::NAN);
+        assert_eq!(e.status().position_frames, 0);
+        // exactly the length is the end, also while playing
+        assert!(e.wait_ready(WAIT));
+        e.play();
+        render_exact(&mut e, 100, 100);
+        e.seek(20000.0 / 48000.0);
+        assert_eq!(e.status().state, PlayState::Ended);
+        render_exact(&mut e, FADE, 64);
+        assert!(render(&mut e, 50).iter().all(|&s| s == 0.0));
+        let st = e.status();
+        assert_eq!((st.state, st.position_frames), (PlayState::Ended, 20000));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn seek_while_paused_keeps_the_state_and_play_continues_there() {
+        let dir = temp_dir("rh-seek-paused");
+        let a = wav24(&dir, "a", RATE, 1, &ramp(20000));
+        let mut e = ready_engine(&song(&dir, &[&a]));
+        e.play();
+        render_exact(&mut e, 200, 100);
+        e.pause();
+        e.seek(0.2);
+        let st = e.status();
+        assert_eq!((st.state, st.position_frames), (PlayState::Paused, 9600));
+        assert!(render(&mut e, 100).iter().all(|&s| s == 0.0));
+        assert!(e.wait_ready(WAIT));
+        e.play();
+        let out = render(&mut e, 50);
+        for i in 0..50 {
+            assert_eq!(out[2 * i], ramp_value(9600 + i) * G, "frame {}", i);
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_last_of_several_seeks_counts_with_one_fade() {
+        let dir = temp_dir("rh-seek-many");
+        let a = wav24(&dir, "a", RATE, 1, &ramp1(20000));
+        let mut e = ready_engine(&song(&dir, &[&a]));
+        e.play();
+        render_exact(&mut e, 1000, 100);
+        e.seek(0.1);
+        e.seek(0.2);
+        e.seek(0.3);
+        assert_eq!(e.status().position_frames, 14400);
+        let mut all = render_exact(&mut e, FADE, 64);
+        assert!(e.wait_ready(WAIT));
+        all.extend(render_exact(&mut e, 600, 64));
+        // after the fade-out: the fade-in of the last target, once
+        let frames: Vec<f32> = all.chunks(2).map(|c| c[0]).collect();
+        let first = frames[FADE..].iter().position(|&v| v != 0.0);
+        assert_eq!(first, Some(1), "frame 0 of the fade-in is 0, then it rises");
+        assert!((frames[FADE + 300] - ramp1_value(14400 + 300) * G).abs() < 1e-5);
+        assert_eq!(e.status().position_frames, 14400 + 600);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn block_size_does_not_change_the_samples_across_a_jump() {
+        let dir = temp_dir("rh-seek-blocks");
+        let a = wav24(&dir, "a", RATE, 1, &ramp1(20000));
+        let prj = song(&dir, &[&a]);
+        let run = |block: usize| {
+            let mut e = ready_engine(&prj);
+            e.play();
+            let mut all = render_exact(&mut e, 1000, block);
+            e.seek(0.25);
+            all.extend(render_exact(&mut e, FADE, block));
+            assert!(e.wait_ready(WAIT));
+            all.extend(render_exact(&mut e, 2000, block));
+            // the silent frames differ in number; everything audible must not
+            all.iter().filter(|&&s| s != 0.0).map(|s| s.to_bits()).collect::<Vec<_>>()
+        };
+        let reference = run(3000);
+        assert!(reference.len() > 3000);
+        for block in [1, 37, 512] {
+            assert_eq!(run(block), reference, "block size {}", block);
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn seek_without_a_song_does_nothing() {
+        let mut e = Engine::new(RATE);
+        e.seek(5.0);
+        assert_eq!(e.status().state, PlayState::Empty);
     }
 
     #[test]

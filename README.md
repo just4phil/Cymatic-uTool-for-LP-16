@@ -105,10 +105,23 @@ and ASIO follow.
 
 - In the Home tab, right-click a song and choose **Play in Rehearsal**. This loads the song,
   switches to the **Rehearsal** tab and starts playing.
-- The tab shows the song name, position and length, a progress bar (display only), a Play/Pause
-  button and Stop. A counter appears when the audio buffer ran empty (dropouts). Warnings name
+- The tab shows the song name, position and length, a progress bar (click or drag to jump), Play/Pause,
+  Stop and "−10 s" / "+10 s" buttons. A counter appears when the audio buffer ran empty (dropouts). Warnings name
   the track and the reason, e.g. a missing or unreadable WAV. The song plays with the other
   tracks anyway.
+- Jumping while playing fades out and back in over 5 ms, so nothing clicks. While you drag the
+  progress bar the time shows the target; the jump happens when you let go.
+- Keyboard shortcuts work while the Rehearsal tab is shown and no text field has the focus:
+
+  | Key | Function |
+  |---|---|
+  | Space | Play/Pause |
+  | Left / Right | −10 s / +10 s |
+  | Shift + Left / Right | −30 s / +30 s |
+  | Home | jump to 0, the state stays |
+  | Esc | Stop |
+
+  Up/Down are reserved for playlists.
 - All tracks are streamed from disk in sync (nothing is loaded into memory up front) and mixed
   to stereo. For now every track has 0 dB and pan centre (constant power law); the mix is
   limited to full scale.
