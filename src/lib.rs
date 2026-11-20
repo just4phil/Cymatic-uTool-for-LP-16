@@ -16,6 +16,8 @@ pub mod project_lib;
 pub mod audio_out;
 #[cfg(feature = "player")]
 pub mod rehearsal;
+#[cfg(feature = "player")]
+pub mod rehearsal_queue;
 pub mod sync;
 
 // ---------------------------------------------------------------------------

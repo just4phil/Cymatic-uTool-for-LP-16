@@ -20,6 +20,8 @@ mod gui_audio;
 #[cfg(feature = "gui")]
 mod gui_mixer;
 #[cfg(feature = "gui")]
+mod gui_playlist;
+#[cfg(feature = "gui")]
 mod gui_rehearsal;
 
 #[cfg(feature = "gui")]

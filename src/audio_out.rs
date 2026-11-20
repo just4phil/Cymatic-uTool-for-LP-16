@@ -19,6 +19,7 @@
 
 use crate::mix::MixParams;
 use crate::rehearsal::{Engine, Levels, LoadedSong, PlayState, Status};
+use crate::rehearsal_queue::{Opener, OpenerThread, QueueEntry};
 use crate::{Config, SongProject};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::Stream;
@@ -45,6 +46,24 @@ pub enum Command {
     SetMix(MixParams),
     /// clear the clip flag of the master
     ResetClip,
+    /// a new queue (`Engine::set_queue_arc`); the state is `Empty` until a
+    /// `Goto`
+    SetQueue(Arc<Vec<QueueEntry>>),
+    /// the playlist was changed (`Engine::replace_queue`)
+    ReplaceQueue(Arc<Vec<QueueEntry>>),
+    /// `Engine::goto`
+    Goto(usize, bool),
+    Next,
+    Prev,
+    /// `Engine::hold`: wait with the current song, or count down
+    Hold(Option<f64>),
+}
+
+/// What the callback hands to the reaper thread: dropping these can join a
+/// thread or free memory, which the callback must not do.
+pub enum Trash {
+    Song(Box<LoadedSong>),
+    Queue(Arc<Vec<QueueEntry>>),
 }
 
 /// The audio output chosen in the settings (the `audio_*` fields of
@@ -347,7 +366,7 @@ pub struct Callback {
     commands: Receiver<Command>,
     /// songs that were replaced: dropping one joins its thread, which must
     /// not happen in the callback
-    trash: Sender<Box<LoadedSong>>,
+    trash: Sender<Trash>,
     status: Arc<Mutex<Status>>,
     stereo: Vec<f32>,
     left: usize,
@@ -358,7 +377,7 @@ impl Callback {
     pub fn new(
         engine: Engine,
         commands: Receiver<Command>,
-        trash: Sender<Box<LoadedSong>>,
+        trash: Sender<Trash>,
         status: Arc<Mutex<Status>>,
     ) -> Callback {
         Callback { engine, commands, trash, status, stereo: vec![0.0; 16384], left: 1, right: 2 }
@@ -375,6 +394,30 @@ impl Callback {
         let old = match cmd {
             Command::Load(song) => self.engine.set_song(*song),
             Command::Unload => self.engine.take_song(),
+            Command::SetQueue(queue) => {
+                let _ = self.trash.send(Trash::Queue(self.engine.set_queue_arc(queue)));
+                None
+            }
+            Command::ReplaceQueue(queue) => {
+                let _ = self.trash.send(Trash::Queue(self.engine.replace_queue(queue).0));
+                None
+            }
+            Command::Goto(index, autoplay) => {
+                self.engine.goto(index, autoplay);
+                None
+            }
+            Command::Next => {
+                self.engine.next();
+                None
+            }
+            Command::Prev => {
+                self.engine.prev();
+                None
+            }
+            Command::Hold(countdown) => {
+                self.engine.hold(countdown);
+                None
+            }
             Command::Play => {
                 self.engine.play();
                 None
@@ -401,7 +444,15 @@ impl Callback {
             }
         };
         if let Some(old) = old {
-            let _ = self.trash.send(Box::new(old));
+            let _ = self.trash.send(Trash::Song(Box::new(old)));
+        }
+    }
+
+    /// Songs the engine replaced go to the reaper (a rare, small hand-over;
+    /// `render` itself only fills the engine's fixed list).
+    fn empty_garbage(&mut self) {
+        while let Some(song) = self.engine.take_garbage() {
+            let _ = self.trash.send(Trash::Song(Box::new(song)));
         }
     }
 
@@ -415,6 +466,7 @@ impl Callback {
             self.stereo.resize(need, 0.0); // only if the device asks for more than usual
         }
         self.engine.render(&mut self.stereo[..need]);
+        self.empty_garbage();
         distribute(&self.stereo[..need], out, channels, self.left, self.right);
         // the peaks are only taken when they are really handed on; the ones
         // the user interface has not read yet stay (the larger peak wins)
@@ -599,6 +651,8 @@ pub struct Player {
     lost: Lost,
     stream: Option<Stream>,
     reaper: Option<JoinHandle<()>>,
+    /// opens the songs of the queue for the engine
+    opener: Option<OpenerThread>,
     info: StreamInfo,
     settings: AudioSettings,
 }
@@ -611,14 +665,15 @@ impl Player {
         let lost: Lost = Arc::new(Mutex::new(None));
         // `make` runs once per build attempt; the ends of the queues of
         // the last attempt stay here
-        let mut ends: Option<(Sender<Command>, Receiver<Box<LoadedSong>>)> = None;
+        let mut ends: Option<(Sender<Command>, Receiver<Trash>, Arc<Opener>)> = None;
         let (stream, info) = open_stream(settings, RateChoice::Exact(rate), lost.clone(), |rate| {
             let (commands, rx) = channel();
-            let (trash_tx, trash_rx) = channel::<Box<LoadedSong>>();
-            ends = Some((commands, trash_rx));
-            Callback::new(Engine::new(rate), rx, trash_tx, status.clone()).with_outputs(settings.left, settings.right)
+            let (trash_tx, trash_rx) = channel::<Trash>();
+            let engine = Engine::new(rate);
+            ends = Some((commands, trash_rx, engine.opener()));
+            Callback::new(engine, rx, trash_tx, status.clone()).with_outputs(settings.left, settings.right)
         })?;
-        let (commands, trash_rx) = ends.ok_or("the audio stream was not created")?;
+        let (commands, trash_rx, opener) = ends.ok_or("the audio stream was not created")?;
         let reaper = std::thread::Builder::new()
             .name("rehearsal-reaper".into())
             .spawn(move || {
@@ -627,7 +682,16 @@ impl Player {
                 }
             })
             .map_err(|e| e.to_string())?;
-        Ok(Player { commands, status, lost, stream: Some(stream), reaper: Some(reaper), info, settings: settings.clone() })
+        Ok(Player {
+            commands,
+            status,
+            lost,
+            stream: Some(stream),
+            reaper: Some(reaper),
+            opener: Some(OpenerThread::spawn(opener)),
+            info,
+            settings: settings.clone(),
+        })
     }
 
     pub fn output_rate(&self) -> u32 {
@@ -696,6 +760,7 @@ impl Drop for Player {
     fn drop(&mut self) {
         // ends the callback and with it the engine and its reader thread
         drop(self.stream.take());
+        drop(self.opener.take());
         if let Some(r) = self.reaper.take() {
             let _ = r.join();
         }
@@ -1035,6 +1100,58 @@ mod tests {
         assert!(!status.lock().unwrap().levels.clip);
         tx.send(Command::ResetClip).unwrap();
         cb.fill(&mut out, 2);
+        drop(cb);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// the queue commands, with the opener working between the callbacks
+    #[test]
+    fn the_queue_commands_reach_the_engine_and_replaced_songs_go_to_the_trash() {
+        let dir = temp_dir("ao-queue");
+        let a = wav24(&dir, "a", RATE, 1, &constant(4800, 0.25));
+        let prj = song(&dir, &[&a]);
+        let queue = Arc::new(vec![QueueEntry::single(prj.clone()), QueueEntry::single(prj)]);
+        let (tx, rx) = channel();
+        let (trash_tx, trash_rx) = channel();
+        let engine = Engine::new(RATE);
+        let opener = engine.opener();
+        let status = Arc::new(Mutex::new(engine.status()));
+        let mut cb = Callback::new(engine, rx, trash_tx, status.clone());
+        tx.send(Command::SetQueue(queue.clone())).unwrap();
+        tx.send(Command::Goto(0, true)).unwrap();
+        let mut out = [0.0f32; 64];
+        for _ in 0..2000 {
+            cb.fill(&mut out, 2);
+            opener.work(); // the opener thread of the Player
+            if out[0] != 0.0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!((out[0] - 0.25 * 0.707_106_77).abs() < 1e-6);
+        let st = status.lock().unwrap().clone();
+        assert_eq!((st.state, st.index, st.queue_len), (PlayState::Playing, Some(0), 2));
+        // next while playing, then the playlist is replaced by an empty one
+        tx.send(Command::Next).unwrap();
+        tx.send(Command::Hold(None)).unwrap();
+        cb.fill(&mut out, 2);
+        opener.work();
+        cb.fill(&mut out, 2);
+        let st = status.lock().unwrap().clone();
+        assert_eq!((st.state, st.index), (PlayState::Waiting, Some(1)));
+        tx.send(Command::ReplaceQueue(Arc::new(Vec::new()))).unwrap();
+        cb.fill(&mut out, 2);
+        assert_eq!(status.lock().unwrap().state, PlayState::Empty);
+        // songs and the old queue went to the trash, nothing was dropped in the callback
+        let mut songs = 0;
+        let mut queues = 0;
+        while let Ok(t) = trash_rx.try_recv() {
+            match t {
+                Trash::Song(_) => songs += 1,
+                Trash::Queue(_) => queues += 1,
+            }
+        }
+        assert!(songs >= 1 && queues >= 2, "{} songs, {} queues", songs, queues);
         drop(cb);
         let _ = std::fs::remove_dir_all(&dir);
     }
