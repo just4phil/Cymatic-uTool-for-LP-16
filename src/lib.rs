@@ -1092,10 +1092,51 @@ pub fn generate_songprj(
 // Song editor: WAV/MIDI facts and rewriting the tracks of a .songprj.
 // ---------------------------------------------------------------------------
 
-/// Length of a Standard MIDI File in seconds: the last event of all tracks,
-/// converted with the tempo map (default 120 BPM).
-pub fn midi_duration(src: &str) -> Option<f64> {
-    let b = fs::read(src).ok()?;
+/// One sendable event of a Standard MIDI File.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MidiEvent {
+    /// Absolute time in seconds from the start of the file.
+    pub time: f64,
+    /// The complete MIDI message. Channel messages carry their own status
+    /// byte (running status is resolved); SysEx `F0` is `F0` + data (incl. the
+    /// final `F7` if the file has it); an `F7` escape is its raw data only.
+    pub bytes: Vec<u8>,
+}
+
+/// Result of reading a Standard MIDI File: the events of all tracks in
+/// playing order, the total length and the channels that play notes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MidiEvents {
+    /// Channel voice messages and SysEx, no meta events. Sorted by time;
+    /// at equal time the track order and then the file order decide.
+    pub events: Vec<MidiEvent>,
+    /// Length in seconds, the value `song.set` gets as `midi_length`.
+    pub duration: f64,
+    /// MIDI channels (0-based) that have a Note On with velocity > 0.
+    pub note_on_channels: [bool; 16],
+}
+
+fn smf_varlen(b: &[u8], p: &mut usize) -> Option<u64> {
+    let mut v = 0u64;
+    for _ in 0..4 {
+        let c = *b.get(*p)?;
+        *p += 1;
+        v = (v << 7) | (c & 0x7f) as u64;
+        if c & 0x80 == 0 {
+            return Some(v);
+        }
+    }
+    Some(v)
+}
+
+/// Read a Standard MIDI File (format 0 or 1). `None` if it is unreadable or
+/// broken.
+pub fn read_midi_events(src: &str) -> Option<MidiEvents> {
+    parse_midi_events(&fs::read(src).ok()?)
+}
+
+/// Like [`read_midi_events`] on the bytes of a file.
+pub fn parse_midi_events(b: &[u8]) -> Option<MidiEvents> {
     if b.len() < 14 || &b[0..4] != b"MThd" {
         return None;
     }
@@ -1106,6 +1147,8 @@ pub fn midi_duration(src: &str) -> Option<f64> {
     let ntrks = u16::from_be_bytes([b[10], b[11]]) as usize;
     let division = u16::from_be_bytes([b[12], b[13]]);
     let mut tempos: Vec<(u64, u32)> = Vec::new();
+    let mut raw: Vec<(u64, Vec<u8>)> = Vec::new();
+    let mut note_on_channels = [false; 16];
     let mut end_tick = 0u64;
     let mut pos = 8 + hlen;
     for _ in 0..ntrks {
@@ -1117,20 +1160,8 @@ pub fn midi_duration(src: &str) -> Option<f64> {
         let end = (p + len).min(b.len());
         let mut tick = 0u64;
         let mut running = 0u8;
-        let varlen = |p: &mut usize| -> Option<u64> {
-            let mut v = 0u64;
-            for _ in 0..4 {
-                let c = *b.get(*p)?;
-                *p += 1;
-                v = (v << 7) | (c & 0x7f) as u64;
-                if c & 0x80 == 0 {
-                    return Some(v);
-                }
-            }
-            Some(v)
-        };
         while p < end {
-            tick += varlen(&mut p)?;
+            tick += smf_varlen(b, &mut p)?;
             let mut status = *b.get(p)?;
             if status & 0x80 != 0 {
                 p += 1;
@@ -1141,7 +1172,7 @@ pub fn midi_duration(src: &str) -> Option<f64> {
                 0xff => {
                     let kind = *b.get(p)?;
                     p += 1;
-                    let l = varlen(&mut p)? as usize;
+                    let l = smf_varlen(b, &mut p)? as usize;
                     if kind == 0x51 && l == 3 {
                         let t = b.get(p..p + 3)?;
                         tempos.push((tick, u32::from_be_bytes([0, t[0], t[1], t[2]])));
@@ -1152,40 +1183,82 @@ pub fn midi_duration(src: &str) -> Option<f64> {
                     }
                 }
                 0xf0 | 0xf7 => {
-                    let l = varlen(&mut p)? as usize;
+                    let l = smf_varlen(b, &mut p)? as usize;
+                    if p + l <= end {
+                        let mut msg = Vec::with_capacity(l + 1);
+                        if status == 0xf0 {
+                            msg.push(0xf0);
+                        }
+                        msg.extend_from_slice(&b[p..p + l]);
+                        raw.push((tick, msg));
+                    }
                     p += l;
                 }
                 _ => {
                     running = status;
-                    p += match status & 0xf0 {
+                    let n = match status & 0xf0 {
                         0xc0 | 0xd0 => 1,
                         _ => 2,
                     };
+                    // Only well-formed channel messages are sendable; broken
+                    // ones (no status, data byte >= 0x80, cut off) still count
+                    // for the length but are not sent.
+                    if (0x80..0xf0).contains(&status)
+                        && p + n <= end
+                        && b[p..p + n].iter().all(|d| d & 0x80 == 0)
+                    {
+                        if status & 0xf0 == 0x90 && b[p + 1] > 0 {
+                            note_on_channels[(status & 0x0f) as usize] = true;
+                        }
+                        let mut msg = vec![status];
+                        msg.extend_from_slice(&b[p..p + n]);
+                        raw.push((tick, msg));
+                    }
+                    p += n;
                 }
             }
             end_tick = end_tick.max(tick);
         }
         pos += 8 + len;
     }
-    if division & 0x8000 != 0 {
+
+    // tick -> seconds
+    let to_secs: Box<dyn Fn(u64) -> f64> = if division & 0x8000 != 0 {
         // SMPTE time: frames per second * ticks per frame
         let fps = -((division >> 8) as i8) as f64;
         let tpf = (division & 0xff) as f64;
-        return Some(end_tick as f64 / (fps * tpf));
-    }
-    let ppq = division.max(1) as f64;
-    tempos.sort_by_key(|t| t.0);
-    let (mut sec, mut last_tick, mut tempo) = (0.0f64, 0u64, 500_000u32);
-    for (t, us) in tempos {
-        if t >= end_tick {
-            break;
+        Box::new(move |t| t as f64 / (fps * tpf))
+    } else {
+        // Tempo map of all tracks, sorted by tick (stable), 120 BPM at the
+        // start; tempos from the end tick on are ignored. Each entry is
+        // (tick, seconds at that tick, tempo from there).
+        let ppq = division.max(1) as f64;
+        tempos.sort_by_key(|t| t.0);
+        let mut map: Vec<(u64, f64, u32)> = vec![(0, 0.0, 500_000)];
+        let (mut sec, mut last_tick, mut tempo) = (0.0f64, 0u64, 500_000u32);
+        for (t, us) in tempos {
+            if t >= end_tick {
+                break;
+            }
+            sec += (t - last_tick) as f64 * tempo as f64 / 1e6 / ppq;
+            last_tick = t;
+            tempo = us;
+            map.push((t, sec, us));
         }
-        sec += (t - last_tick) as f64 * tempo as f64 / 1e6 / ppq;
-        last_tick = t;
-        tempo = us;
-    }
-    sec += (end_tick - last_tick) as f64 * tempo as f64 / 1e6 / ppq;
-    Some(sec)
+        Box::new(move |t| {
+            let (mt, msec, mtempo) = map[map.partition_point(|m| m.0 <= t) - 1];
+            msec + (t - mt) as f64 * mtempo as f64 / 1e6 / ppq
+        })
+    };
+    raw.sort_by_key(|e| e.0); // stable: track order, then file order
+    let events = raw.into_iter().map(|(t, bytes)| MidiEvent { time: to_secs(t), bytes }).collect();
+    Some(MidiEvents { events, duration: to_secs(end_tick), note_on_channels })
+}
+
+/// Length of a Standard MIDI File in seconds: the last event of all tracks,
+/// converted with the tempo map (default 120 BPM).
+pub fn midi_duration(src: &str) -> Option<f64> {
+    read_midi_events(src).map(|m| m.duration)
 }
 
 /// Inverse of resolve(): put the {$AudioLib} placeholder back in front of a
@@ -3003,5 +3076,332 @@ mod tests {
         // same date folder twice: the canonical name <Song>_(<Date>) wins
         let lib2: Vec<LibrarySong> = lib.iter().filter(|x| !x.name.ends_with("_v2)")).cloned().collect();
         assert_eq!(newest_version(&lib2[0], &lib2).map(|x| x.name.as_str()), Some("Abcdefu_(2026-11-20)"));
+    }
+
+    // -----------------------------------------------------------------------
+    // MIDI event reader
+    // -----------------------------------------------------------------------
+
+    /// The implementation of midi_duration from before the event reader, kept
+    /// unchanged as the reference ("oracle") for the new one.
+    fn midi_duration_oracle(src: &str) -> Option<f64> {
+        let b = fs::read(src).ok()?;
+        if b.len() < 14 || &b[0..4] != b"MThd" {
+            return None;
+        }
+        let be32 = |p: usize| -> Option<u32> {
+            b.get(p..p + 4).map(|x| u32::from_be_bytes([x[0], x[1], x[2], x[3]]))
+        };
+        let hlen = be32(4)? as usize;
+        let ntrks = u16::from_be_bytes([b[10], b[11]]) as usize;
+        let division = u16::from_be_bytes([b[12], b[13]]);
+        let mut tempos: Vec<(u64, u32)> = Vec::new();
+        let mut end_tick = 0u64;
+        let mut pos = 8 + hlen;
+        for _ in 0..ntrks {
+            if b.get(pos..pos + 4)? != b"MTrk" {
+                return None;
+            }
+            let len = be32(pos + 4)? as usize;
+            let mut p = pos + 8;
+            let end = (p + len).min(b.len());
+            let mut tick = 0u64;
+            let mut running = 0u8;
+            let varlen = |p: &mut usize| -> Option<u64> {
+                let mut v = 0u64;
+                for _ in 0..4 {
+                    let c = *b.get(*p)?;
+                    *p += 1;
+                    v = (v << 7) | (c & 0x7f) as u64;
+                    if c & 0x80 == 0 {
+                        return Some(v);
+                    }
+                }
+                Some(v)
+            };
+            while p < end {
+                tick += varlen(&mut p)?;
+                let mut status = *b.get(p)?;
+                if status & 0x80 != 0 {
+                    p += 1;
+                } else {
+                    status = running;
+                }
+                match status {
+                    0xff => {
+                        let kind = *b.get(p)?;
+                        p += 1;
+                        let l = varlen(&mut p)? as usize;
+                        if kind == 0x51 && l == 3 {
+                            let t = b.get(p..p + 3)?;
+                            tempos.push((tick, u32::from_be_bytes([0, t[0], t[1], t[2]])));
+                        }
+                        p += l;
+                        if kind == 0x2f {
+                            break;
+                        }
+                    }
+                    0xf0 | 0xf7 => {
+                        let l = varlen(&mut p)? as usize;
+                        p += l;
+                    }
+                    _ => {
+                        running = status;
+                        p += match status & 0xf0 {
+                            0xc0 | 0xd0 => 1,
+                            _ => 2,
+                        };
+                    }
+                }
+                end_tick = end_tick.max(tick);
+            }
+            pos += 8 + len;
+        }
+        if division & 0x8000 != 0 {
+            // SMPTE time: frames per second * ticks per frame
+            let fps = -((division >> 8) as i8) as f64;
+            let tpf = (division & 0xff) as f64;
+            return Some(end_tick as f64 / (fps * tpf));
+        }
+        let ppq = division.max(1) as f64;
+        tempos.sort_by_key(|t| t.0);
+        let (mut sec, mut last_tick, mut tempo) = (0.0f64, 0u64, 500_000u32);
+        for (t, us) in tempos {
+            if t >= end_tick {
+                break;
+            }
+            sec += (t - last_tick) as f64 * tempo as f64 / 1e6 / ppq;
+            last_tick = t;
+            tempo = us;
+        }
+        sec += (end_tick - last_tick) as f64 * tempo as f64 / 1e6 / ppq;
+        Some(sec)
+    }
+
+    fn vl(mut n: u32) -> Vec<u8> {
+        let mut v = vec![(n & 0x7f) as u8];
+        n >>= 7;
+        while n > 0 {
+            v.push((n & 0x7f) as u8 | 0x80);
+            n >>= 7;
+        }
+        v.reverse();
+        v
+    }
+
+    /// Track body from (delta ticks, event bytes) pairs.
+    fn trk(events: &[(u32, &[u8])]) -> Vec<u8> {
+        let mut b = Vec::new();
+        for (d, e) in events {
+            b.extend(vl(*d));
+            b.extend_from_slice(e);
+        }
+        b
+    }
+
+    const EOT: &[u8] = &[0xff, 0x2f, 0x00];
+
+    fn smf(format: u16, division: u16, tracks: &[Vec<u8>]) -> Vec<u8> {
+        let mut b = b"MThd".to_vec();
+        b.extend_from_slice(&6u32.to_be_bytes());
+        b.extend_from_slice(&format.to_be_bytes());
+        b.extend_from_slice(&(tracks.len() as u16).to_be_bytes());
+        b.extend_from_slice(&division.to_be_bytes());
+        for t in tracks {
+            b.extend_from_slice(b"MTrk");
+            b.extend_from_slice(&(t.len() as u32).to_be_bytes());
+            b.extend_from_slice(t);
+        }
+        b
+    }
+
+    fn write_mid(dir: &Path, name: &str, bytes: &[u8]) -> String {
+        let p = dir.join(name);
+        fs::write(&p, bytes).unwrap();
+        p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn midi_reader_format1_events() {
+        // 480 ticks per quarter; 120 BPM, from tick 960 on 240 BPM
+        let tempo_trk = trk(&[
+            (0, &[0xff, 0x51, 0x03, 0x07, 0xa1, 0x20]),
+            (960, &[0xff, 0x51, 0x03, 0x03, 0xd0, 0x90]),
+            (0, EOT),
+        ]);
+        let t1 = trk(&[
+            (0, &[0xc0, 0x05]),
+            (480, &[0xb0, 0x07, 0x64]),
+            (0, &[0x07, 0x65]), // running status
+            (480, &[0x90, 0x3c, 0x64]),
+            (480, &[0xf0, 0x03, 0x7d, 0x01, 0xf7]),
+            (0, &[0xf7, 0x01, 0xf8]),
+            (0, &[0xff, 0x01, 0x01, b'x']), // meta: not an event
+            (0, EOT),
+        ]);
+        let t2 = trk(&[
+            (960, &[0x91, 0x40, 0x00]),
+            (0, &[0x91, 0x40, 0x50]),
+            (960, &[0x81, 0x40, 0x00]),
+            (0, &[0x92, 0x30, 0x00]),
+            (0, EOT),
+        ]);
+        let m = parse_midi_events(&smf(1, 480, &[tempo_trk, t1, t2])).unwrap();
+        let expect: &[(f64, &[u8])] = &[
+            (0.0, &[0xc0, 0x05]),
+            (0.5, &[0xb0, 0x07, 0x64]),
+            (0.5, &[0xb0, 0x07, 0x65]),
+            (1.0, &[0x90, 0x3c, 0x64]), // track 1 before track 2 at equal time
+            (1.0, &[0x91, 0x40, 0x00]),
+            (1.0, &[0x91, 0x40, 0x50]),
+            (1.25, &[0xf0, 0x7d, 0x01, 0xf7]),
+            (1.25, &[0xf8]),
+            (1.5, &[0x81, 0x40, 0x00]),
+            (1.5, &[0x92, 0x30, 0x00]),
+        ];
+        assert_eq!(m.events.len(), expect.len(), "{:?}", m.events);
+        for (e, (t, bytes)) in m.events.iter().zip(expect) {
+            assert!((e.time - t).abs() < 1e-9, "{:?} vs {}", e, t);
+            assert_eq!(&e.bytes[..], *bytes);
+        }
+        assert!((m.duration - 1.5).abs() < 1e-9);
+        // Note On with velocity 0 does not count (channel 2)
+        let mut ch = [false; 16];
+        ch[0] = true;
+        ch[1] = true;
+        assert_eq!(m.note_on_channels, ch);
+    }
+
+    #[test]
+    fn midi_reader_smpte() {
+        // 25 fps (0xe7 = -25) x 40 ticks per frame = 1000 ticks per second
+        let t = trk(&[(0, &[0x90, 0x3c, 0x40]), (100, &[0x80, 0x3c, 0x00]), (900, &[0xb0, 0x07, 0x01]), (0, EOT)]);
+        let m = parse_midi_events(&smf(0, 0xe728, &[t])).unwrap();
+        assert_eq!(m.events.len(), 3);
+        for (e, t) in m.events.iter().zip([0.0, 0.1, 1.0]) {
+            assert!((e.time - t).abs() < 1e-9, "{} vs {}", e.time, t);
+        }
+        assert!((m.duration - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn midi_reader_skips_broken_events_but_keeps_length() {
+        // a data byte without running status is not sent, but counts for the length
+        let file = smf(0, 96, &[trk(&[(10, &[0x3c, 0x40]), (10, &[0x90, 0x3c, 0x40]), (0, EOT)])]);
+        let m = parse_midi_events(&file).unwrap();
+        assert_eq!(m.events.len(), 1);
+        assert_eq!(m.events[0].bytes, vec![0x90, 0x3c, 0x40]);
+        let dir = temp_dir("midi-broken");
+        let p = write_mid(&dir, "x.mid", &file);
+        assert_eq!(Some(m.duration), midi_duration_oracle(&p));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn midi_duration_matches_oracle_on_special_cases() {
+        let dir = temp_dir("midi-oracle");
+        let tempo = |us: u32| -> Vec<u8> {
+            let t = us.to_be_bytes();
+            vec![0xff, 0x51, 0x03, t[1], t[2], t[3]]
+        };
+        let n1: Vec<u8> = vec![0x90, 60, 0x40];
+        let mut cases: Vec<(&str, Vec<u8>)> = Vec::new();
+        // tempo after the last note (and as the last event)
+        cases.push(("tempo_after_last", smf(1, 480, &[trk(&[(0, &n1), (480, &tempo(300_000))])])));
+        cases.push(("tempo_after_last_eot", smf(1, 480, &[trk(&[(0, &n1), (480, &tempo(300_000)), (0, EOT)])])));
+        // tempo at tick 0, twice
+        cases.push(("tempo_tick0", smf(1, 480, &[trk(&[(0, &tempo(400_000)), (0, &tempo(600_000)), (960, &n1), (0, EOT)])])));
+        // several tracks with different ends, tempo on a second track
+        cases.push((
+            "tracks_differ",
+            smf(
+                1,
+                96,
+                &[
+                    trk(&[(0, &n1), (100, &[0x80, 60, 0]), (0, EOT)]),
+                    trk(&[(50, &tempo(250_000)), (1000, &n1), (0, EOT)]),
+                    trk(&[(10, &n1), (0, EOT)]),
+                ],
+            ),
+        ));
+        // meta event as the last event, no EOT
+        cases.push(("meta_last", smf(0, 480, &[trk(&[(0, &n1), (700, &[0xff, 0x01, 0x02, b'a', b'b'])])])));
+        // end-of-track after a long delta (EOT does not count)
+        cases.push(("eot_late", smf(0, 480, &[trk(&[(0, &n1), (100, &[0x80, 60, 0]), (5000, EOT)])])));
+        // sysex and F7 escape last, running status, 5-byte varlen
+        cases.push(("sysex_last", smf(0, 480, &[trk(&[(0, &n1), (0, &[0x3d, 0x40]), (300, &[0xf0, 0x02, 0x7d, 0xf7])])])));
+        cases.push(("escape_last", smf(0, 480, &[trk(&[(0, &n1), (123, &[0xf7, 0x01, 0xf8])])])));
+        cases.push(("varlen5", smf(0, 480, &[vec![0x81, 0x81, 0x81, 0x81, 0x01, 0x90, 60, 64, 0x00, 0xff, 0x2f, 0x00]])));
+        // SMPTE (25 and 30 fps)
+        cases.push(("smpte25", smf(0, 0xe728, &[trk(&[(0, &n1), (333, &[0x80, 60, 0]), (0, EOT)])])));
+        cases.push(("smpte30", smf(1, 0xe210, &[trk(&[(7, &n1), (0, EOT)]), trk(&[(99, &n1), (0, EOT)])])));
+        // empty track, no track at all, ppq 0
+        cases.push(("empty_track", smf(1, 480, &[trk(&[(0, EOT)]), trk(&[])])));
+        cases.push(("no_tracks", smf(1, 480, &[])));
+        cases.push(("ppq0", smf(0, 0, &[trk(&[(0, &n1), (100, &[0x80, 60, 0])])])));
+        // header problems
+        let mut bad = smf(0, 480, &[trk(&[(0, &n1), (0, EOT)])]);
+        bad[0] = b'X';
+        cases.push(("bad_header", bad));
+        let mut not_a_track = smf(0, 480, &[trk(&[(0, &n1), (0, EOT)])]);
+        not_a_track[14] = b'X';
+        cases.push(("not_a_track", not_a_track));
+        cases.push(("short", b"MThd".to_vec()));
+        cases.push(("empty", Vec::new()));
+        // a file cut off at every position
+        let full = smf(
+            1,
+            480,
+            &[
+                trk(&[(0, &tempo(500_000)), (960, &tempo(250_000)), (0, EOT)]),
+                trk(&[(0, &[0xc0, 5]), (480, &[0xb0, 7, 100]), (0, &[7, 101]), (480, &[0xf0, 3, 0x7d, 1, 0xf7]), (0, EOT)]),
+            ],
+        );
+        for n in 0..=full.len() {
+            cases.push(("cut", full[..n].to_vec()));
+        }
+        assert!(cases.len() >= 8);
+        let mut some = 0;
+        for (name, bytes) in &cases {
+            let p = write_mid(&dir, "case.mid", bytes);
+            let (new, old) = (midi_duration(&p), midi_duration_oracle(&p));
+            assert_eq!(new, old, "{} ({} bytes)", name, bytes.len());
+            // the reader itself agrees (and does not panic)
+            assert_eq!(read_midi_events(&p).map(|m| m.duration), old, "{}", name);
+            some += new.is_some() as usize;
+        }
+        assert!(some > 10 && some < cases.len());
+        // missing file
+        let missing = dir.join("nope.mid").to_string_lossy().into_owned();
+        assert_eq!(midi_duration(&missing), None);
+        assert_eq!(midi_duration_oracle(&missing), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn find_mid_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        let mut entries: Vec<_> = fs::read_dir(dir).unwrap().filter_map(|e| e.ok()).collect();
+        entries.sort_by_key(|e| e.path());
+        for e in entries {
+            let p = e.path();
+            if p.is_dir() {
+                find_mid_files(&p, out);
+            } else if p.extension().map_or(false, |x| x.eq_ignore_ascii_case("mid")) {
+                out.push(p);
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "needs the reference data (LP16_TEST_PROJECT_LIB, LP16_TEST_AUDIO_LIB, LP16_TEST_STICK; cargo test -- --ignored)"]
+    fn midi_duration_matches_oracle_on_reference_library() {
+        let mut files = Vec::new();
+        find_mid_files(Path::new(&test_env("LP16_TEST_AUDIO_LIB")), &mut files);
+        assert!(!files.is_empty(), "no .mid file found under LP16_TEST_AUDIO_LIB");
+        for f in &files {
+            let s = f.to_string_lossy();
+            let (new, old) = (midi_duration(&s), midi_duration_oracle(&s));
+            assert_eq!(new, old, "{}", s);
+        }
+        println!("compared {} .mid files", files.len());
     }
 }
