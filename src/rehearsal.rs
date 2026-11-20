@@ -1,0 +1,929 @@
+//! The playback engine of the rehearsal player.
+//!
+//! The engine knows no audio device: whoever owns it calls `render` to pull
+//! interleaved stereo `f32` blocks (the WASAPI adapter in `audio_out.rs` does
+//! it from the audio callback, the tests do it directly).
+//!
+//! Reading: one thread per loaded song fills a `rtrb` ring buffer for every
+//! track (2 s, refilled in blocks of 4096 frames). `render` only pops from
+//! these rings and mixes: no allocation, no file access, no blocking lock.
+//!
+//! Changing the position (internal for now, `stop` jumps back to 0) works
+//! with a generation counter: the engine publishes (position, generation);
+//! the reader thread seeks every track, records for each track how many
+//! samples it had pushed before the jump (`start_count`) and then publishes
+//! the generation for that track. The engine drops everything up to
+//! `start_count` and only then uses the track. Until all tracks are in the
+//! new generation (and sufficiently filled) a playing engine outputs silence
+//! and does not advance; that wait is no dropout.
+
+use crate::{SongProject, WavReader};
+use rtrb::{Consumer, Producer, RingBuffer};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+
+/// Gain of a track in the mix, centre pan with the constant-power law.
+const CENTER_GAIN: f32 = 0.707_106_77;
+/// Frames the reader thread reads and pushes at once.
+const READ_BLOCK: usize = 4096;
+/// Frames `render` mixes per round (size of the mix scratch buffer).
+const MIX_CHUNK: usize = 1024;
+/// How long the reader thread sleeps when every ring is full.
+const READER_IDLE: Duration = Duration::from_millis(5);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlayState {
+    /// no song loaded
+    Empty,
+    Stopped,
+    Playing,
+    Paused,
+    /// the longest track is over; silence follows
+    Ended,
+}
+
+/// What the user interface shows. Cheap to clone (no string copies), so the
+/// audio callback can hand it over without allocating.
+#[derive(Clone, Debug)]
+pub struct Status {
+    pub state: PlayState,
+    pub song_name: Arc<str>,
+    pub position_frames: u64,
+    pub position_seconds: f64,
+    /// length of the longest track
+    pub length_frames: u64,
+    pub length_seconds: f64,
+    pub output_rate: u32,
+    /// 0 without a song
+    pub song_rate: u32,
+    /// blocks in which a playing track had no data
+    pub underruns: u64,
+    pub warnings: Arc<Vec<String>>,
+}
+
+/// "m:ss" for a time in seconds (rounded down).
+pub fn fmt_clock(seconds: f64) -> String {
+    let s = if seconds.is_finite() && seconds > 0.0 { seconds as u64 } else { 0 };
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+// ---------------------------------------------------------------------------
+// reader thread
+// ---------------------------------------------------------------------------
+
+/// Shared between the engine and the reader thread.
+struct Shared {
+    /// generation and start position of the latest position change; the
+    /// start is stored first, so a reader that sees a generation sees a
+    /// start that is at least as new
+    generation: AtomicU64,
+    start: AtomicU64,
+    stop: AtomicBool,
+}
+
+/// Per track: the reader thread tells the engine where a generation begins.
+struct TrackShared {
+    generation: AtomicU64,
+    /// samples pushed in all earlier generations
+    start_count: AtomicU64,
+}
+
+struct ReaderTrack {
+    reader: WavReader,
+    producer: Producer<f32>,
+    shared: Arc<TrackShared>,
+    pushed: u64,
+    /// frames of the current generation that still have to be pushed
+    remaining: u64,
+}
+
+fn reader_thread(mut tracks: Vec<ReaderTrack>, shared: Arc<Shared>) {
+    let mut buf = vec![0f32; READ_BLOCK];
+    let mut current = 0u64; // generations start at 1
+    while !shared.stop.load(Ordering::Acquire) {
+        // consistent (generation, start)
+        let (g, start) = loop {
+            let g1 = shared.generation.load(Ordering::Acquire);
+            let s = shared.start.load(Ordering::Acquire);
+            if g1 == shared.generation.load(Ordering::Acquire) {
+                break (g1, s);
+            }
+        };
+        if g != current {
+            for t in tracks.iter_mut() {
+                // a failing seek leaves the position wrong, which only
+                // matters for a file that was just readable
+                let _ = t.reader.seek(start);
+                t.remaining = t.reader.frames().saturating_sub(start);
+                t.shared.start_count.store(t.pushed, Ordering::Relaxed);
+                t.shared.generation.store(g, Ordering::Release);
+            }
+            current = g;
+        }
+        let mut worked = false;
+        for t in tracks.iter_mut() {
+            let want = (t.remaining as usize).min(READ_BLOCK);
+            if want == 0 || t.producer.slots() < want {
+                continue;
+            }
+            let got = t.reader.read(&mut buf[..want]);
+            // a disk error ends the file early: pad with silence so the
+            // ring keeps its lockstep with the position
+            buf[got..want].fill(0.0);
+            if let Ok(mut chunk) = t.producer.write_chunk(want) {
+                let (a, b) = chunk.as_mut_slices();
+                let n = a.len();
+                a.copy_from_slice(&buf[..n]);
+                b.copy_from_slice(&buf[n..want]);
+                chunk.commit_all();
+            }
+            t.pushed += want as u64;
+            t.remaining -= want as u64;
+            worked = true;
+        }
+        if !worked {
+            std::thread::park_timeout(READER_IDLE);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// loaded song
+// ---------------------------------------------------------------------------
+
+/// The engine side of one track.
+struct PlayTrack {
+    consumer: Consumer<f32>,
+    shared: Arc<TrackShared>,
+    frames: u64,
+    capacity: usize,
+    /// samples popped so far, all generations
+    popped: u64,
+    /// in the current generation
+    synced: bool,
+    /// frames to skip because they were due while no data was there
+    debt: usize,
+}
+
+impl PlayTrack {
+    fn pop(&mut self, n: usize) {
+        if n == 0 {
+            return;
+        }
+        if let Ok(chunk) = self.consumer.read_chunk(n) {
+            chunk.commit_all();
+            self.popped += n as u64;
+        }
+    }
+
+    /// Adds `n` frames (times the centre gain) to `mix`.
+    fn add_to(&mut self, n: usize, mix: &mut [f32]) {
+        if let Ok(chunk) = self.consumer.read_chunk(n) {
+            let (a, b) = chunk.as_slices();
+            for (m, s) in mix.iter_mut().zip(a.iter().chain(b.iter())) {
+                *m += *s * CENTER_GAIN;
+            }
+            chunk.commit_all();
+            self.popped += n as u64;
+        }
+    }
+
+    /// Takes part in generation `generation`: drops what is left of the
+    /// older ones. False while the reader thread has not got there yet.
+    fn sync(&mut self, generation: u64) -> bool {
+        if self.synced {
+            return true;
+        }
+        if self.shared.generation.load(Ordering::Acquire) != generation {
+            return false;
+        }
+        let start = self.shared.start_count.load(Ordering::Acquire);
+        self.pop(start.saturating_sub(self.popped) as usize);
+        self.synced = true;
+        self.debt = 0;
+        true
+    }
+
+    fn pay_debt(&mut self) {
+        let n = self.debt.min(self.consumer.slots());
+        self.pop(n);
+        self.debt -= n;
+    }
+}
+
+/// A song opened for playing: its tracks, the reader thread, the facts.
+/// Building one opens the files, so it belongs on the user interface
+/// thread; the engine (in the audio callback) only takes the finished
+/// object. Dropping it ends the reader thread and releases the files.
+pub struct LoadedSong {
+    path: String,
+    name: Arc<str>,
+    song_rate: u32,
+    length_frames: u64,
+    warnings: Arc<Vec<String>>,
+    tracks: Vec<PlayTrack>,
+    shared: Arc<Shared>,
+    thread: Option<JoinHandle<()>>,
+    // transport
+    generation: u64,
+    pos: u64,
+    /// all tracks of the generation are filled enough to start
+    primed: bool,
+}
+
+impl LoadedSong {
+    /// Open the WAVs of `project` and start reading. Tracks that are
+    /// missing, unreadable, unsupported, not mono or of another sample rate
+    /// than the first readable track stay silent and add a warning.
+    pub fn open(project: &SongProject) -> LoadedSong {
+        let mut warnings = Vec::new();
+        let mut readers: Vec<(String, WavReader)> = Vec::new();
+        for (i, t) in project.tracks.iter().enumerate() {
+            let name = if t.name.is_empty() { format!("channel {}", i + 1) } else { t.name.clone() };
+            match WavReader::open(&project.wav(t)) {
+                Ok(r) => readers.push((name, r)),
+                Err(e) => warnings.push(format!("Track \"{}\": {}", name, e)),
+            }
+        }
+        let song_rate = readers.first().map(|(_, r)| r.rate()).unwrap_or(project.sampling_rate);
+        let mut used = Vec::new();
+        for (name, r) in readers {
+            if r.channels() != 1 {
+                warnings.push(format!("Track \"{}\": not mono ({} channels), left silent", name, r.channels()));
+            } else if r.rate() != song_rate {
+                warnings.push(format!(
+                    "Track \"{}\": sample rate {} Hz differs from the song rate {} Hz, left silent",
+                    name,
+                    r.rate(),
+                    song_rate
+                ));
+            } else {
+                used.push(r);
+            }
+        }
+        // 2 s, rounded up to whole read blocks so that the ring can really be full
+        let capacity = (2 * song_rate as usize).div_ceil(READ_BLOCK).max(1) * READ_BLOCK;
+        let shared = Arc::new(Shared {
+            generation: AtomicU64::new(1),
+            start: AtomicU64::new(0),
+            stop: AtomicBool::new(false),
+        });
+        let mut length_frames = 0;
+        let mut play = Vec::new();
+        let mut read = Vec::new();
+        for reader in used {
+            let (producer, consumer) = RingBuffer::new(capacity);
+            let ts = Arc::new(TrackShared { generation: AtomicU64::new(0), start_count: AtomicU64::new(0) });
+            let frames = reader.frames();
+            length_frames = length_frames.max(frames);
+            play.push(PlayTrack {
+                consumer,
+                shared: ts.clone(),
+                frames,
+                capacity,
+                popped: 0,
+                synced: false,
+                debt: 0,
+            });
+            read.push(ReaderTrack { reader, producer, shared: ts, pushed: 0, remaining: 0 });
+        }
+        let thread = {
+            let shared = shared.clone();
+            std::thread::Builder::new()
+                .name("rehearsal-reader".into())
+                .spawn(move || reader_thread(read, shared))
+                .ok()
+        };
+        if thread.is_none() {
+            warnings.push("The file reader thread could not be started".to_string());
+        }
+        LoadedSong {
+            path: project.path.clone(),
+            name: Arc::from(project.name.as_str()),
+            song_rate,
+            length_frames,
+            warnings: Arc::new(warnings),
+            tracks: play,
+            shared,
+            thread,
+            generation: 1,
+            pos: 0,
+            primed: false,
+        }
+    }
+
+    /// path of the .songprj the song was loaded from
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Jump to `frame` (clamped to the end): new generation, nothing
+    /// plays until the readers have caught up.
+    fn seek_to(&mut self, frame: u64) {
+        let frame = frame.min(self.length_frames);
+        self.shared.start.store(frame, Ordering::Release);
+        self.generation += 1;
+        self.shared.generation.store(self.generation, Ordering::Release);
+        if let Some(t) = &self.thread {
+            t.thread().unpark();
+        }
+        self.pos = frame;
+        self.primed = false;
+        for t in self.tracks.iter_mut() {
+            t.synced = false;
+            t.debt = 0;
+        }
+    }
+
+    /// Every track is in the current generation and holds at least
+    /// 1/`divisor` of a full ring (limited by its end).
+    fn filled(&mut self, divisor: usize) -> bool {
+        let (generation, pos) = (self.generation, self.pos);
+        let mut ok = true;
+        for t in self.tracks.iter_mut() {
+            if !t.sync(generation) {
+                ok = false;
+                continue;
+            }
+            t.pay_debt();
+            // the reader only pushes whole blocks, so a ring that is not at
+            // its end is "full" when less than one block is free
+            let remaining = t.frames.saturating_sub(pos) as usize;
+            let fillable = if remaining >= t.capacity { t.capacity - (READ_BLOCK - 1) } else { remaining };
+            let expected = fillable.min(t.capacity / divisor);
+            if t.debt > 0 || t.consumer.slots() < expected {
+                ok = false;
+            }
+        }
+        ok
+    }
+}
+
+impl Drop for LoadedSong {
+    fn drop(&mut self) {
+        self.shared.stop.store(true, Ordering::Release);
+        if let Some(t) = self.thread.take() {
+            t.thread().unpark();
+            let _ = t.join();
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// engine
+// ---------------------------------------------------------------------------
+
+pub struct Engine {
+    output_rate: u32,
+    state: PlayState,
+    song: Option<LoadedSong>,
+    underruns: u64,
+    mix: Vec<f32>,
+    no_name: Arc<str>,
+    no_warnings: Arc<Vec<String>>,
+}
+
+impl Engine {
+    pub fn new(output_rate: u32) -> Engine {
+        Engine {
+            output_rate,
+            state: PlayState::Empty,
+            song: None,
+            underruns: 0,
+            mix: vec![0.0; MIX_CHUNK],
+            no_name: Arc::from(""),
+            no_warnings: Arc::new(Vec::new()),
+        }
+    }
+
+    /// Open the tracks of `project` and make it the current song (position
+    /// 0, `Stopped`). The previous song is dropped, which ends its thread.
+    pub fn load(&mut self, project: &SongProject) {
+        let old = self.set_song(LoadedSong::open(project));
+        drop(old);
+    }
+
+    /// Take a song that was opened elsewhere (`LoadedSong::open`). Returns
+    /// the previous one so the caller decides where it is dropped (dropping
+    /// joins its thread, which an audio callback must not do).
+    pub fn set_song(&mut self, mut song: LoadedSong) -> Option<LoadedSong> {
+        if song.song_rate != self.output_rate {
+            Arc::make_mut(&mut song.warnings).push(format!(
+                "Song sample rate {} Hz differs from output {} Hz",
+                song.song_rate, self.output_rate
+            ));
+        }
+        self.state = PlayState::Stopped;
+        self.underruns = 0;
+        self.song.replace(song)
+    }
+
+    /// Remove the current song, see `set_song` about who drops it.
+    pub fn take_song(&mut self) -> Option<LoadedSong> {
+        self.state = PlayState::Empty;
+        self.song.take()
+    }
+
+    /// Drop the current song (ends its thread, releases the files).
+    pub fn unload(&mut self) {
+        drop(self.take_song());
+    }
+
+    /// Start or continue. Without a song, or if the song rate differs from
+    /// the output rate, nothing happens. After the end it starts again at 0.
+    pub fn play(&mut self) {
+        let Some(song) = self.song.as_mut() else { return };
+        if song.song_rate != self.output_rate {
+            return;
+        }
+        if self.state == PlayState::Ended {
+            song.seek_to(0);
+        }
+        self.state = PlayState::Playing;
+    }
+
+    pub fn pause(&mut self) {
+        if self.state == PlayState::Playing {
+            self.state = PlayState::Paused;
+        }
+    }
+
+    /// Pause plus position 0.
+    pub fn stop(&mut self) {
+        if let Some(song) = self.song.as_mut() {
+            song.seek_to(0);
+            self.state = PlayState::Stopped;
+        }
+    }
+
+    /// Fill `out` (interleaved stereo, 2 x frames) completely: the mix
+    /// while playing, silence otherwise. No allocation, no file access, no
+    /// blocking lock.
+    pub fn render(&mut self, out: &mut [f32]) {
+        out.fill(0.0);
+        if self.state != PlayState::Playing {
+            // keep the tracks in step, so `wait_ready` sees the progress
+            if let Some(song) = self.song.as_mut() {
+                song.filled(1);
+            }
+            return;
+        }
+        let Some(song) = self.song.as_mut() else { return };
+        if !song.primed {
+            // 0.5 s (a quarter of the ring) is enough to start
+            if !song.filled(4) {
+                return; // waiting is no dropout
+            }
+            song.primed = true;
+        }
+        let frames = out.len() / 2;
+        let mut done = 0;
+        let mut underrun = false;
+        while done < frames && song.pos < song.length_frames {
+            let m = (frames - done).min(MIX_CHUNK).min((song.length_frames - song.pos) as usize);
+            let mix = &mut self.mix[..m];
+            mix.fill(0.0);
+            for t in song.tracks.iter_mut() {
+                let k = (t.frames.saturating_sub(song.pos) as usize).min(m);
+                if k == 0 {
+                    continue; // this track is over
+                }
+                t.pay_debt();
+                if t.debt == 0 && t.consumer.slots() >= k {
+                    t.add_to(k, mix);
+                } else {
+                    // silence for this block; the frames due now are
+                    // skipped as soon as they arrive, keeping the sync
+                    let take = if t.debt == 0 { t.consumer.slots().min(k) } else { 0 };
+                    t.pop(take);
+                    t.debt += k - take;
+                    underrun = true;
+                }
+            }
+            for (o, s) in out[done * 2..(done + m) * 2].chunks_exact_mut(2).zip(mix.iter()) {
+                let v = s.clamp(-1.0, 1.0);
+                o[0] = v;
+                o[1] = v;
+            }
+            song.pos += m as u64;
+            done += m;
+        }
+        if underrun {
+            self.underruns += 1;
+        }
+        if song.pos >= song.length_frames {
+            self.state = PlayState::Ended;
+        }
+    }
+
+    pub fn status(&self) -> Status {
+        match &self.song {
+            None => Status {
+                state: self.state,
+                song_name: self.no_name.clone(),
+                position_frames: 0,
+                position_seconds: 0.0,
+                length_frames: 0,
+                length_seconds: 0.0,
+                output_rate: self.output_rate,
+                song_rate: 0,
+                underruns: self.underruns,
+                warnings: self.no_warnings.clone(),
+            },
+            Some(s) => {
+                let rate = s.song_rate.max(1) as f64;
+                Status {
+                    state: self.state,
+                    song_name: s.name.clone(),
+                    position_frames: s.pos,
+                    position_seconds: s.pos as f64 / rate,
+                    length_frames: s.length_frames,
+                    length_seconds: s.length_frames as f64 / rate,
+                    output_rate: self.output_rate,
+                    song_rate: s.song_rate,
+                    underruns: self.underruns,
+                    warnings: s.warnings.clone(),
+                }
+            }
+        }
+    }
+
+    /// Blocks until the ring of every track is full or at its file end, or
+    /// `timeout` has passed (false). For tests and for the start after
+    /// `load` or a position change; never call it from the audio callback.
+    pub fn wait_ready(&mut self, timeout: Duration) -> bool {
+        let start = Instant::now();
+        loop {
+            match self.song.as_mut() {
+                None => return true,
+                Some(song) => {
+                    if song.filled(1) {
+                        return true;
+                    }
+                }
+            }
+            if start.elapsed() >= timeout {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+    use crate::tests::temp_dir;
+    use crate::{generate_songprj, ProjectTrack};
+    use std::fs;
+    use std::path::Path;
+
+    pub(crate) const RATE: u32 = 48000;
+    const WAIT: Duration = Duration::from_secs(10);
+    const G: f32 = 0.707_106_77;
+
+    /// 24 bit WAV with the given integer samples
+    pub(crate) fn wav24(dir: &Path, name: &str, rate: u32, channels: u16, samples: &[i32]) -> String {
+        let data_len = samples.len() * 3;
+        let mut b = Vec::new();
+        b.extend_from_slice(b"RIFF");
+        b.extend_from_slice(&(36 + data_len as u32).to_le_bytes());
+        b.extend_from_slice(b"WAVEfmt ");
+        b.extend_from_slice(&16u32.to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&channels.to_le_bytes());
+        b.extend_from_slice(&rate.to_le_bytes());
+        b.extend_from_slice(&(rate * 3 * channels as u32).to_le_bytes());
+        b.extend_from_slice(&(3 * channels).to_le_bytes());
+        b.extend_from_slice(&24u16.to_le_bytes());
+        b.extend_from_slice(b"data");
+        b.extend_from_slice(&(data_len as u32).to_le_bytes());
+        for s in samples {
+            b.extend_from_slice(&s.to_le_bytes()[..3]);
+        }
+        let p = dir.join(format!("{}.wav", name));
+        fs::write(&p, b).unwrap();
+        p.to_str().unwrap().to_string()
+    }
+
+    /// constant value `v` (a fraction of full scale, exact in 24 bit)
+    pub(crate) fn constant(frames: usize, v: f32) -> Vec<i32> {
+        vec![(v * 8388608.0) as i32; frames]
+    }
+
+    /// 0, 1/32768, 2/32768, ... (exact in 24 bit and f32)
+    fn ramp(frames: usize) -> Vec<i32> {
+        (0..frames as i32).map(|i| i * 256).collect()
+    }
+
+    fn ramp_value(i: usize) -> f32 {
+        i as f32 / 32768.0
+    }
+
+    /// a .songprj written with the library's generator and read back
+    pub(crate) fn song(dir: &Path, wavs: &[&str]) -> SongProject {
+        let audio_lib = dir.to_str().unwrap();
+        let xml = generate_songprj("Test Song", 0, RATE, 24, 1);
+        let mut prj = SongProject::parse(&xml, audio_lib);
+        prj.tracks = wavs.iter().enumerate().map(|(i, w)| ProjectTrack::new(i as i32, w, audio_lib)).collect();
+        let file = dir.join("test.songprj");
+        prj.save_as(file.to_str().unwrap()).unwrap();
+        SongProject::load(file.to_str().unwrap(), audio_lib).unwrap()
+    }
+
+    fn ready_engine(prj: &SongProject) -> Engine {
+        let mut e = Engine::new(RATE);
+        e.load(prj);
+        assert!(e.wait_ready(WAIT));
+        e
+    }
+
+    fn render(e: &mut Engine, frames: usize) -> Vec<f32> {
+        let mut out = vec![9.0; frames * 2];
+        e.render(&mut out);
+        out
+    }
+
+    #[test]
+    fn two_constant_tracks_mix_at_centre() {
+        let dir = temp_dir("rh-mix");
+        let a = wav24(&dir, "a", RATE, 1, &constant(1000, 0.25));
+        let b = wav24(&dir, "b", RATE, 1, &constant(1000, 0.125));
+        let mut e = ready_engine(&song(&dir, &[&a, &b]));
+        e.play();
+        let out = render(&mut e, 500);
+        let want = (0.25 + 0.125) * G;
+        for s in &out {
+            assert!((s - want).abs() < 1e-6, "{} vs {}", s, want);
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn mix_is_limited_to_full_scale() {
+        let dir = temp_dir("rh-clip");
+        let a = wav24(&dir, "a", RATE, 1, &constant(100, 0.99));
+        let b = wav24(&dir, "b", RATE, 1, &constant(100, 0.99));
+        let mut e = ready_engine(&song(&dir, &[&a, &b]));
+        e.play();
+        assert!(render(&mut e, 50).iter().all(|&s| s == 1.0));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn block_size_does_not_change_the_samples() {
+        let dir = temp_dir("rh-blocks");
+        let a = wav24(&dir, "a", RATE, 1, &ramp(5000));
+        let b = wav24(&dir, "b", RATE, 1, &constant(3000, 0.1));
+        let prj = song(&dir, &[&a, &b]);
+        let play_all = |block: usize| {
+            let mut e = ready_engine(&prj);
+            e.play();
+            let mut all = Vec::new();
+            while all.len() < 2 * 6000 {
+                all.extend(render(&mut e, block));
+            }
+            all.truncate(2 * 6000);
+            all.iter().map(|s| s.to_bits()).collect::<Vec<_>>()
+        };
+        let reference = play_all(6000);
+        assert_ne!(reference[2 * 4000], 0, "the test needs real samples");
+        for block in [1, 37, 512] {
+            assert_eq!(play_all(block), reference, "block size {}", block);
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shorter_track_ends_alone_and_the_longest_ends_the_song() {
+        let dir = temp_dir("rh-lengths");
+        let a = wav24(&dir, "a", RATE, 1, &constant(100, 0.25));
+        let b = wav24(&dir, "b", RATE, 1, &constant(250, 0.125));
+        let mut e = ready_engine(&song(&dir, &[&a, &b]));
+        assert_eq!(e.status().length_frames, 250);
+        e.play();
+        let out = render(&mut e, 100);
+        assert!((out[0] - 0.375 * G).abs() < 1e-6);
+        assert_eq!(e.status().state, PlayState::Playing);
+        let out = render(&mut e, 150);
+        assert!((out[0] - 0.125 * G).abs() < 1e-6, "only the share of a is gone");
+        assert!((out[2 * 149] - 0.125 * G).abs() < 1e-6);
+        assert_eq!(e.status().state, PlayState::Ended);
+        assert!(render(&mut e, 64).iter().all(|&s| s == 0.0));
+        assert_eq!(e.status().position_frames, 250);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn missing_wav_warns_with_the_track_name_and_the_others_play() {
+        let dir = temp_dir("rh-missing");
+        let a = wav24(&dir, "guitar", RATE, 1, &constant(100, 0.25));
+        let gone = dir.join("bass.wav").to_str().unwrap().to_string();
+        let mut e = ready_engine(&song(&dir, &[&gone, &a]));
+        let st = e.status();
+        assert_eq!(st.warnings.len(), 1);
+        assert!(st.warnings[0].contains("bass"), "{}", st.warnings[0]);
+        e.play();
+        let out = render(&mut e, 10);
+        assert!((out[0] - 0.25 * G).abs() < 1e-6);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stereo_wav_warns_and_stays_silent() {
+        let dir = temp_dir("rh-stereo");
+        let a = wav24(&dir, "mono", RATE, 1, &constant(100, 0.25));
+        let s = wav24(&dir, "pad", RATE, 2, &constant(200, 0.5));
+        let mut e = ready_engine(&song(&dir, &[&a, &s]));
+        let st = e.status();
+        assert_eq!(st.warnings.len(), 1);
+        assert!(st.warnings[0].contains("pad") && st.warnings[0].contains("mono"));
+        assert_eq!(st.length_frames, 100, "the silent track does not count");
+        e.play();
+        let out = render(&mut e, 10);
+        assert!((out[0] - 0.25 * G).abs() < 1e-6);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn pause_is_silent_and_play_continues_without_a_gap() {
+        let dir = temp_dir("rh-pause");
+        let a = wav24(&dir, "a", RATE, 1, &ramp(2000));
+        let mut e = ready_engine(&song(&dir, &[&a]));
+        e.play();
+        let first = render(&mut e, 300);
+        e.pause();
+        assert_eq!(e.status().state, PlayState::Paused);
+        assert!(render(&mut e, 500).iter().all(|&s| s == 0.0));
+        assert_eq!(e.status().position_frames, 300);
+        e.play();
+        let second = render(&mut e, 300);
+        for i in 0..300 {
+            assert_eq!(first[2 * i], ramp_value(i) * G);
+            assert_eq!(second[2 * i], ramp_value(300 + i) * G);
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stop_returns_to_the_start() {
+        let dir = temp_dir("rh-stop");
+        let a = wav24(&dir, "a", RATE, 1, &ramp(2000));
+        let mut e = ready_engine(&song(&dir, &[&a]));
+        e.play();
+        render(&mut e, 700);
+        assert_eq!(e.status().position_frames, 700);
+        e.stop();
+        assert_eq!(e.status().state, PlayState::Stopped);
+        assert_eq!(e.status().position_frames, 0);
+        assert!(e.wait_ready(WAIT));
+        assert!(render(&mut e, 10).iter().all(|&s| s == 0.0), "stopped is silent");
+        e.play();
+        let out = render(&mut e, 20);
+        for i in 0..20 {
+            assert_eq!(out[2 * i], ramp_value(i) * G);
+        }
+        // and after the end, play starts over
+        render(&mut e, 5000);
+        assert_eq!(e.status().state, PlayState::Ended);
+        e.play();
+        assert!(e.wait_ready(WAIT));
+        let out = render(&mut e, 5);
+        assert_eq!(out[2], ramp_value(1) * G);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stop_discards_a_full_ring_of_the_old_position() {
+        let dir = temp_dir("rh-stop-ring");
+        let saw: Vec<i32> = (0..3 * 48000).map(|i| (i % 32768) * 256).collect();
+        let a = wav24(&dir, "a", RATE, 1, &saw);
+        let mut e = ready_engine(&song(&dir, &[&a]));
+        for round in 0..3 {
+            e.play();
+            render(&mut e, 10000 + round * 777);
+            e.wait_ready(WAIT); // the ring is full of frames far from 0
+            e.stop();
+            assert!(e.wait_ready(WAIT));
+            e.play();
+            let out = render(&mut e, 100);
+            for i in 0..100 {
+                assert_eq!(out[2 * i], ramp_value(i) * G, "round {} frame {}", round, i);
+            }
+            assert_eq!(e.status().position_frames, 100);
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn position_counts_the_played_frames() {
+        let dir = temp_dir("rh-pos");
+        let a = wav24(&dir, "a", RATE, 1, &ramp(48000));
+        let mut e = ready_engine(&song(&dir, &[&a]));
+        let st = e.status();
+        assert_eq!((st.state, st.position_frames, st.length_frames), (PlayState::Stopped, 0, 48000));
+        assert_eq!((st.song_rate, st.output_rate), (RATE, RATE));
+        assert_eq!(&*st.song_name, "Test Song");
+        e.play();
+        let mut played = 0;
+        for block in [1, 37, 512, 1000] {
+            render(&mut e, block);
+            played += block as u64;
+            assert_eq!(e.status().position_frames, played);
+        }
+        let st = e.status();
+        assert!((st.position_seconds - played as f64 / 48000.0).abs() < 1e-9);
+        assert!((st.length_seconds - 1.0).abs() < 1e-9);
+        assert_eq!(st.underruns, 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn long_song_survives_a_ring_refill() {
+        // 3 s are more than the 2 s ring: the reader thread has to refill
+        let dir = temp_dir("rh-refill");
+        // a saw that stays inside 24 bit
+        let saw: Vec<i32> = (0..3 * 48000).map(|i| (i % 32768) * 256).collect();
+        let a = wav24(&dir, "a", RATE, 1, &saw);
+        let mut e = ready_engine(&song(&dir, &[&a]));
+        e.play();
+        let mut all = Vec::new();
+        while e.status().state == PlayState::Playing {
+            all.extend(render(&mut e, 4800));
+            // like a real device: the thread gets time between blocks
+            e.wait_ready(WAIT);
+        }
+        assert_eq!(all.len(), 2 * 3 * 48000);
+        for i in (0..3 * 48000).step_by(97) {
+            assert_eq!(all[2 * i], ramp_value(i % 32768) * G, "frame {}", i);
+        }
+        assert_eq!(e.status().underruns, 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn other_sample_rate_does_not_play() {
+        let dir = temp_dir("rh-rate");
+        let a = wav24(&dir, "a", 44100, 1, &constant(1000, 0.25));
+        let mut e = ready_engine(&song(&dir, &[&a]));
+        e.play();
+        assert_eq!(e.status().state, PlayState::Stopped);
+        assert!(render(&mut e, 100).iter().all(|&s| s == 0.0));
+        let st = e.status();
+        assert_eq!(st.position_frames, 0);
+        assert_eq!(st.song_rate, 44100);
+        assert!(st.warnings.iter().any(|w| w == "Song sample rate 44100 Hz differs from output 48000 Hz"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn track_with_another_rate_is_silent_with_a_warning() {
+        let dir = temp_dir("rh-rate2");
+        let a = wav24(&dir, "a", RATE, 1, &constant(100, 0.25));
+        let b = wav24(&dir, "b", 44100, 1, &constant(100, 0.25));
+        let mut e = ready_engine(&song(&dir, &[&a, &b]));
+        assert_eq!(e.status().warnings.len(), 1);
+        e.play();
+        assert!((render(&mut e, 4)[0] - 0.25 * G).abs() < 1e-6);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn loading_another_song_ends_the_old_thread() {
+        let dir = temp_dir("rh-reload");
+        let a = wav24(&dir, "a", RATE, 1, &constant(1000, 0.25));
+        let b = wav24(&dir, "b", RATE, 1, &constant(1000, 0.5));
+        let mut e = ready_engine(&song(&dir, &[&a]));
+        e.load(&song(&dir, &[&b]));
+        assert!(e.wait_ready(WAIT));
+        // the old files are free again (Windows refuses to delete open files)
+        fs::remove_file(&a).expect("the first song's file is still open");
+        e.play();
+        assert!((render(&mut e, 4)[0] - 0.5 * G).abs() < 1e-6);
+        e.unload();
+        assert_eq!(e.status().state, PlayState::Empty);
+        fs::remove_file(&b).expect("the second song's file is still open");
+        assert!(render(&mut e, 4).iter().all(|&s| s == 0.0));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_engine_renders_silence() {
+        let mut e = Engine::new(RATE);
+        e.play();
+        assert_eq!(e.status().state, PlayState::Empty);
+        assert!(render(&mut e, 10).iter().all(|&s| s == 0.0));
+        assert!(e.wait_ready(Duration::from_millis(1)));
+    }
+
+    #[test]
+    fn clock_format() {
+        assert_eq!(fmt_clock(0.0), "0:00");
+        assert_eq!(fmt_clock(59.99), "0:59");
+        assert_eq!(fmt_clock(61.0), "1:01");
+        assert_eq!(fmt_clock(3725.0), "62:05");
+        assert_eq!(fmt_clock(-3.0), "0:00");
+    }
+}

@@ -15,6 +15,8 @@
 
 #[cfg(feature = "gui")]
 mod gui_app;
+#[cfg(feature = "gui")]
+mod gui_rehearsal;
 
 #[cfg(feature = "gui")]
 use crate::gui_app::run_gui;

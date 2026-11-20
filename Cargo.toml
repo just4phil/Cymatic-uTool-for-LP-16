@@ -6,11 +6,14 @@ license = "MIT"
 
 [features]
 default = ["gui"]
-gui = ["dep:eframe", "dep:rfd"]
+gui = ["dep:eframe", "dep:rfd", "player"]
+player = ["dep:cpal", "dep:rtrb"]
 
 [dependencies]
 eframe = { version = "0.27", optional = true }
 rfd = { version = "0.14", default-features = false, optional = true }
+cpal = { version = "0.15", optional = true }
+rtrb = { version = "0.3", optional = true }
 
 [profile.release]
 lto = true
