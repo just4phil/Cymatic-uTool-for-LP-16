@@ -23,21 +23,8 @@ pub struct ListOutcome {
 pub fn ui(ui: &mut Ui, playlists: &[String], selected: Option<&str>, single: bool, rows: &[SongRow]) -> ListOutcome {
     let mut out = ListOutcome::default();
     ui.label(egui::RichText::new("Playlist").size(13.0).color(DIM));
-    let shown = match (selected, single) {
-        (Some(n), _) => n.to_string(),
-        (None, true) => SINGLE_SONG.to_string(),
-        (None, false) => "(none)".to_string(),
-    };
-    egui::ComboBox::from_id_source("rehearsal_playlist").width(ui.available_width() - 8.0).selected_text(shown).show_ui(ui, |ui| {
-        if single && selected.is_none() {
-            let _ = ui.selectable_label(true, SINGLE_SONG);
-        }
-        for name in playlists {
-            if ui.selectable_label(selected == Some(name.as_str()), name).clicked() && selected != Some(name.as_str()) {
-                out.select = Some(name.clone());
-            }
-        }
-    });
+    let width = ui.available_width() - 8.0;
+    out.select = playlist_combo(ui, "rehearsal_playlist", width, playlists, selected, single);
     ui.add_space(8.0);
     if rows.is_empty() {
         let text = if playlists.is_empty() { "The library has no playlists." } else { "Choose a playlist." };
@@ -50,6 +37,63 @@ pub fn ui(ui: &mut Ui, playlists: &[String], selected: Option<&str>, single: boo
         }
     }
     out
+}
+
+/// The playlist combo; returns the playlist that was chosen. `selected` is
+/// the loaded playlist (None: a single song, or nothing).
+pub fn playlist_combo(
+    ui: &mut Ui,
+    id: &str,
+    width: f32,
+    playlists: &[String],
+    selected: Option<&str>,
+    single: bool,
+) -> Option<String> {
+    let mut chosen = None;
+    let shown = match (selected, single) {
+        (Some(n), _) => n.to_string(),
+        (None, true) => SINGLE_SONG.to_string(),
+        (None, false) => "(none)".to_string(),
+    };
+    egui::ComboBox::from_id_source(id).width(width).selected_text(shown).show_ui(ui, |ui| {
+        if single && selected.is_none() {
+            let _ = ui.selectable_label(true, SINGLE_SONG);
+        }
+        for name in playlists {
+            if ui.selectable_label(selected == Some(name.as_str()), name).clicked() && selected != Some(name.as_str()) {
+                chosen = Some(name.clone());
+            }
+        }
+    });
+    chosen
+}
+
+/// The text of a song combo entry: "3  Name".
+pub fn song_label(row: &SongRow) -> String {
+    format!("{}  {}", row.number, row.name)
+}
+
+/// A compact song list as a combo: choosing a song returns its index
+/// (0-based), like a double-click in the list. Unreadable songs are shown
+/// grey and cannot be chosen.
+pub fn song_combo(ui: &mut Ui, id: &str, width: f32, rows: &[SongRow]) -> Option<usize> {
+    let mut chosen = None;
+    let current = rows.iter().find(|r| r.current).map(song_label).unwrap_or_else(|| "(no song)".to_string());
+    egui::ComboBox::from_id_source(id).width(width).selected_text(current).show_ui(ui, |ui| {
+        for row in rows {
+            let text = song_label(row);
+            let resp = match &row.error {
+                Some(e) => ui
+                    .add_enabled(false, egui::SelectableLabel::new(false, text))
+                    .on_disabled_hover_text(format!("Cannot be played, skipped: {}", e)),
+                None => ui.selectable_label(row.current, text),
+            };
+            if resp.clicked() {
+                chosen = Some(row.number - 1);
+            }
+        }
+    });
+    chosen
 }
 
 /// One row; returns its index (0-based) when double-clicked.

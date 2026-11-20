@@ -208,7 +208,7 @@ Settings wählt (WASAPI oder ASIO), zum Proben zu Hause. Er schickt außerdem di
 
 ### Proben-Mix
 
-Unter dem Player hat der Reiter Rehearsal den **Proben-Mix**: 16 Kanalzüge (LP-16-Ausgang 1 bis
+Ganz oben im Reiter Rehearsal (über Songliste und Player) steht der **Proben-Mix**: 16 Kanalzüge (LP-16-Ausgang 1 bis
 16) und einen Master. Er gilt für alle Songs. Jede Spur des geladenen Songs spielt auf dem Kanalzug
 ihres LP-16-Ausgangs (der Kanal in der `.songprj`); mehrere Spuren auf einem Ausgang werden in
 diesem Kanalzug summiert. Eine Spur mit einem Ausgang jenseits von 16 bleibt still und erzeugt eine
@@ -231,6 +231,18 @@ ausgegraut („—“), lässt sich aber trotzdem bedienen.
   einmal pro Sekunde und immer beim Beenden) als `mix.<n>.name`, `mix.<n>.master`,
   `mix.<n>.ch<k> = "<Pegel> <Pan> <Mute> <Solo>"` (Pegel mit einer Nachkommastelle oder `off`) und
   `mix_active`.
+- **Reiter Mixer:** Der Reiter nach Rehearsal zeigt denselben Proben-Mix im Stil des uTool2-Mixers:
+  schmale, hohe Kanalzüge (S- und M-Taste, ein Pan-Drehregler, den man nach oben oder unten zieht,
+  der Pegel in dB, ein hoher Fader mit dB-Skala und Pegelanzeige, Ausgangsnummer und Spurname) und
+  der Master mit L/R-Pegel und CLIP-LED. Alle 16 Kanalzüge und der Master stehen nebeneinander; ein
+  breiteres Fenster zeigt mehr davon, bei einem schmalen erscheint eine Scrollleiste. Oben ist die
+  Preset-Leiste. Der Reiter bearbeitet denselben Mix, dasselbe Preset und dieselbe Config wie der
+  kleine Mixer im Reiter Rehearsal und schreibt nie in Songs (es gibt also kein „Save to Song“).
+  Unten liegt die Player-Leiste: Playlist- und Songauswahl, voriger/nächster Song, −10 s,
+  Play/Pause, Stop, +10 s, der Fortschrittsbalken mit der Zeit und die Zeile „Next: ...“ mit
+  Warnungen. Es ist derselbe Player wie im Reiter Rehearsal (einschließlich MIDI), und die
+  Tastenkürzel gelten in beiden Reitern. Im Home-Reiter lädt die Taste **Mixer** eines Songs ihn in
+  den Player (ohne zu starten) und öffnet den Reiter Mixer.
 - **Der Proben-Mix wird nicht exportiert.** Er landet nie in einer `.songprj`, einer Playlist,
   einer `song.set` oder einer `.play` und nicht auf dem Stick. Die Mixer-Werte der Songs
   (`monitor_level`, `monitor_pan`, `monitor_mute`, der Kopfhörer-Mix des LP-16) bleiben
@@ -400,7 +412,8 @@ Dateien auf dem Stick beschädigt sein könnten. Gelöscht wird auf dem Stick ni
 | `src/gui_app.rs` | Oberfläche (egui 0.27) |
 | `src/gui_rehearsal.rs` | Der Reiter Rehearsal |
 | `src/gui_playlist.rs` | Playlist-Combo und Songliste im Reiter Rehearsal |
-| `src/gui_mixer.rs` | Der Proben-Mix im Reiter Rehearsal |
+| `src/gui_mixer.rs` | Der Proben-Mix im Reiter Rehearsal, dazu Preset-Leiste und Pegel-Helfer, die der Reiter Mixer mitnutzt |
+| `src/gui_mixer_tab.rs` | Der Reiter Mixer (Kanalzüge im uTool2-Stil, Transportleiste) |
 | `src/gui_audio.rs` | Der Bereich „Audio output“ im Reiter Settings |
 | `src/gui_midi.rs` | Der Bereich „MIDI output“ im Reiter Settings |
 
