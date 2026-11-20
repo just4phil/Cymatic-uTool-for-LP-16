@@ -12,9 +12,11 @@ use lp16_tool::audio_out::{AudioSettings, Command, Player, StreamInfo};
 use lp16_tool::midi_out::{MidiLink, PortStatus};
 use lp16_tool::mix::{MixLibrary, MixParams, STRIPS};
 use lp16_tool::read_midi_events;
-use lp16_tool::rehearsal::{fmt_clock, Engine, PlayState, Status};
+use lp16_tool::rehearsal::{fmt_clock, Engine, Levels, PlayState, Status};
 use lp16_tool::rehearsal_midi::start_messages;
-use lp16_tool::rehearsal_queue::{entries_from_playlist, find_path, next_caption, same_songs, song_rows, QueueEntry};
+use lp16_tool::rehearsal_queue::{
+    entries_from_playlist, find_path, next_caption, same_songs, song_rows, QueueEntry, SongRow,
+};
 use lp16_tool::{PlaylistSong, SongProject};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -27,6 +29,8 @@ const LONG_STEP_SECONDS: f64 = 30.0;
 const SEEK_MEMORY: Duration = Duration::from_millis(400);
 /// Width of the left part (playlist and song list).
 const LIST_WIDTH: f32 = 290.0;
+/// The song list scrolls beyond this height.
+const LIST_MAX_HEIGHT: f32 = 330.0;
 /// How long the MIDI indicator stays lit after a message.
 const MIDI_FLASH: Duration = Duration::from_millis(150);
 
@@ -249,6 +253,18 @@ impl RehearsalPanel {
         let Some(songs) = self.library.iter().find(|(n, _)| n == name).map(|(_, s)| s.clone()) else { return };
         let entries = entries_from_playlist(&songs, &self.audio_lib);
         self.load_queue(entries, Some(name.to_string()), songs, false);
+    }
+
+    /// Load `project` as a queue of one song and leave it stopped.
+    pub fn load_song(&mut self, project: &SongProject) {
+        self.load_queue(vec![QueueEntry::single(project.clone())], None, Vec::new(), false);
+    }
+
+    /// Start the first readable song of the queue (nothing is loaded yet).
+    pub fn play_first(&mut self) {
+        if let Some(first) = self.first_readable(0) {
+            self.start(first, true, true);
+        }
     }
 
     /// Load `project` as a queue of one song and start it. If the audio
@@ -572,7 +588,7 @@ impl RehearsalPanel {
 
     /// Keyboard shortcuts; only called while the tab is shown, and nothing
     /// happens while a text field has the focus.
-    fn keys(&mut self, ui: &mut Ui, st: &Status) {
+    pub fn keys(&mut self, ui: &mut Ui, st: &Status) {
         if ui.ctx().wants_keyboard_input() || st.state == PlayState::Empty {
             return;
         }
@@ -609,6 +625,51 @@ impl RehearsalPanel {
     /// mix `mixes`. Returns true if the mix (values or presets) was changed,
     /// so the caller saves the config.
     pub fn ui(&mut self, ui: &mut Ui, mixes: &mut MixLibrary) -> bool {
+        let status = self.begin_frame(ui.ctx());
+        let levels = self.take_levels();
+        let mut changed = false;
+        egui::ScrollArea::vertical().id_source("rehearsal_scroll").auto_shrink([false, false]).show(ui, |ui| {
+            // the compact mixer on top
+            let out = self.mixer.ui(ui, mixes, &self.track_names, &levels);
+            if out.changed {
+                changed = true;
+                self.set_mix(mixes.active().params());
+            }
+            if out.reset_clip {
+                self.reset_clip();
+            }
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(6.0);
+            // below it the song list and the player; the list scrolls by
+            // itself, so the player stays in view
+            ui.horizontal_top(|ui| {
+                let total = ui.available_width();
+                let left = LIST_WIDTH.min(total * 0.4);
+                ui.allocate_ui_with_layout(vec2(left, 10.0), Layout::top_down(Align::LEFT), |ui| {
+                    ui.set_width(left);
+                    egui::ScrollArea::vertical()
+                        .id_source("rehearsal_list_scroll")
+                        .max_height(LIST_MAX_HEIGHT)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| self.list_area(ui, status.as_ref()));
+                });
+                ui.separator();
+                let right = ui.available_width().max(300.0);
+                ui.allocate_ui_with_layout(vec2(right, 10.0), Layout::top_down(Align::Center), |ui| {
+                    ui.set_width(right);
+                    self.player_area(ui, status.as_ref());
+                });
+            });
+        });
+        changed
+    }
+
+    /// The work every tab that shows the player does first in each frame:
+    /// look after the stream (lost device, other sample rate), keep the
+    /// track names of the strips up to date and ask for repaints while
+    /// something moves. Returns the status to draw.
+    pub fn begin_frame(&mut self, ctx: &egui::Context) -> Option<Status> {
         self.check_stream();
         self.check_rate();
         let status = self.current_status();
@@ -624,57 +685,77 @@ impl RehearsalPanel {
         }
         if let Some(st) = &status {
             if st.state == PlayState::Countdown {
-                ui.ctx().request_repaint_after(Duration::from_millis(100));
+                ctx.request_repaint_after(Duration::from_millis(100));
             } else if st.state != PlayState::Empty && st.length_frames == 0 {
                 // the song is still being opened
-                ui.ctx().request_repaint_after(Duration::from_millis(30));
+                ctx.request_repaint_after(Duration::from_millis(30));
             }
         }
-        let levels = self.player.as_ref().map(|p| p.take_levels()).unwrap_or_default();
-        let mut changed = false;
-        egui::ScrollArea::vertical().id_source("rehearsal_scroll").auto_shrink([false, false]).show(ui, |ui| {
-            ui.horizontal_top(|ui| {
-                let total = ui.available_width();
-                let left = LIST_WIDTH.min(total * 0.4);
-                ui.allocate_ui_with_layout(vec2(left, 10.0), Layout::top_down(Align::LEFT), |ui| {
-                    ui.set_width(left);
-                    self.list_area(ui, status.as_ref());
-                });
-                ui.separator();
-                let right = ui.available_width().max(300.0);
-                ui.allocate_ui_with_layout(vec2(right, 10.0), Layout::top_down(Align::Center), |ui| {
-                    ui.set_width(right);
-                    self.player_area(ui, status.as_ref());
-                });
-            });
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(6.0);
-            let out = self.mixer.ui(ui, mixes, &self.track_names, &levels);
-            if out.changed {
-                changed = true;
-                self.set_mix(mixes.active().params());
-            }
-            if out.reset_clip {
-                if let Some(player) = &self.player {
-                    player.send(Command::ResetClip);
-                }
-            }
-        });
-        changed
+        status
     }
 
-    /// Playlist combo and song list.
-    fn list_area(&mut self, ui: &mut Ui, status: Option<&Status>) {
+    /// The meter peaks since the last call (only the tab that is shown
+    /// calls this, once per frame).
+    pub fn take_levels(&self) -> Levels {
+        self.player.as_ref().map(|p| p.take_levels()).unwrap_or_default()
+    }
+
+    /// The names of the tracks of the loaded song per LP-16 output (empty =
+    /// no track).
+    pub fn strip_names(&self) -> &[String; STRIPS] {
+        &self.track_names
+    }
+
+    /// The clip LED of the master was clicked.
+    pub fn reset_clip(&mut self) {
+        if let Some(player) = &self.player {
+            player.send(Command::ResetClip);
+        }
+    }
+
+    /// The rows of the song list for `status`.
+    pub fn rows(&self, status: Option<&Status>) -> Vec<SongRow> {
         let waiting = status.map(|s| matches!(s.state, PlayState::Waiting | PlayState::Countdown)).unwrap_or(false);
         let loaded = status.map(|s| s.state != PlayState::Empty).unwrap_or(false);
         let (index, next) = match status {
             Some(s) if loaded => (s.index, s.next_index),
             _ => (None, None),
         };
-        let rows = song_rows(&self.entries, index, next, waiting);
-        let names: Vec<String> = self.library.iter().map(|(n, _)| n.clone()).collect();
-        let single = self.playlist.is_none() && !self.entries.is_empty();
+        song_rows(&self.entries, index, next, waiting)
+    }
+
+    fn playlist_names(&self) -> Vec<String> {
+        self.library.iter().map(|(n, _)| n.clone()).collect()
+    }
+
+    /// A single song (not a playlist) is loaded.
+    fn is_single(&self) -> bool {
+        self.playlist.is_none() && !self.entries.is_empty()
+    }
+
+    /// The playlist combo; choosing a playlist loads it (stopped).
+    pub fn playlist_picker(&mut self, ui: &mut Ui, id: &str, width: f32) {
+        let names = self.playlist_names();
+        let single = self.is_single();
+        if let Some(name) = gui_playlist::playlist_combo(ui, id, width, &names, self.playlist.as_deref(), single) {
+            self.play_playlist(&name);
+        }
+    }
+
+    /// The song combo of the loaded playlist; choosing a song starts it, as
+    /// a double-click in the list does.
+    pub fn song_picker(&mut self, ui: &mut Ui, id: &str, width: f32, status: Option<&Status>) {
+        let rows = self.rows(status);
+        if let Some(i) = gui_playlist::song_combo(ui, id, width, &rows) {
+            self.start(i, true, false);
+        }
+    }
+
+    /// Playlist combo and song list.
+    fn list_area(&mut self, ui: &mut Ui, status: Option<&Status>) {
+        let rows = self.rows(status);
+        let names = self.playlist_names();
+        let single = self.is_single();
         let out = gui_playlist::ui(ui, &names, self.playlist.as_deref(), single, &rows);
         if let Some(name) = out.select {
             self.play_playlist(&name);
@@ -687,6 +768,103 @@ impl RehearsalPanel {
                 ui.add_space(4.0);
                 ui.add(egui::Label::new(RichText::new(format!("Warning: {}", w)).size(12.0).color(ORANGE)).wrap(true));
             }
+        }
+    }
+
+    /// "Next: <song> ..." while the player waits, else the song that comes
+    /// next in the playlist.
+    pub fn next_line(&self, st: &Status) -> Option<String> {
+        if let Some(c) = next_caption(st.state, &st.song_name, st.countdown_seconds) {
+            return Some(c);
+        }
+        let entry = st.next_index.and_then(|i| self.entries.get(i))?;
+        Some(format!("Next: {}", entry.display_name()))
+    }
+
+    /// Problems of the player in a short form: (text, is an error). The
+    /// notice, the audio error, dropouts and the warnings.
+    pub fn problems(&self, status: Option<&Status>) -> Vec<(String, bool)> {
+        let mut v = Vec::new();
+        if let Some(n) = &self.notice {
+            v.push((n.clone(), false));
+        }
+        if let Some(e) = &self.device_error {
+            v.push((e.clone(), true));
+        }
+        if let Some(st) = status {
+            if st.underruns > 0 {
+                v.push((format!("Dropouts: {}", st.underruns), true));
+            }
+            for w in st.queue_warnings.iter().chain(st.warnings.iter()) {
+                v.push((format!("Warning: {}", w), false));
+            }
+        }
+        v
+    }
+
+    /// "pos / length" for the clock; while the progress bar is dragged it
+    /// shows the target (second value true).
+    pub fn time_text(&self, st: &Status) -> (String, bool) {
+        let shown = self.drag_target.unwrap_or(st.position_seconds);
+        (format!("{} / {}", fmt_clock(shown), fmt_clock(st.length_seconds)), self.drag_target.is_some())
+    }
+
+    /// The progress bar: click or drag to jump.
+    pub fn progress(&mut self, ui: &mut Ui, st: &Status, width: f32) {
+        if let Some(target) = progress_bar(ui, st, &mut self.drag_target, width) {
+            self.seek(target, st.length_seconds);
+        }
+    }
+
+    /// The transport buttons: previous song, -10 s, Play/Pause, Stop,
+    /// +10 s, next song. Without a loaded song they are disabled, only
+    /// Play starts the queue.
+    pub fn transport(&mut self, ui: &mut Ui, status: Option<&Status>, style: TransportStyle) {
+        let st = status.filter(|s| s.state != PlayState::Empty);
+        let (mut prev, mut next) = (false, false);
+        let (mut back, mut forward, mut toggle, mut stop) = (false, false, false, false);
+        let can_start = st.is_none() && self.first_readable(0).is_some();
+        ui.horizontal(|ui| {
+            let (w, small) = (style.wide, style.small);
+            if style.center {
+                ui.add_space(((ui.available_width() - 4.0 * w - 2.0 * small - 5.0 * ui.spacing().item_spacing.x) / 2.0).max(0.0));
+            }
+            let btn = |ui: &mut Ui, text: &str, enabled: bool, width: f32| {
+                sized_button(ui, text, enabled, width, style.font, style.height)
+            };
+            // a song of another sample rate cannot be played
+            let can_play = st.map(|s| s.song_rate == s.output_rate).unwrap_or(can_start);
+            let has_prev = st.map(|s| s.index.map(|i| i > 0).unwrap_or(false) || s.position_seconds > 0.0).unwrap_or(false);
+            let has_next = st.map(|s| s.next_index.is_some()).unwrap_or(false);
+            let playing = st.map(|s| s.state == PlayState::Playing).unwrap_or(false);
+            prev = btn(ui, "\u{23ee}", has_prev, small).on_hover_text("Previous song (Up)").clicked();
+            back = btn(ui, "\u{2212}10 s", st.is_some(), w).clicked();
+            toggle = btn(ui, if playing { "Pause" } else { "Play" }, can_play, w).clicked();
+            stop = btn(ui, "Stop", st.is_some(), w).clicked();
+            forward = btn(ui, "+10 s", st.is_some(), w).clicked();
+            next = btn(ui, "\u{23ed}", has_next, small).on_hover_text("Next song (Down)").clicked();
+        });
+        if prev {
+            self.prev_song();
+        }
+        if next {
+            self.next_song();
+        }
+        if let Some(st) = st {
+            if back {
+                self.seek_by(st, -STEP_SECONDS);
+            }
+            if forward {
+                self.seek_by(st, STEP_SECONDS);
+            }
+            if toggle {
+                self.toggle_play(st);
+            }
+            if stop {
+                self.stop();
+            }
+        } else if toggle {
+            self.play_first();
         }
     }
 
@@ -761,53 +939,13 @@ impl RehearsalPanel {
         ui.add(egui::Label::new(RichText::new(&*st.song_name).size(32.0).strong().color(TEXT)).wrap(true));
         ui.add_space(14.0);
         // while dragging, the time shows where the jump will go
-        let shown = self.drag_target.unwrap_or(st.position_seconds);
-        ui.label(
-            RichText::new(format!("{} / {}", fmt_clock(shown), fmt_clock(st.length_seconds)))
-                .size(44.0)
-                .color(if self.drag_target.is_some() { ORANGE } else { TEXT }),
-        );
+        let (time, dragging) = self.time_text(st);
+        ui.label(RichText::new(time).size(44.0).color(if dragging { ORANGE } else { TEXT }));
         ui.add_space(14.0);
-        if let Some(target) = progress_bar(ui, st, &mut self.drag_target) {
-            self.seek(target, st.length_seconds);
-        }
+        let width = (ui.available_width() - 60.0).clamp(100.0, 900.0);
+        self.progress(ui, st, width);
         ui.add_space(18.0);
-        let (mut prev, mut next) = (false, false);
-        let (mut back, mut forward, mut toggle, mut stop) = (false, false, false, false);
-        ui.horizontal(|ui| {
-            let (w, small) = (100.0, 56.0);
-            ui.add_space(((ui.available_width() - 4.0 * w - 2.0 * small - 5.0 * ui.spacing().item_spacing.x) / 2.0).max(0.0));
-            // a song of another sample rate cannot be played
-            let can_play = st.song_rate == st.output_rate;
-            let has_prev = st.index.map(|i| i > 0).unwrap_or(false);
-            let has_next = st.next_index.is_some();
-            prev = big_button(ui, "\u{23ee}", has_prev || st.position_seconds > 0.0, small)
-                .on_hover_text("Previous song (Up)")
-                .clicked();
-            back = big_button(ui, "\u{2212}10 s", true, w).clicked();
-            toggle = big_button(ui, if st.state == PlayState::Playing { "Pause" } else { "Play" }, can_play, w).clicked();
-            stop = big_button(ui, "Stop", true, w).clicked();
-            forward = big_button(ui, "+10 s", true, w).clicked();
-            next = big_button(ui, "\u{23ed}", has_next, small).on_hover_text("Next song (Down)").clicked();
-        });
-        if prev {
-            self.prev_song();
-        }
-        if next {
-            self.next_song();
-        }
-        if back {
-            self.seek_by(st, -STEP_SECONDS);
-        }
-        if forward {
-            self.seek_by(st, STEP_SECONDS);
-        }
-        if toggle {
-            self.toggle_play(st);
-        }
-        if stop {
-            self.stop();
-        }
+        self.transport(ui, Some(st), TRANSPORT_BIG);
         ui.add_space(10.0);
         ui.add(
             egui::Label::new(
@@ -873,21 +1011,42 @@ fn midi_summary(port: &str, st: &Status) -> (String, Option<Duration>) {
 }
 
 fn big_button(ui: &mut Ui, text: &str, enabled: bool, width: f32) -> egui::Response {
+    sized_button(ui, text, enabled, width, 22.0, 44.0)
+}
+
+fn sized_button(ui: &mut Ui, text: &str, enabled: bool, width: f32, font: f32, height: f32) -> egui::Response {
     ui.add_enabled(
         enabled,
-        egui::Button::new(RichText::new(text).size(22.0).color(TEXT))
+        egui::Button::new(RichText::new(text).size(font).color(TEXT))
             .fill(Color32::from_rgb(0x3a, 0x3a, 0x3a))
             .stroke(Stroke::new(1.5_f32, ORANGE))
             .rounding(4.0)
-            .min_size(vec2(width, 44.0)),
+            .min_size(vec2(width, height)),
     )
 }
+
+/// Size of the transport buttons.
+#[derive(Clone, Copy)]
+pub struct TransportStyle {
+    pub font: f32,
+    pub height: f32,
+    /// width of -10 s, Play/Pause, Stop and +10 s
+    pub wide: f32,
+    /// width of previous and next song
+    pub small: f32,
+    /// centre the row
+    pub center: bool,
+}
+
+/// The big buttons of the Rehearsal tab.
+pub const TRANSPORT_BIG: TransportStyle = TransportStyle { font: 22.0, height: 44.0, wide: 100.0, small: 56.0, center: true };
+/// The buttons in the bar of the Mixer tab.
+pub const TRANSPORT_COMPACT: TransportStyle = TransportStyle { font: 15.0, height: 28.0, wide: 62.0, small: 38.0, center: false };
 
 /// Position in the song. Click or drag to jump: while dragging `drag`
 /// holds the target (seconds), the jump is returned when the mouse is
 /// released; a click returns it at once.
-fn progress_bar(ui: &mut Ui, st: &Status, drag: &mut Option<f64>) -> Option<f64> {
-    let w = (ui.available_width() - 60.0).clamp(100.0, 900.0);
+fn progress_bar(ui: &mut Ui, st: &Status, drag: &mut Option<f64>, w: f32) -> Option<f64> {
     let (rect, resp) = ui.allocate_exact_size(vec2(w, 22.0), Sense::click_and_drag());
     let target_at = |x: f32| ((x - rect.left()) / rect.width()).clamp(0.0, 1.0) as f64 * st.length_seconds;
     let mut jump = None;

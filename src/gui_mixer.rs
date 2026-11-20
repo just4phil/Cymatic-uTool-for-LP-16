@@ -14,16 +14,16 @@ const STRIP_W: f32 = 66.0;
 /// height of fader and meter
 const FADER_H: f32 = 130.0;
 /// the meters fall by this many dB per second
-const DECAY_DB_PER_S: f32 = 20.0;
+pub(crate) const DECAY_DB_PER_S: f32 = 20.0;
 /// what a meter shows for silence
-const FLOOR_DB: f32 = -90.0;
+pub(crate) const FLOOR_DB: f32 = -90.0;
 /// slider position of "off", one step below the lowest level
-const OFF_POS: f32 = LEVEL_MIN_DB - 1.0;
+pub(crate) const OFF_POS: f32 = LEVEL_MIN_DB - 1.0;
 
-const GREEN: Color32 = Color32::from_rgb(0x6c, 0xd8, 0x6c);
-const YELLOW: Color32 = Color32::from_rgb(0xe8, 0xd0, 0x4a);
-const MUTE_ON: Color32 = Color32::from_rgb(0xd0, 0x40, 0x40);
-const SOLO_ON: Color32 = Color32::from_rgb(0xe0, 0xc0, 0x20);
+pub(crate) const GREEN: Color32 = Color32::from_rgb(0x6c, 0xd8, 0x6c);
+pub(crate) const YELLOW: Color32 = Color32::from_rgb(0xe8, 0xd0, 0x4a);
+pub(crate) const MUTE_ON: Color32 = Color32::from_rgb(0xd0, 0x40, 0x40);
+pub(crate) const SOLO_ON: Color32 = Color32::from_rgb(0xe0, 0xc0, 0x20);
 
 /// What the user did in the mixer during this frame.
 #[derive(Default)]
@@ -38,6 +38,13 @@ pub struct MixerOutcome {
 pub struct MixerPanel {
     /// the shown meter values in dB: 16 strips, master left, master right
     shown: Option<[f32; STRIPS + 2]>,
+    presets: PresetBar,
+}
+
+/// The preset bar: combo and the buttons New, Copy, Rename, Delete, Reset.
+/// Shared by the mixer in the Rehearsal tab and the Mixer tab.
+#[derive(Default)]
+pub struct PresetBar {
     /// the new name while a preset is being renamed
     renaming: Option<String>,
     /// why the last preset operation was refused
@@ -45,7 +52,7 @@ pub struct MixerPanel {
 }
 
 /// Peak (1.0 = full scale) in dB, `FLOOR_DB` for silence.
-fn peak_db(peak: f32) -> f32 {
+pub(crate) fn peak_db(peak: f32) -> f32 {
     if peak > 1e-4 {
         20.0 * peak.log10()
     } else {
@@ -54,12 +61,12 @@ fn peak_db(peak: f32) -> f32 {
 }
 
 /// The meter falls with `DECAY_DB_PER_S` and jumps up at once.
-fn decayed(shown: f32, peak: f32, dt: f32) -> f32 {
+pub(crate) fn decayed(shown: f32, peak: f32, dt: f32) -> f32 {
     peak_db(peak).max(shown - DECAY_DB_PER_S * dt).max(FLOOR_DB)
 }
 
 /// Fader position (slider value) of a level; "off" is below the range.
-fn fader_pos(level_db: f32) -> f32 {
+pub(crate) fn fader_pos(level_db: f32) -> f32 {
     if level_db == f32::NEG_INFINITY {
         OFF_POS
     } else {
@@ -68,7 +75,7 @@ fn fader_pos(level_db: f32) -> f32 {
 }
 
 /// Level of a slider value, in steps of 0.1 dB; the bottom is "off".
-fn fader_level(pos: f32) -> f32 {
+pub(crate) fn fader_level(pos: f32) -> f32 {
     if pos <= LEVEL_MIN_DB - 0.5 {
         f32::NEG_INFINITY
     } else {
@@ -76,7 +83,7 @@ fn fader_level(pos: f32) -> f32 {
     }
 }
 
-fn fmt_level(db: f32) -> String {
+pub(crate) fn fmt_level(db: f32) -> String {
     if db == f32::NEG_INFINITY {
         "off".to_string()
     } else {
@@ -84,7 +91,7 @@ fn fmt_level(db: f32) -> String {
     }
 }
 
-fn fmt_pan(pan: i32) -> String {
+pub(crate) fn fmt_pan(pan: i32) -> String {
     match pan {
         0 => "Center".to_string(),
         p if p < 0 => format!("Left {}", -p),
@@ -93,34 +100,57 @@ fn fmt_pan(pan: i32) -> String {
 }
 
 /// Vertical position (0 bottom .. 1 top) of `db` on a meter.
-fn meter_frac(db: f32) -> f32 {
+pub(crate) fn meter_frac(db: f32) -> f32 {
     ((db - LEVEL_MIN_DB) / (LEVEL_MAX_DB - LEVEL_MIN_DB)).clamp(0.0, 1.0)
 }
 
 /// A vertical meter; `db` is the shown value.
 fn meter(ui: &mut Ui, db: f32, width: f32) {
-    let (rect, _) = ui.allocate_exact_size(vec2(width, FADER_H), Sense::hover());
+    meter_sized(ui, db, width, FADER_H, 0.0, meter_frac);
+}
+
+/// A vertical meter of `height`. `frac` maps a level to 0 (bottom) .. 1
+/// (top) of the range, which is inset by `inset` at the top and bottom
+/// (the tab with the tall faders aligns it to its dB scale).
+pub(crate) fn meter_sized(ui: &mut Ui, db: f32, width: f32, height: f32, inset: f32, frac: fn(f32) -> f32) {
+    let (full, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     let p = ui.painter();
-    p.rect_filled(rect, 1.0, Color32::from_rgb(0x22, 0x22, 0x22));
-    let top = rect.bottom() - rect.height() * meter_frac(db);
+    p.rect_filled(full, 1.0, Color32::from_rgb(0x22, 0x22, 0x22));
+    let rect = full.shrink2(vec2(0.0, inset));
+    let y_of = |db: f32| rect.bottom() - rect.height() * frac(db);
+    let top = y_of(db);
     // coloured by zone, so a loud meter shows green, yellow and red
     let zones = [(LEVEL_MIN_DB, -9.0, GREEN), (-9.0, 0.0, YELLOW), (0.0, LEVEL_MAX_DB, RED)];
     for (lo, hi, color) in zones {
-        let y_hi = rect.bottom() - rect.height() * meter_frac(hi);
-        let y_lo = rect.bottom() - rect.height() * meter_frac(lo);
-        let (a, b) = (y_hi.max(top), y_lo);
+        let (a, b) = (y_of(hi).max(top), y_of(lo));
         if b > a {
             p.rect_filled(egui::Rect::from_min_max(pos2(rect.left(), a), pos2(rect.right(), b)), 0.0, color);
         }
     }
     // 0 dB mark
-    let y0 = rect.bottom() - rect.height() * meter_frac(0.0);
+    let y0 = y_of(0.0);
     p.line_segment([pos2(rect.left(), y0), pos2(rect.right(), y0)], Stroke::new(1.0_f32, DIM));
+}
+
+/// Advance the shown meter values (16 strips, master left and right) by
+/// the new peaks: they jump up at once and fall with 20 dB/s. Asks for
+/// repaints while a meter moves or falls.
+pub(crate) fn update_shown(ui: &Ui, shown: &mut Option<[f32; STRIPS + 2]>, levels: &Levels) -> [f32; STRIPS + 2] {
+    let dt = ui.input(|i| i.stable_dt).min(0.25);
+    let mut now = shown.unwrap_or([FLOOR_DB; STRIPS + 2]);
+    for (s, p) in now.iter_mut().zip(levels.strips.iter().chain(levels.master.iter())) {
+        *s = decayed(*s, *p, dt);
+    }
+    *shown = Some(now);
+    if now.iter().any(|d| *d > FLOOR_DB) {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
+    }
+    now
 }
 
 /// A slider senses only drags, so a double-click is looked up in the
 /// pointer state.
-fn double_clicked(ui: &Ui, resp: &egui::Response) -> bool {
+pub(crate) fn double_clicked(ui: &Ui, resp: &egui::Response) -> bool {
     resp.hovered() && ui.input(|i| i.pointer.button_double_clicked(egui::PointerButton::Primary))
 }
 
@@ -142,7 +172,7 @@ fn fader(ui: &mut Ui, level_db: f32) -> Option<f32> {
 }
 
 /// "M" or "S" button, in colour while on. True if clicked.
-fn toggle(ui: &mut Ui, text: &str, on: bool, color: Color32) -> bool {
+pub(crate) fn toggle(ui: &mut Ui, text: &str, on: bool, color: Color32) -> bool {
     let (fill, text_color) = if on { (color, Color32::BLACK) } else { (Color32::from_rgb(0x3a, 0x3a, 0x3a), TEXT) };
     ui.add(
         egui::Button::new(RichText::new(text).size(12.0).strong().color(text_color))
@@ -154,40 +184,10 @@ fn toggle(ui: &mut Ui, text: &str, on: bool, color: Color32) -> bool {
     .clicked()
 }
 
-impl MixerPanel {
-    pub fn ui(&mut self, ui: &mut Ui, lib: &mut MixLibrary, tracks: &[String; STRIPS], levels: &Levels) -> MixerOutcome {
-        let mut out = MixerOutcome::default();
-        self.preset_bar(ui, lib, &mut out);
-        ui.add_space(6.0);
-        // meter values: they jump up at once and fall with 20 dB/s
-        let dt = ui.input(|i| i.stable_dt).min(0.25);
-        let mut shown = self.shown.unwrap_or([FLOOR_DB; STRIPS + 2]);
-        for (s, p) in shown.iter_mut().zip(levels.strips.iter().chain(levels.master.iter())) {
-            *s = decayed(*s, *p, dt);
-        }
-        self.shown = Some(shown);
-        // keep drawing while a meter moves or falls
-        if shown.iter().any(|d| *d > FLOOR_DB) {
-            ui.ctx().request_repaint_after(std::time::Duration::from_millis(33));
-        }
-        let mut master_db = lib.active().master_db;
-        egui::ScrollArea::horizontal().id_source("mixer_scroll").auto_shrink([false, true]).show(ui, |ui| {
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
-                for k in 0..STRIPS {
-                    let strip = lib.active().strips[k];
-                    out.changed |= self.strip(ui, k, &tracks[k], &strip, shown[k], lib);
-                }
-                ui.add_space(8.0);
-                let (changed, clip) = self.master(ui, &mut master_db, [shown[STRIPS], shown[STRIPS + 1]], levels.clip, lib);
-                out.changed |= changed;
-                out.reset_clip |= clip;
-            });
-        });
-        out
-    }
-
-    fn preset_bar(&mut self, ui: &mut Ui, lib: &mut MixLibrary, out: &mut MixerOutcome) {
+impl PresetBar {
+    /// Draw the bar; true if the mix library changed (send and save).
+    pub fn ui(&mut self, ui: &mut Ui, lib: &mut MixLibrary) -> bool {
+        let mut changed = false;
         ui.horizontal(|ui| {
             ui.label(RichText::new("Rehearsal mix").size(14.0).color(TEXT));
             let mut select = None;
@@ -205,20 +205,20 @@ impl MixerPanel {
                 self.renaming = None;
                 self.message = None;
                 if lib.select(&name).is_ok() {
-                    out.changed = true;
+                    changed = true;
                 }
             }
             if small_btn(ui, "New", true) {
                 self.renaming = None;
                 self.message = None;
                 lib.new_mix();
-                out.changed = true;
+                changed = true;
             }
             if small_btn(ui, "Copy", true) {
                 self.renaming = None;
                 self.message = None;
                 lib.copy_active();
-                out.changed = true;
+                changed = true;
             }
             if small_btn(ui, "Rename", self.renaming.is_none()) {
                 self.message = None;
@@ -229,7 +229,7 @@ impl MixerPanel {
                 match lib.delete_active() {
                     Ok(()) => {
                         self.message = None;
-                        out.changed = true;
+                        changed = true;
                     }
                     Err(e) => self.message = Some(e),
                 }
@@ -238,7 +238,7 @@ impl MixerPanel {
                 self.renaming = None;
                 self.message = None;
                 lib.reset_active();
-                out.changed = true;
+                changed = true;
             }
         });
         if let Some(name) = self.renaming.as_mut() {
@@ -262,7 +262,7 @@ impl MixerPanel {
                     Ok(()) => {
                         self.renaming = None;
                         self.message = None;
-                        out.changed = true;
+                        changed = true;
                     }
                     Err(e) => self.message = Some(e),
                 },
@@ -276,6 +276,31 @@ impl MixerPanel {
         if let Some(m) = &self.message {
             ui.label(RichText::new(m).size(12.5).color(RED));
         }
+        changed
+    }
+}
+
+impl MixerPanel {
+    pub fn ui(&mut self, ui: &mut Ui, lib: &mut MixLibrary, tracks: &[String; STRIPS], levels: &Levels) -> MixerOutcome {
+        let mut out = MixerOutcome::default();
+        out.changed |= self.presets.ui(ui, lib);
+        ui.add_space(6.0);
+        let shown = update_shown(ui, &mut self.shown, levels);
+        let mut master_db = lib.active().master_db;
+        egui::ScrollArea::horizontal().id_source("mixer_scroll").auto_shrink([false, true]).show(ui, |ui| {
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for k in 0..STRIPS {
+                    let strip = lib.active().strips[k];
+                    out.changed |= self.strip(ui, k, &tracks[k], &strip, shown[k], lib);
+                }
+                ui.add_space(8.0);
+                let (changed, clip) = self.master(ui, &mut master_db, [shown[STRIPS], shown[STRIPS + 1]], levels.clip, lib);
+                out.changed |= changed;
+                out.reset_clip |= clip;
+            });
+        });
+        out
     }
 
     /// One channel strip; true if something changed.

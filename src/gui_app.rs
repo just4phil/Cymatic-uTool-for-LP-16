@@ -2,7 +2,7 @@
 //!
 //! Layout, colours and wording follow the screenshots of the original in
 //! uTool2 V2.0.062 (kept locally in _private/docs/utool2-screens):
-//! - seven tabs (Home, Rehearsal, Export, Import, Edit Target, Settings, Support);
+//! - eight tabs (Home, Rehearsal, Mixer, Export, Import, Edit Target, Settings, Support);
 //!   Rehearsal is new (the player), see gui_rehearsal.rs
 //! - two-column pages: explorer tree on the left, details on the right
 //! - editors and dialogs are overlays inside the main window: black
@@ -13,6 +13,7 @@
 use crate::config_path;
 use crate::gui_audio::AudioPanel;
 use crate::gui_midi::MidiPanel;
+use crate::gui_mixer_tab::MixerTab;
 use crate::gui_rehearsal::RehearsalPanel;
 use eframe::egui::{
     self, pos2, vec2, Align, Align2, Color32, FontId, Layout, Margin, Rect, RichText, Sense,
@@ -65,6 +66,7 @@ const ROW_H: f32 = 22.0;
 enum Tab {
     Home,
     Rehearsal,
+    Mixer,
     Export,
     Import,
     EditTarget,
@@ -72,9 +74,10 @@ enum Tab {
     Support,
 }
 
-const TABS: [(Tab, &str); 7] = [
+const TABS: [(Tab, &str); 8] = [
     (Tab::Home, "Home"),
     (Tab::Rehearsal, "Rehearsal"),
+    (Tab::Mixer, "Mixer"),
     (Tab::Export, "Export"),
     (Tab::Import, "Import"),
     (Tab::EditTarget, "Edit Target"),
@@ -337,6 +340,8 @@ pub struct Lp16App {
     pl_update: Option<PlUpdate>,
     // rehearsal player
     rehearsal: RehearsalPanel,
+    /// the Mixer tab (draws the same player and rehearsal mix)
+    mixer_tab: MixerTab,
     /// decides when changed rehearsal mix values are written to the config
     mix_saver: MixSaver,
     // settings: the "Audio output" area
@@ -1102,6 +1107,7 @@ impl Lp16App {
             import_show_all: false,
             pl_update: None,
             rehearsal: RehearsalPanel::default(),
+            mixer_tab: MixerTab::default(),
             mix_saver: MixSaver::default(),
             audio: AudioPanel::default(),
             midi: MidiPanel::default(),
@@ -1588,6 +1594,11 @@ impl eframe::App for Lp16App {
                         self.mix_saver.mark();
                     }
                 }
+                Tab::Mixer => {
+                    if self.mixer_tab.ui(ui, &mut self.rehearsal, &mut self.config.mixes) {
+                        self.mix_saver.mark();
+                    }
+                }
                 Tab::Export => self.export(ui),
                 Tab::Import => self.import(ui),
                 Tab::EditTarget => self.edit_target(ui),
@@ -1884,7 +1895,9 @@ impl Lp16App {
                         if small_btn(ui, "Edit", true) {
                             act = 1;
                         }
-                        small_btn(ui, "Mixer", false);
+                        if small_btn(ui, "Mixer", true) {
+                            act = 5;
+                        }
                         if small_btn(ui, "Rename", true) {
                             act = 2;
                         }
@@ -1959,6 +1972,7 @@ impl Lp16App {
                             copy_only: true,
                         })
                     }
+                    5 => self.open_in_mixer(i),
                     _ => {}
                 }
             }
@@ -3524,6 +3538,25 @@ impl Lp16App {
         }
     }
 
+    /// Home > song > Mixer: load the song into the rehearsal player without
+    /// starting it and show the Mixer tab.
+    fn open_in_mixer(&mut self, index: usize) {
+        let path = self.songs[index].path.clone();
+        self.load_in_mixer(&path, "Mixer");
+    }
+
+    /// Load the song file `path` (stopped) and switch to the Mixer tab.
+    fn load_in_mixer(&mut self, path: &str, title: &str) {
+        match SongProject::load(path, &self.config.audio_lib) {
+            Ok(prj) => {
+                self.rehearsal.load_song(&prj);
+                self.tab = Tab::Mixer;
+            }
+            Err(e) => self.message(title, format!("The Song can't be opened:
+{}", e)),
+        }
+    }
+
     /// Home > playlist > Play in Rehearsal: load the playlist, wait on its
     /// first song, show the tab.
     fn play_playlist_in_rehearsal(&mut self, index: usize) {
@@ -3582,7 +3615,13 @@ impl Lp16App {
             self.message("Edit Multitrack Song", text);
         }
         let path = ed.path.clone();
+        let open_mixer = std::mem::take(&mut ed.open_mixer);
         self.song_ed = Some(ed);
+        if open_mixer {
+            self.song_ed = None;
+            self.load_in_mixer(&path, "Edit Multitrack Song");
+            return;
+        }
         match clicked {
             Some(0) => {
                 self.rehearsal.song_changed(&path);
@@ -3977,6 +4016,8 @@ struct SongEditor {
     drag: Option<Vec<String>>,
     dirty: bool,
     message: Option<String>,
+    /// the Mixer button was clicked (handled by `song_editor`)
+    open_mixer: bool,
 }
 
 /// Compare names like Windows Explorer does ("-2-" before "-10-").
@@ -4048,6 +4089,7 @@ impl SongEditor {
             drag: None,
             dirty: false,
             message: None,
+            open_mixer: false,
         };
         ed.open_folder(folder);
         ed.recalc(audio_lib);
@@ -4456,7 +4498,14 @@ fn song_editor_body(ui: &mut Ui, ed: &mut SongEditor, audio_lib: &str, frame: &e
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add_space(8.0);
-                    ui.add_enabled(false, egui::Button::new("Mixer").frame(false));
+                    // the player loads the saved song, so only without unsaved changes
+                    if ui
+                        .add_enabled(!ed.dirty, egui::Button::new("Mixer").frame(false))
+                        .on_hover_text("Open the Song in the Mixer tab (save the changes first)")
+                        .clicked()
+                    {
+                        ed.open_mixer = true;
+                    }
                     ui.add_space(20.0);
                     delete = ui
                         .add_enabled(n_checked > 0, egui::Button::new("Delete").frame(false))

@@ -204,7 +204,7 @@ Settings tab (WASAPI or ASIO), for rehearsing at home. It also sends the MIDI fi
 
 ### Rehearsal mix
 
-Below the player, the Rehearsal tab has the **rehearsal mix**: 16 channel strips (LP-16 output
+At the top of the Rehearsal tab (above the song list and the player) is the **rehearsal mix**: 16 channel strips (LP-16 output
 1 to 16) and a master. It applies to all songs. Each track of the loaded song plays on the strip
 of its LP-16 output (the channel in the `.songprj`); several tracks on one output are summed in
 that strip. A track with an output beyond 16 stays silent and adds a warning. The strip shows
@@ -226,6 +226,17 @@ be used.
   change, and always when the program ends) as `mix.<n>.name`, `mix.<n>.master`,
   `mix.<n>.ch<k> = "<level> <pan> <mute> <solo>"` (level with one decimal or `off`) and
   `mix_active`.
+- **Mixer tab:** the tab after Rehearsal shows the same rehearsal mix in the style of the uTool2
+  mixer: narrow, tall channel strips (S and M buttons, a pan knob you drag up or down, the level in
+  dB, a tall fader with a dB scale and a meter, the output number and track name) and the master
+  with L/R meters and the CLIP LED. All 16 strips and the master stand side by side; a wider
+  window shows more of them, a narrow one gets a scroll bar. The preset bar is on top. It edits the
+  same mix, preset and config as the small mixer in the Rehearsal tab, and it never writes into
+  songs (so there is no "Save to Song"). At the bottom is the player bar: playlist and song
+  choice, previous/next song, −10 s, Play/Pause, Stop, +10 s, the progress bar with the time, and
+  the "Next: ..." line with warnings. It is the same player as in the Rehearsal tab (MIDI
+  included), and the keyboard shortcuts work in both tabs. In the Home tab, the **Mixer** button of
+  a song loads it into the player (without starting) and opens the Mixer tab.
 - **The rehearsal mix is not exported.** It never goes into a `.songprj`, a playlist, a
   `song.set` or a `.play`, and not onto the stick. The mixer values of the songs
   (`monitor_level`, `monitor_pan`, `monitor_mute`, the headphone mix of the LP-16) stay untouched
@@ -394,7 +405,8 @@ damaged. Nothing is deleted on the stick.
 | `src/gui_app.rs` | User interface (egui 0.27) |
 | `src/gui_rehearsal.rs` | The Rehearsal tab |
 | `src/gui_playlist.rs` | Playlist combo and song list in the Rehearsal tab |
-| `src/gui_mixer.rs` | The rehearsal mix in the Rehearsal tab |
+| `src/gui_mixer.rs` | The rehearsal mix in the Rehearsal tab, and the preset bar and meter helpers the Mixer tab shares |
+| `src/gui_mixer_tab.rs` | The Mixer tab (uTool2 style strips, transport bar) |
 | `src/gui_audio.rs` | The "Audio output" area of the Settings tab |
 | `src/gui_midi.rs` | The "MIDI output" area of the Settings tab |
 
