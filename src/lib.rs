@@ -2043,6 +2043,9 @@ pub struct Config {
     pub audio_buffer: u32,
     /// name of the MIDI output port of the rehearsal player; empty = off
     pub midi_port: String,
+    /// rehearsal player: the next song starts 5 s after the end of a song
+    /// (off: it waits for Play)
+    pub rehearsal_autoplay: bool,
     /// the rehearsal mix presets (`mix.*` and `mix_active` in the file)
     pub mixes: mix::MixLibrary,
 }
@@ -2066,6 +2069,7 @@ impl Default for Config {
             audio_out_right: 2,
             audio_buffer: 0,
             midi_port: String::new(),
+            rehearsal_autoplay: false,
             mixes: mix::MixLibrary::default(),
         }
     }
@@ -2111,6 +2115,9 @@ pub fn load_config(path: &std::path::Path) -> Config {
                     "audio_host" => config.audio_host = value,
                     "audio_device" => config.audio_device = value,
                     "midi_port" => config.midi_port = value,
+                    "rehearsal_autoplay" => {
+                        config.rehearsal_autoplay = matches!(value.to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on");
+                    }
                     // invalid values keep the default
                     "audio_out_left" => {
                         if let Some(c) = parse_audio_channel(&value) {
@@ -2162,7 +2169,7 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
     let text = format!(
         "{}stick_root = \"{}\"\r\n\
          audio_host = \"{}\"\r\naudio_device = \"{}\"\r\n\
-         audio_out_left = \"{}\"\r\naudio_out_right = \"{}\"\r\naudio_buffer = \"{}\"\r\nmidi_port = \"{}\"\r\n{}",
+         audio_out_left = \"{}\"\r\naudio_out_right = \"{}\"\r\naudio_buffer = \"{}\"\r\nmidi_port = \"{}\"\r\nrehearsal_autoplay = \"{}\"\r\n{}",
         paths,
         config.stick_root,
         config.audio_host,
@@ -2171,6 +2178,7 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
         config.audio_out_right,
         config.audio_buffer,
         config.midi_port,
+        config.rehearsal_autoplay,
         config.mixes.to_config_text()
     );
     fs::write(path, text.as_bytes())
@@ -3074,6 +3082,7 @@ mod tests {
         assert_eq!((old.audio_host.as_str(), old.audio_device.as_str()), ("", ""));
         assert_eq!((old.audio_out_left, old.audio_out_right, old.audio_buffer), (1, 2, 0));
         assert_eq!(old.midi_port, "", "an old config without the field: MIDI is off");
+        assert!(!old.rehearsal_autoplay, "an old config without the field: autoplay is off");
         assert_eq!(old.stick_root, "F:\\");
 
         // roundtrip of all fields, together with both path styles
@@ -3091,6 +3100,7 @@ mod tests {
                 audio_out_right: 3,
                 audio_buffer: 256,
                 midi_port: "MIDI \u{fc}ber USB 2".into(),
+                rehearsal_autoplay: true,
                 mixes: mix::MixLibrary::default(),
             };
             save_config(&path, &c).unwrap();
@@ -3102,6 +3112,7 @@ mod tests {
             assert_eq!((b.audio_out_left, b.audio_out_right, b.audio_buffer), (4, 3, 256));
             assert_eq!(b.midi_port, "MIDI \u{fc}ber USB 2");
             assert!(text.contains("midi_port = \"MIDI \u{fc}ber USB 2\""));
+            assert!(b.rehearsal_autoplay && text.contains("rehearsal_autoplay = \"true\""));
             assert_eq!(b.stick_root, "F:\\");
             assert_eq!(b.audio_lib, if own { "A:\\audio" } else { "E:\\x\\LIB\\AudioLibrary" });
             assert_eq!(b.project_lib, if own { "P:\\prj" } else { "E:\\x\\LIB\\CymaticProjectLib" });

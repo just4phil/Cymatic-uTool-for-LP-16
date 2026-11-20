@@ -59,6 +59,12 @@ pub enum Command {
     Prev,
     /// `Engine::hold`: wait with the current song, or count down
     Hold(Option<f64>),
+    /// `Engine::select`: a click on a song of the queue
+    Select(usize),
+    /// `Engine::move_mark`
+    MoveMark(bool),
+    /// `Engine::set_autoplay`
+    SetAutoplay(bool),
 }
 
 /// What the callback hands to the reaper thread: dropping these can join a
@@ -477,6 +483,18 @@ impl Callback {
             }
             Command::Hold(countdown) => {
                 self.engine.hold(countdown);
+                None
+            }
+            Command::Select(index) => {
+                self.engine.select(index);
+                None
+            }
+            Command::MoveMark(forward) => {
+                self.engine.move_mark(forward);
+                None
+            }
+            Command::SetAutoplay(on) => {
+                self.engine.set_autoplay(on);
                 None
             }
             Command::Play => {

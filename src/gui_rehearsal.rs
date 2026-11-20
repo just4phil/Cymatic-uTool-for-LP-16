@@ -31,6 +31,8 @@ const SEEK_MEMORY: Duration = Duration::from_millis(400);
 const LIST_WIDTH: f32 = 290.0;
 /// The song list scrolls beyond this height.
 const LIST_MAX_HEIGHT: f32 = 330.0;
+/// Height reserved above the song list for the autoplay checkbox.
+const LIST_HEADER: f32 = 28.0;
 /// How long the MIDI indicator stays lit after a message.
 const MIDI_FLASH: Duration = Duration::from_millis(150);
 
@@ -76,6 +78,16 @@ pub struct RehearsalPanel {
     midi: MidiLink,
     /// the port chosen in the settings (empty = MIDI is off)
     midi_port: String,
+    /// "Autoplay after 5 seconds"; sent again to every new stream
+    autoplay: bool,
+    /// the checkbox was changed (see `take_autoplay_change`)
+    autoplay_changed: bool,
+}
+
+/// The height the song list and the player get: from `top` down to the
+/// bottom of the window, but at least `LIST_MAX_HEIGHT`.
+pub(crate) fn list_room(window_bottom: f32, top: f32) -> f32 {
+    (window_bottom - top).max(LIST_MAX_HEIGHT)
 }
 
 /// The track names per strip: tracks on the same output are joined.
@@ -132,6 +144,34 @@ impl RehearsalPanel {
         let Some(events) = events else { return false };
         self.midi.send(&start_messages(&events));
         true
+    }
+
+    /// Autoplay on/off (from the config at startup, and by the checkbox).
+    /// The engine gets it now and with every stream opened later.
+    pub fn set_autoplay(&mut self, on: bool) {
+        self.autoplay = on;
+        if let Some(player) = &self.player {
+            player.send(Command::SetAutoplay(on));
+        }
+    }
+
+    /// The new value if the user changed the autoplay checkbox since the
+    /// last call, so the owner saves the config.
+    pub fn take_autoplay_change(&mut self) -> Option<bool> {
+        std::mem::take(&mut self.autoplay_changed).then_some(self.autoplay)
+    }
+
+    /// The checkbox "Autoplay after 5 seconds"; the same one in every tab.
+    pub fn autoplay_option(&mut self, ui: &mut Ui) {
+        let mut on = self.autoplay;
+        let resp = ui.checkbox(&mut on, "Autoplay after 5 seconds").on_hover_text(
+            "On: after a song ends, the next one starts by itself after 5 seconds.\n\
+             Off: the player waits for Play.",
+        );
+        if resp.changed() {
+            self.set_autoplay(on);
+            self.autoplay_changed = true;
+        }
     }
 
     /// The rehearsal mix for the engine (kept for streams opened later).
@@ -286,6 +326,7 @@ impl RehearsalPanel {
         match Player::open(&self.settings, rate, Some(&self.midi)) {
             Ok(p) => {
                 p.send(Command::SetMix(self.mix));
+                p.send(Command::SetAutoplay(self.autoplay));
                 self.player = Some(p);
                 self.device_error = None;
                 true
@@ -565,7 +606,31 @@ impl RehearsalPanel {
         self.last_seek = None;
     }
 
-    /// The next song, as the button and the Down key do.
+    /// A click on song `index` of the list (or a choice in the song combo):
+    /// the song is marked. While a song plays it goes on and `index`
+    /// becomes the next song; otherwise `index` is loaded (stopped, position
+    /// 0) so Play starts it.
+    pub fn click_song(&mut self, index: usize) {
+        if let Some(player) = &self.player {
+            player.send(Command::Select(index));
+        } else {
+            self.offline(|e| e.select(index));
+        }
+        self.last_seek = None;
+    }
+
+    /// The mark moves to the next or previous song and is clicked, as the
+    /// Down and Up keys do.
+    pub fn move_mark(&mut self, forward: bool) {
+        if let Some(player) = &self.player {
+            player.send(Command::MoveMark(forward));
+        } else {
+            self.offline(|e| e.move_mark(forward));
+        }
+        self.last_seek = None;
+    }
+
+    /// The next song, as the button does.
     pub fn next_song(&mut self) {
         if let Some(player) = &self.player {
             player.send(Command::Next);
@@ -575,8 +640,7 @@ impl RehearsalPanel {
         self.last_seek = None;
     }
 
-    /// The previous song (or the start of this one), as the button and the
-    /// Up key do.
+    /// The previous song (or the start of this one), as the button does.
     pub fn prev_song(&mut self) {
         if let Some(player) = &self.player {
             player.send(Command::Prev);
@@ -604,9 +668,9 @@ impl RehearsalPanel {
             self.seek_by(st, STEP_SECONDS);
         }
         if pressed(ui, Modifiers::NONE, Key::ArrowUp) {
-            self.prev_song();
+            self.move_mark(false);
         } else if pressed(ui, Modifiers::NONE, Key::ArrowDown) {
-            self.next_song();
+            self.move_mark(true);
         }
         if pressed(ui, Modifiers::NONE, Key::Space) {
             self.toggle_play(st);
@@ -646,17 +710,26 @@ impl RehearsalPanel {
             ui.horizontal_top(|ui| {
                 let total = ui.available_width();
                 let left = LIST_WIDTH.min(total * 0.4);
-                ui.allocate_ui_with_layout(vec2(left, 10.0), Layout::top_down(Align::LEFT), |ui| {
+                // `horizontal_top` only offers one line of height, and a child
+                // gets exactly the height it is allocated: so give the list and
+                // the player the room down to the bottom of the window (at
+                // least `LIST_MAX_HEIGHT`). The list takes what it needs and
+                // scrolls beyond that.
+                let room = list_room(ui.ctx().screen_rect().bottom(), ui.cursor().min.y);
+                ui.allocate_ui_with_layout(vec2(left, room), Layout::top_down(Align::LEFT), |ui| {
                     ui.set_width(left);
+                    self.autoplay_option(ui);
+                    ui.add_space(4.0);
                     egui::ScrollArea::vertical()
                         .id_source("rehearsal_list_scroll")
-                        .max_height(LIST_MAX_HEIGHT)
+                        .max_height((room - LIST_HEADER).max(LIST_MAX_HEIGHT - LIST_HEADER))
                         .auto_shrink([false, true])
                         .show(ui, |ui| self.list_area(ui, status.as_ref()));
+                    self.list_warnings(ui, status.as_ref());
                 });
                 ui.separator();
                 let right = ui.available_width().max(300.0);
-                ui.allocate_ui_with_layout(vec2(right, 10.0), Layout::top_down(Align::Center), |ui| {
+                ui.allocate_ui_with_layout(vec2(right, room), Layout::top_down(Align::Center), |ui| {
                     ui.set_width(right);
                     self.player_area(ui, status.as_ref());
                 });
@@ -715,13 +788,13 @@ impl RehearsalPanel {
 
     /// The rows of the song list for `status`.
     pub fn rows(&self, status: Option<&Status>) -> Vec<SongRow> {
-        let waiting = status.map(|s| matches!(s.state, PlayState::Waiting | PlayState::Countdown)).unwrap_or(false);
+        let playing = status.map(|s| s.state == PlayState::Playing).unwrap_or(false);
         let loaded = status.map(|s| s.state != PlayState::Empty).unwrap_or(false);
-        let (index, next) = match status {
-            Some(s) if loaded => (s.index, s.next_index),
-            _ => (None, None),
+        let (index, next, marked) = match status {
+            Some(s) if loaded => (s.index, s.next_index, s.marked_index),
+            _ => (None, None, None),
         };
-        song_rows(&self.entries, index, next, waiting)
+        song_rows(&self.entries, index, next, marked, playing)
     }
 
     fn playlist_names(&self) -> Vec<String> {
@@ -742,12 +815,12 @@ impl RehearsalPanel {
         }
     }
 
-    /// The song combo of the loaded playlist; choosing a song starts it, as
-    /// a double-click in the list does.
+    /// The song combo of the loaded playlist; choosing a song is a single
+    /// click in the list (`click_song`), Play starts it.
     pub fn song_picker(&mut self, ui: &mut Ui, id: &str, width: f32, status: Option<&Status>) {
         let rows = self.rows(status);
         if let Some(i) = gui_playlist::song_combo(ui, id, width, &rows) {
-            self.start(i, true, false);
+            self.click_song(i);
         }
     }
 
@@ -760,9 +833,16 @@ impl RehearsalPanel {
         if let Some(name) = out.select {
             self.play_playlist(&name);
         }
+        if let Some(i) = out.click {
+            self.click_song(i);
+        }
         if let Some(i) = out.play {
             self.start(i, true, false);
         }
+    }
+
+    /// The skipped songs below the list.
+    fn list_warnings(&self, ui: &mut Ui, status: Option<&Status>) {
         if let Some(st) = status {
             for w in st.queue_warnings.iter() {
                 ui.add_space(4.0);
@@ -837,12 +917,12 @@ impl RehearsalPanel {
             let has_prev = st.map(|s| s.index.map(|i| i > 0).unwrap_or(false) || s.position_seconds > 0.0).unwrap_or(false);
             let has_next = st.map(|s| s.next_index.is_some()).unwrap_or(false);
             let playing = st.map(|s| s.state == PlayState::Playing).unwrap_or(false);
-            prev = btn(ui, "\u{23ee}", has_prev, small).on_hover_text("Previous song (Up)").clicked();
+            prev = btn(ui, "\u{23ee}", has_prev, small).on_hover_text("Previous song").clicked();
             back = btn(ui, "\u{2212}10 s", st.is_some(), w).clicked();
             toggle = btn(ui, if playing { "Pause" } else { "Play" }, can_play, w).clicked();
             stop = btn(ui, "Stop", st.is_some(), w).clicked();
             forward = btn(ui, "+10 s", st.is_some(), w).clicked();
-            next = btn(ui, "\u{23ed}", has_next, small).on_hover_text("Next song (Down)").clicked();
+            next = btn(ui, "\u{23ed}", has_next, small).on_hover_text("Next song").clicked();
         });
         if prev {
             self.prev_song();
@@ -951,7 +1031,7 @@ impl RehearsalPanel {
             egui::Label::new(
                 RichText::new(
                     "Space: play/pause   \u{2190} \u{2192}: \u{b1}10 s   Shift + \u{2190} \u{2192}: \u{b1}30 s   \
-                     \u{2191} \u{2193}: previous/next song   Home: to start   Esc: stop",
+                     \u{2191} \u{2193}: select song   Home: to start   Esc: stop",
                 )
                 .size(13.0)
                 .color(DIM),
@@ -1075,4 +1155,72 @@ fn progress_bar(ui: &mut Ui, st: &Status, drag: &mut Option<f64>, w: f32) -> Opt
         p.circle_filled(egui::pos2(x, rect.center().y), 8.0, TEXT);
     }
     jump
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lp16_tool::rehearsal_queue::SongRow;
+
+    fn rows(n: usize) -> Vec<SongRow> {
+        (1..=n)
+            .map(|i| SongRow {
+                number: i,
+                name: format!("Song {}", i),
+                length: "3:00".into(),
+                midi: false,
+                error: None,
+                current: false,
+                marked: i == 1,
+                next: false,
+            })
+            .collect()
+    }
+
+    /// The height the list's scroll area shows for `n` songs when the child
+    /// gets `room` pixels, laid out like in `RehearsalPanel::ui`; and the
+    /// height its content needs.
+    fn shown_height(n: usize, room: f32) -> (f32, f32) {
+        let ctx = egui::Context::default();
+        let mut result = (0.0, 0.0);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(1000.0, 700.0))),
+            ..Default::default()
+        };
+        let _ = ctx.run(input, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.horizontal_top(|ui| {
+                    ui.allocate_ui_with_layout(vec2(LIST_WIDTH, room), Layout::top_down(Align::LEFT), |ui| {
+                        ui.set_width(LIST_WIDTH);
+                        let out = egui::ScrollArea::vertical()
+                            .max_height(room)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                gui_playlist::ui(ui, &[], None, false, &rows(n));
+                            });
+                        result = (out.inner_rect.height(), out.content_size.y);
+                    });
+                });
+            });
+        });
+        result
+    }
+
+    #[test]
+    fn the_song_list_shows_all_songs_when_it_has_the_room() {
+        // the old layout gave the child 10 px: one row at most was visible
+        let (shown, needed) = shown_height(12, 10.0);
+        assert!(shown < needed / 2.0, "documents the old failure: {} of {}", shown, needed);
+        let room = list_room(700.0, 300.0);
+        let (shown, needed) = shown_height(12, room);
+        assert!(needed > 12.0 * 26.0, "{}", needed);
+        assert!(shown + 0.5 >= needed, "all 12 songs are visible: {} of {}", shown, needed);
+    }
+
+    #[test]
+    fn the_list_room_is_the_window_height_but_at_least_the_minimum() {
+        assert_eq!(list_room(900.0, 300.0), 600.0);
+        assert_eq!(list_room(900.0, 800.0), LIST_MAX_HEIGHT);
+        assert_eq!(list_room(900.0, 1200.0), LIST_MAX_HEIGHT);
+    }
 }

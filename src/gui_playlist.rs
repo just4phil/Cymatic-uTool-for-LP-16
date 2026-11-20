@@ -14,8 +14,10 @@ pub const SINGLE_SONG: &str = "(single song)";
 pub struct ListOutcome {
     /// a playlist was chosen in the combo
     pub select: Option<String>,
-    /// a song was double-clicked
+    /// a song was double-clicked: start it
     pub play: Option<usize>,
+    /// a song was clicked: mark it (or set it as the next one while playing)
+    pub click: Option<usize>,
 }
 
 /// Combo and song list. `playlists` are the names of the library,
@@ -32,8 +34,12 @@ pub fn ui(ui: &mut Ui, playlists: &[String], selected: Option<&str>, single: boo
         return out;
     }
     for row in rows {
-        if let Some(r) = song_row(ui, row) {
-            out.play = Some(r);
+        let (click, play) = song_row(ui, row);
+        if click.is_some() {
+            out.click = click;
+        }
+        if play.is_some() {
+            out.play = play;
         }
     }
     out
@@ -74,11 +80,11 @@ pub fn song_label(row: &SongRow) -> String {
 }
 
 /// A compact song list as a combo: choosing a song returns its index
-/// (0-based), like a double-click in the list. Unreadable songs are shown
+/// (0-based), like a single click in the list. Unreadable songs are shown
 /// grey and cannot be chosen.
 pub fn song_combo(ui: &mut Ui, id: &str, width: f32, rows: &[SongRow]) -> Option<usize> {
     let mut chosen = None;
-    let current = rows.iter().find(|r| r.current).map(song_label).unwrap_or_else(|| "(no song)".to_string());
+    let current = rows.iter().find(|r| r.marked).map(song_label).unwrap_or_else(|| "(no song)".to_string());
     egui::ComboBox::from_id_source(id).width(width).selected_text(current).show_ui(ui, |ui| {
         for row in rows {
             let text = song_label(row);
@@ -86,7 +92,7 @@ pub fn song_combo(ui: &mut Ui, id: &str, width: f32, rows: &[SongRow]) -> Option
                 Some(e) => ui
                     .add_enabled(false, egui::SelectableLabel::new(false, text))
                     .on_disabled_hover_text(format!("Cannot be played, skipped: {}", e)),
-                None => ui.selectable_label(row.current, text),
+                None => ui.selectable_label(row.marked, text),
             };
             if resp.clicked() {
                 chosen = Some(row.number - 1);
@@ -96,17 +102,19 @@ pub fn song_combo(ui: &mut Ui, id: &str, width: f32, rows: &[SongRow]) -> Option
     chosen
 }
 
-/// One row; returns its index (0-based) when double-clicked.
-fn song_row(ui: &mut Ui, row: &SongRow) -> Option<usize> {
+/// One row; returns its index (0-based) when clicked, and when
+/// double-clicked (then not as a click).
+fn song_row(ui: &mut Ui, row: &SongRow) -> (Option<usize>, Option<usize>) {
     let w = ui.available_width() - 8.0;
     let (rect, resp) = ui.allocate_exact_size(vec2(w, 26.0), Sense::click());
     let p = ui.painter();
-    if row.current {
+    if row.marked {
         p.rect_filled(rect, 3.0, Color32::from_rgba_unmultiplied(0xf0, 0x6b, 0x19, 0x70));
+        p.rect_stroke(rect.shrink(0.5), 3.0, Stroke::new(1.0_f32, ORANGE));
     } else if resp.hovered() {
         p.rect_filled(rect, 3.0, PANEL);
     }
-    if row.next {
+    if row.next && !row.marked {
         p.rect_stroke(rect.shrink(1.0), 3.0, Stroke::new(1.5_f32, ORANGE));
     }
     let color = if row.error.is_some() { RED } else { TEXT };
@@ -119,7 +127,7 @@ fn song_row(ui: &mut Ui, row: &SongRow) -> Option<usize> {
         right -= 40.0;
     }
     if row.midi {
-        p.text(pos2(right, mid), Align2::RIGHT_CENTER, "\u{266a}", FontId::proportional(14.0), if row.current { TEXT } else { ORANGE });
+        p.text(pos2(right, mid), Align2::RIGHT_CENTER, "\u{266a}", FontId::proportional(14.0), if row.marked { TEXT } else { ORANGE });
         right -= 18.0;
     }
     // the name, cut to the space that is left
@@ -127,7 +135,13 @@ fn song_row(ui: &mut Ui, row: &SongRow) -> Option<usize> {
     p.with_clip_rect(name_rect).text(
         pos2(name_rect.left(), mid),
         Align2::LEFT_CENTER,
-        if row.next && !row.current { format!("\u{25b6} {}", row.name) } else { row.name.clone() },
+        if row.current {
+            format!("\u{25b6} {}", row.name) // plays right now
+        } else if row.next {
+            format!("\u{2192} {}", row.name) // comes next
+        } else {
+            row.name.clone()
+        },
         FontId::proportional(14.5),
         color,
     );
@@ -136,9 +150,13 @@ fn song_row(ui: &mut Ui, row: &SongRow) -> Option<usize> {
         Some(e) => resp.on_hover_text(format!("Cannot be played, skipped: {}", e)),
         None => resp,
     };
-    if resp.double_clicked() && row.error.is_none() {
-        Some(row.number - 1)
+    if row.error.is_some() {
+        (None, None)
+    } else if resp.double_clicked() {
+        (None, Some(row.number - 1))
+    } else if resp.clicked() {
+        (Some(row.number - 1), None)
     } else {
-        None
+        (None, None)
     }
 }

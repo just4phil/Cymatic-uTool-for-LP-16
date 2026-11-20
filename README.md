@@ -162,25 +162,36 @@ Settings tab (WASAPI or ASIO), for rehearsing at home. It also sends the MIDI fi
   | Home | jump to 0, the state stays |
   | Esc | Stop |
 
-  | Up / Down | previous / next song |
+  | Up / Down | move the mark to the previous / next song (like a click) |
 
   The same functions are on the buttons next to Play.
 - **Playlists:** the song list at the left shows number, name, length and a note symbol if the song
-  has a MIDI file. The current song has a coloured background, the next one is marked with a frame
-  and an arrow. A song that cannot be read (e.g. its `.songprj` is missing) is red, with the reason
-  as tooltip, and is skipped. Double-click a song to start it. The buttons ⏮ and ⏭ (keys Up and
-  Down) go to the previous and next song:
-  - Next: while a song plays the next one starts at once; otherwise it is loaded at position 0 and
-    stopped. At the last song nothing happens.
-  - Previous: further than 3 s into the song it jumps to its start, otherwise the song before is
-    loaded (it starts at once if the player was playing).
-- **Start modes:** the start mode of a song in the playlist (`start_mode`) tells how it starts after
-  the one before it. `wait_for_button_press` (or empty): when the song before has ended, the player
-  waits (the tab says "Next: <song> – press Play") and the next song starts with Play. Any other value
-  (the library only contains `wait_for_button_press` so far; this is an assumption): the next song starts by itself
-  after `start_mode_delay` seconds of silence (the tab says "Next: <song> in <n> s"). Play during the
-  countdown starts it at once, Pause cancels it. After the last song the player stops; Play then starts
-  the playlist again from the first song.
+  has a MIDI file. A song that cannot be read (e.g. its `.songprj` is missing) is red, with the reason
+  as tooltip, and is skipped. **Exactly one song is always marked** (coloured background); after a
+  playlist is loaded it is the first playable one. **Play starts the marked song** (a loaded, paused
+  song goes on at its position).
+  - **Click** a song to mark it. If nothing plays (stopped, paused, ended, waiting, countdown) the song
+    is loaded at position 0 and stopped, so Play starts it; a running countdown is cancelled. While a
+    song plays it goes on: the clicked song is marked and becomes the **next** song, so it follows when
+    the current one ends (a click on the playing song takes that back). The playing song has a ▶ in
+    front of its name, the next one an arrow →.
+  - **Double-click** starts the song at once.
+  - The keys Up and Down move the mark and click, and Space is Play.
+  - When a song ends, the mark moves to the next song (the clicked one, if there is one). At the end of
+    the playlist it stays on the last song and the state is "ended"; Play then plays that song again.
+  - The song combo in the Mixer tab is the same as a click.
+  - The buttons ⏮ and ⏭ go to the previous and next song:
+    - Next: while a song plays the next one starts at once; otherwise it is loaded at position 0 and
+      stopped. At the last song nothing happens.
+    - Previous: further than 3 s into the song it jumps to its start, otherwise the song before is
+      loaded (it starts at once if the player was playing).
+- **Autoplay after 5 seconds** (checkbox above the song list, also in the Mixer tab; the same setting,
+  saved as `rehearsal_autoplay` in `lp16-tool.toml`, off by default). Off: when a song ends, the next
+  one is marked and loaded, and the player waits (the tab says "Next: <song> – press Play").
+  On: the next song starts by itself after 5 seconds of silence (the tab says "Next: <song> in <n> s").
+  Play during the countdown starts it at once, Pause cancels it, switching autoplay off ends it.
+  The setting replaces the start mode of the playlist: the player no longer looks at `start_mode` and
+  `start_mode_delay` in the `.playlistprj` (the file is not changed). A single song has no next song.
 - The next song is opened while the current one has less than 10 s left (and while waiting), so it
   starts without a noticeable delay. If it has another sample rate, the output is opened again with
   that rate before it starts.
@@ -396,7 +407,7 @@ damaged. Nothing is deleted on the stick.
 | `src/project_lib.rs` | Project Library: list, create, rename, copy and delete songs and playlists. Renaming a song keeps the playlists pointing at it; a song that a playlist uses cannot be deleted. |
 | `src/sync.rs` | Stick Sync: `plan` (what an export would do), `run` (export and verify). Command line and user interface use the same process. |
 | `src/mix.rs` | The rehearsal mix: strips, presets, config lines, saving timer |
-| `src/rehearsal.rs` | Playback engine of the rehearsal player (reading, mixing, meters, transport, playlist queue with start modes and preloading), independent of any audio device (feature `player`) |
+| `src/rehearsal.rs` | Playback engine of the rehearsal player (reading, mixing, meters, transport, playlist queue with marking, autoplay and preloading), independent of any audio device (feature `player`) |
 | `src/rehearsal_queue.rs` | The queue of the player: entries, the mailbox that opens songs for the engine, rows of the song list (feature `player`) |
 | `src/rehearsal_midi.rs` | MIDI of the engine: events as frames, the messages of a block, chasing (feature `player`) |
 | `src/midi_out.rs` | MIDI output adapter (`midir`): ports, the MIDI thread with target times, All Notes Off at the end (feature `player`) |
