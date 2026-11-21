@@ -1,0 +1,33 @@
+# cargo-about: third-party license notices for release binaries.
+# Generate: cargo about generate --all-features about.hbs -o THIRD_PARTY_LICENSES.html
+# Only GPL-3.0-compatible licenses belong in this list.
+accepted = [
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "MIT",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "BSL-1.0",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "Unlicense",
+    "0BSD",
+    "OFL-1.1",
+    "LicenseRef-UFL-1.0",
+    "GPL-3.0-or-later",  # lp16-tool itself
+]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# epaint embeds the Ubuntu-Light font; its UFL text lives in fonts/UFL.txt.
+# The file is tagged "LicenseRef-UFL-1.0-text" on purpose: cargo-about 0.9.3 drops
+# clarified files whose own license equals the LicenseRef it is looking up
+# (inverted check in generate.rs), so the text would otherwise be missing.
+[epaint.clarify]
+license = "(MIT OR Apache-2.0) AND OFL-1.1 AND LicenseRef-UFL-1.0"
+[[epaint.clarify.files]]
+path = "fonts/UFL.txt"
+license = "LicenseRef-UFL-1.0-text"
+checksum = "0cebe8aa1ba75c4fdf57946d6109ed0a8ce12ae6bb420bad4e4f302c5c147d78"

@@ -498,3 +498,15 @@ lp16-tool selbst seit Version 0.2.0 unter der GPL-3.0-or-later. Versionen bis 0.
 MIT-Lizenz.
 
 ASIO is a trademark and software of Steinberg Media Technologies GmbH.
+
+Die Lizenzen der Rust-Crates, aus denen lp16-tool gebaut wird, stehen in
+[THIRD_PARTY_LICENSES.html](THIRD_PARTY_LICENSES.html); Release-Archive enthalten die Datei neben
+`LICENSE`. Nach Änderungen an den Abhängigkeiten neu erzeugen (braucht
+`cargo install cargo-about --features cli`):
+
+```
+cargo about generate --all-features about.hbs -o THIRD_PARTY_LICENSES.html
+```
+
+`about.toml` listet die akzeptierten Lizenzen, alle GPLv3-kompatibel; eine neue Abhängigkeit unter
+einer anderen Lizenz lässt den Befehl fehlschlagen.

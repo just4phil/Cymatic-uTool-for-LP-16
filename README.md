@@ -488,3 +488,14 @@ is licensed under the GPL-3.0-or-later since version 0.2.0. Versions up to 0.1.2
 MIT license.
 
 ASIO is a trademark and software of Steinberg Media Technologies GmbH.
+
+The licenses of the Rust crates lp16-tool is built from are listed in
+[THIRD_PARTY_LICENSES.html](THIRD_PARTY_LICENSES.html); release archives include it next to
+`LICENSE`. After changing dependencies, regenerate it (needs `cargo install cargo-about --features cli`):
+
+```
+cargo about generate --all-features about.hbs -o THIRD_PARTY_LICENSES.html
+```
+
+`about.toml` lists the accepted licenses, all of them GPLv3-compatible; a new dependency under any
+other license makes the command fail.
