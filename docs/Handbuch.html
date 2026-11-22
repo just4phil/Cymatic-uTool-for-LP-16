@@ -394,7 +394,11 @@ stick_root = "F:\"</code></pre>
 <!-- ===================================================================== -->
 <section id="edit-target">
 <h2>Edit Target</h2>
-<p>Zeigt den Inhalt des Sticks als Baum, mit Details zu Songs und Playlists. Bearbeiten oder Löschen auf dem Stick ist (noch) nicht möglich.</p>
+<p>Zeigt den Inhalt des Sticks als Baum, mit Details zu Songs und Playlists. Hier wird nur der Stick bearbeitet, die Bibliothek bleibt unberührt.</p>
+<ul>
+  <li><strong>Löschen:</strong> Song oder Playlist markieren und <kbd>Entf</kbd> drücken, im Kontextmenü (Rechtsklick) „Delete Song“ / „Delete Playlist“ wählen oder in den Details auf „Delete“ klicken. Vor dem Löschen fragt das Tool nach; steht ein Song noch in Playlists auf dem Stick, werden diese genannt. Beim Löschen einer Playlist bleiben ihre Songs auf dem Stick.</li>
+  <li><strong>Delete all songs not in playlists:</strong> der Button über dem Baum (auch im Kontextmenü des Ordners „Recording“) löscht in einem Durchgang alle Songordner, die in keiner Playlist auf dem Stick stehen. Vorher zeigt ein Dialog Anzahl, Größe und Namen. Ist eine Playlist nicht lesbar, wird nichts gelöscht.</li>
+</ul>
 </section>
 
 <!-- ===================================================================== -->
@@ -643,7 +647,7 @@ lp16-tool gui</code></pre>
   <li>Song-Editor: Name, Sampling Rate und Resolution eines bestehenden Songs ändern</li>
   <li>Playlist-Editor: Start Mode und Delay pro Song (vorhandene Werte bleiben erhalten)</li>
   <li>Undo/Redo, Ordner in der Bibliothek</li>
-  <li>Löschen und Bearbeiten auf dem Stick (Edit Target zeigt nur an)</li>
+  <li>Bearbeiten auf dem Stick (Edit Target kann nur löschen)</li>
   <li>Export Batch und der Import von uTool2 („Split at Markers“)</li>
 </ul>
 <h4>Anders als im Original</h4>

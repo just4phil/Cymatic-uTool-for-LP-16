@@ -43,6 +43,8 @@ The **manual** (German) covering all features is a single HTML file,
 - **Batch import of songs:** creates songs from new folders of the AudioLibrary in one go, see
   [Import](#import-batch-import-of-songs).
 - **Edit Target:** the contents of the stick as a tree, with details on songs and playlists.
+  Songs and playlists can be deleted on the stick (Del key, context menu or "Delete" button);
+  "Delete all songs not in playlists" removes every song folder no playlist on the stick lists.
 - **Rehearsal player:** plays songs and playlists of the library on an audio output of your
   choice, with a 16-channel rehearsal mix, see [Rehearsal player](#rehearsal-player).
 - **Backup MP3s:** writes a stereo MP3 per song of a playlist (backings left, click right) as an
@@ -546,7 +548,7 @@ particular songs and playlists from the reference library (see `src/lib.rs`).
 - Song editor: changing the name, sampling rate and resolution of an existing song
 - Playlist editor: setting start mode and delay per song (existing values are kept)
 - Undo/redo, folders in the library ("New folder")
-- Deleting and editing on the stick (Edit Target only shows the contents)
+- Editing on the stick (Edit Target can only delete)
 - Export Batch
 - uTool2's import (from a folder or external drive, "Split at Markers")
 

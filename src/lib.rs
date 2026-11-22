@@ -779,12 +779,42 @@ where
         let file = w.into_inner().map_err(|e| e.into_error())?;
         file.sync_all()?;
         drop(file);
-        fs::rename(&tmp, dest)
+        fs::rename(&tmp, dest)?;
+        // replacing "abc.wav" by "ABC.wav" keeps the old spelling on FAT/NTFS
+        fix_name_case(dest).map(|_| ())
     })();
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
     result
+}
+
+/// The entry of `path`'s folder that is `path` apart from upper / lower
+/// case, if its actual name is spelled differently.
+pub fn name_case_differs(path: &Path) -> Option<String> {
+    let want = path.file_name()?.to_string_lossy().into_owned();
+    let key = want.to_lowercase();
+    fs::read_dir(path.parent()?)
+        .ok()?
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .find(|n| n != &want && n.to_lowercase() == key)
+}
+
+/// Windows and FAT ignore upper / lower case, the LP-16 firmware may not:
+/// a file or folder that exists as "abc" while `path` says "ABC" is renamed
+/// to the exact spelling (via a temporary name). Ok(true): it was renamed.
+pub fn fix_name_case(path: &Path) -> std::io::Result<bool> {
+    let Some(actual) = name_case_differs(path) else { return Ok(false) };
+    let dir = path.parent().unwrap_or(Path::new(""));
+    let mut tmp = path.as_os_str().to_os_string();
+    tmp.push(".lp16case");
+    fs::rename(dir.join(&actual), &tmp)?;
+    if let Err(e) = fs::rename(&tmp, path) {
+        let _ = fs::rename(&tmp, dir.join(&actual));
+        return Err(e);
+    }
+    Ok(true)
 }
 
 /// Write bytes atomically (song.set, .play).
@@ -966,6 +996,15 @@ pub fn plan_song(project: &SongProject, songs_root: &str) -> SongPlan {
             bytes_changed += size;
         }
     }
+    // files that exist on the stick, but spelled differently (see fix_name_case)
+    let case_wrong = wav
+        .iter()
+        .map(|(_, d)| d.as_str())
+        .chain(midi.as_ref().map(|(_, d)| d.as_str()))
+        .map(Path::new)
+        .chain(std::iter::once(song_set.as_path()))
+        .filter(|p| name_case_differs(p).is_some())
+        .count();
     let (needs_export, reason) = if !Path::new(&songs_root).join(&name).exists() {
         (true, "new song".to_string())
     } else if unreadable_source > 0 {
@@ -979,6 +1018,8 @@ pub fn plan_song(project: &SongProject, songs_root: &str) -> SongPlan {
         (true, format!("{} wav file(s) changed on source", stale_wav))
     } else if midi_missing {
         (true, "midi file missing".to_string())
+    } else if case_wrong > 0 {
+        (true, format!("{} file name(s) spelled differently on the stick", case_wrong))
     } else {
         match fs::read_to_string(&song_set) {
             Ok(existing) => {
@@ -1009,6 +1050,7 @@ pub fn plan_song(project: &SongProject, songs_root: &str) -> SongPlan {
 pub fn export_plan(plan: &SongPlan, songs_root: &str) -> std::io::Result<()> {
     let dir = Path::new(songs_root).join(&plan.name);
     fs::create_dir_all(&dir)?;
+    fix_name_case(&dir)?;
     remove_tmp_files(&dir);
     for (src, dest) in &plan.wav {
         export_wav(src, dest)?;

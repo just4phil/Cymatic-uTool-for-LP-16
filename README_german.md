@@ -45,6 +45,9 @@ Das **Handbuch** mit dem ganzen Funktionsumfang liegt als einzelne HTML-Datei in
 - **Batch-Import von Songs:** legt aus neuen Ordnern der AudioLibrary auf einen Schlag Songs an,
   siehe [Import](#import-batch-import-von-songs).
 - **Edit Target:** Inhalt des Sticks als Baum, mit Details zu Songs und Playlists.
+  Songs und Playlists lassen sich auf dem Stick löschen (Entf-Taste, Kontextmenü oder Button
+  „Delete“); „Delete all songs not in playlists“ löscht alle Songordner, die keine Playlist
+  auf dem Stick enthält.
 - **Probe-Player:** spielt Songs und Playlists der Bibliothek über einen wählbaren
   Audioausgang ab, mit einem 16-Kanal-Proben-Mix, siehe [Probe-Player](#probe-player).
 - **Backup-MP3s:** schreibt für jeden Song einer Playlist eine Stereo-MP3 (links Backings,
@@ -561,7 +564,7 @@ gibt es nur „LP-16“.
 - Song-Editor: Name, Sampling Rate und Resolution eines bestehenden Songs ändern
 - Playlist-Editor: Start Mode und Delay pro Song einstellen (vorhandene Werte bleiben erhalten)
 - Undo/Redo, Ordner in der Bibliothek („New folder“)
-- Löschen und Bearbeiten auf dem Stick (Edit Target zeigt nur an)
+- Bearbeiten auf dem Stick (Edit Target kann nur löschen)
 - Export Batch
 - Der Import von uTool2 (aus Ordner oder externem Laufwerk, „Split at Markers“)
 

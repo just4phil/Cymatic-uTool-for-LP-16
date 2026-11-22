@@ -180,6 +180,12 @@ enum Dialog {
     FixTail { song: usize, tracks: Vec<(String, String, TailReport)>, trim_ms: f64 },
     /// export: songs to export end without a clean fade-out, export anyway?
     ExportTails(String),
+    /// Edit Target: delete a song folder from the stick (`playlists` still list it)
+    EtDeleteSong { name: String, playlists: Vec<String> },
+    /// Edit Target: delete a .play from the stick
+    EtDeletePlaylist(String),
+    /// Edit Target: delete every song no playlist lists (names, total bytes)
+    EtDeleteUnused(Vec<String>, u64),
 }
 
 /// "Update Playlist" overlay: a new playlist from an existing one, every song
@@ -316,6 +322,12 @@ enum EtSel {
     Play(String),
 }
 
+/// What the Target Explorer was asked to do this frame.
+enum EtAction {
+    Delete(EtSel),
+    DeleteUnused,
+}
+
 struct EtDetails {
     title: String,
     lines: Vec<(String, String)>,
@@ -346,6 +358,10 @@ pub struct Lp16App {
     // edit target
     et_sel: Option<EtSel>,
     et_cache: Option<(EtSel, EtDetails)>,
+    /// the selectable rows of the Target Explorer in the last frame (for the arrow keys)
+    et_rows: Vec<EtSel>,
+    /// scroll the selected Target Explorer row into view
+    et_scroll: bool,
     // overlays
     dialog: Option<Dialog>,
     pl_editor: Option<PlaylistEditor>,
@@ -1136,6 +1152,8 @@ impl Lp16App {
             folder_edit: false,
             et_sel: None,
             et_cache: None,
+            et_rows: Vec::new(),
+            et_scroll: false,
             dialog: None,
             pl_editor: None,
             song_ed: None,
@@ -3126,6 +3144,11 @@ impl Lp16App {
                         }
                     });
                     ui.add_space(4.0);
+                    let stick_ok = app.et_stick().is_some();
+                    if small_btn(ui, "Delete all songs not in playlists", stick_ok) {
+                        app.et_ask_delete_unused();
+                    }
+                    ui.add_space(4.0);
                     app.target_tree(ui);
                 });
             },
@@ -3170,6 +3193,9 @@ impl Lp16App {
         };
         let mut clicked: Option<EtSel> = None;
         let mut find: Option<String> = None;
+        let mut action: Option<EtAction> = None;
+        let mut rows: Vec<EtSel> = Vec::new();
+        let scroll = std::mem::take(&mut self.et_scroll);
         egui::ScrollArea::vertical()
             .id_source("target_tree")
             .auto_shrink([false; 2])
@@ -3181,7 +3207,16 @@ impl Lp16App {
                         continue;
                     }
                     let open = self.is_open(k);
-                    if tree_row(ui, 0, Some(open), None, "🗀", folder, false, false, |_, _| {}).toggle {
+                    let r = tree_row(ui, 0, Some(open), None, "🗀", folder, false, false, |_, _| {});
+                    if base == rec {
+                        r.resp.context_menu(|ui| {
+                            if ui.button("Delete all songs not in playlists").clicked() {
+                                action = Some(EtAction::DeleteUnused);
+                                ui.close_menu();
+                            }
+                        });
+                    }
+                    if r.toggle {
                         self.toggle(k);
                     }
                     if !open {
@@ -3198,7 +3233,18 @@ impl Lp16App {
                             for n in list(&pl_dir, false, "play") {
                                 let s = stem(&n);
                                 let sel = self.et_sel == Some(EtSel::Play(s.clone()));
-                                if tree_row(ui, 2, None, None, "☰", &s, sel, true, |_, _| {}).clicked {
+                                let r = tree_row(ui, 2, None, None, "☰", &s, sel, true, |_, _| {});
+                                if sel && scroll {
+                                    r.resp.scroll_to_me(None);
+                                }
+                                rows.push(EtSel::Play(s.clone()));
+                                r.resp.context_menu(|ui| {
+                                    if ui.button("Delete Playlist").clicked() {
+                                        action = Some(EtAction::Delete(EtSel::Play(s.clone())));
+                                        ui.close_menu();
+                                    }
+                                });
+                                if r.clicked {
                                     clicked = Some(EtSel::Play(s));
                                 }
                             }
@@ -3208,6 +3254,20 @@ impl Lp16App {
                         for n in list(&rec, true, "") {
                             let sel = self.et_sel == Some(EtSel::Song(n.clone()));
                             let r = tree_row(ui, 1, None, None, "♫", &n, sel, true, |_, _| {});
+                            if sel && scroll {
+                                r.resp.scroll_to_me(None);
+                            }
+                            rows.push(EtSel::Song(n.clone()));
+                            r.resp.context_menu(|ui| {
+                                if ui.button("Delete Song").clicked() {
+                                    action = Some(EtAction::Delete(EtSel::Song(n.clone())));
+                                    ui.close_menu();
+                                }
+                                if ui.button("Delete all songs not in playlists").clicked() {
+                                    action = Some(EtAction::DeleteUnused);
+                                    ui.close_menu();
+                                }
+                            });
                             if r.double {
                                 find = Some(n.clone());
                             } else if r.clicked {
@@ -3221,6 +3281,31 @@ impl Lp16App {
         if let Some(c) = clicked {
             self.et_sel = Some(c);
         }
+        self.et_rows = rows;
+        if self.dialog.is_none() && !ui.ctx().wants_keyboard_input() {
+            let key = |k| ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k));
+            let step = if key(egui::Key::ArrowDown) {
+                Some(true)
+            } else if key(egui::Key::ArrowUp) {
+                Some(false)
+            } else {
+                None
+            };
+            if let Some(down) = step {
+                self.et_step(down);
+            }
+        }
+        if action.is_none() && self.dialog.is_none() && delete_key(ui) {
+            action = self.et_sel.clone().map(EtAction::Delete);
+        }
+        match action {
+            Some(EtAction::Delete(sel)) => {
+                self.et_sel = Some(sel.clone());
+                self.et_ask_delete(sel);
+            }
+            Some(EtAction::DeleteUnused) => self.et_ask_delete_unused(),
+            None => {}
+        }
         if let Some(n) = find {
             if let Some(i) = self.songs.iter().position(|s| s.name == n) {
                 self.sel = Sel::Song(i);
@@ -3228,6 +3313,91 @@ impl Lp16App {
                 self.open.insert("h:songs".into());
                 self.tab = Tab::Home;
             }
+        }
+    }
+
+    /// Arrow keys in the Target Explorer: select the next / previous row.
+    fn et_step(&mut self, down: bool) {
+        let n = self.et_rows.len();
+        if n == 0 {
+            return;
+        }
+        let cur = self.et_sel.as_ref().and_then(|s| self.et_rows.iter().position(|r| r == s));
+        let i = match (cur, down) {
+            (None, true) => 0,
+            (None, false) => n - 1,
+            (Some(i), true) => (i + 1).min(n - 1),
+            (Some(i), false) => i.saturating_sub(1),
+        };
+        self.et_sel = Some(self.et_rows[i].clone());
+        self.et_scroll = true;
+    }
+
+    /// The selected stick, if its folder exists.
+    fn et_stick(&self) -> Option<sync::Stick> {
+        let root = self.config.stick_root.trim();
+        (!root.is_empty() && Path::new(root).is_dir()).then(|| sync::Stick::new(root))
+    }
+
+    /// Ask before deleting a song or playlist from the stick.
+    fn et_ask_delete(&mut self, sel: EtSel) {
+        let Some(stick) = self.et_stick() else { return };
+        self.dialog = Some(match sel {
+            EtSel::Song(name) => Dialog::EtDeleteSong { playlists: stick.playlists_with(&name), name },
+            EtSel::Play(name) => Dialog::EtDeletePlaylist(name),
+        });
+    }
+
+    /// Ask before deleting every song no playlist on the stick lists.
+    fn et_ask_delete_unused(&mut self) {
+        let Some(stick) = self.et_stick() else { return };
+        match stick.songs_not_in_playlists() {
+            Ok(v) if v.is_empty() => self.message("Delete Songs", "Every song on the stick is in at least one playlist."),
+            Ok(v) => {
+                let bytes = v.iter().map(|n| dir_size(&stick.song_dir(n))).sum();
+                self.dialog = Some(Dialog::EtDeleteUnused(v, bytes));
+            }
+            Err(e) => self.message("Delete Songs", format!("A playlist on the stick cannot be read, nothing deleted:\n{}", e)),
+        }
+    }
+
+    /// Delete songs / a playlist on the stick, then refresh the views.
+    fn et_delete(&mut self, songs: &[String], playlist: Option<&str>) {
+        let Some(stick) = self.et_stick() else { return };
+        let mut errors = Vec::new();
+        let mut done = 0;
+        for n in songs {
+            match stick.delete_song(n) {
+                Ok(()) => done += 1,
+                Err(e) => errors.push(e),
+            }
+        }
+        if let Some(p) = playlist {
+            if let Err(e) = stick.delete_playlist(p) {
+                errors.push(e);
+            }
+        }
+        let gone: Vec<EtSel> = songs
+            .iter()
+            .map(|n| EtSel::Song(n.clone()))
+            .chain(playlist.map(|p| EtSel::Play(p.to_string())))
+            .collect();
+        let next = self.et_sel.as_ref().and_then(|s| self.et_rows.iter().position(|r| r == s)).and_then(|i| {
+            let rest = || self.et_rows.iter().filter(|r| !gone.contains(r));
+            self.et_rows[i..].iter().find(|r| !gone.contains(r)).or_else(|| rest().next_back()).cloned()
+        });
+        self.et_sel = next;
+        self.et_scroll = self.et_sel.is_some();
+        self.et_cache = None;
+        self.preview_gen += 1;
+        if songs.len() > 1 {
+            let mut text = format!("{} of {} Song(s) deleted from the stick.", done, songs.len());
+            if !errors.is_empty() {
+                text += &format!("\n\nFailed:\n{}", errors.join("\n"));
+            }
+            self.message("Delete Songs", text);
+        } else if !errors.is_empty() {
+            self.message("Delete", errors.join("\n"));
         }
     }
 
@@ -3257,20 +3427,18 @@ impl Lp16App {
                 } else {
                     0.0
                 };
-                let related: Vec<String> = fs::read_dir(&pl_dir)
-                    .map(|rd| {
-                        rd.filter_map(|e| e.ok())
-                            .map(|e| e.path())
-                            .filter(|p| p.extension().map(|x| x == "play").unwrap_or(false))
-                            .filter(|p| {
-                                fs::read_to_string(p)
-                                    .map(|t| t.contains(&format!("<name>{}</name>", name)))
-                                    .unwrap_or(false)
-                            })
-                            .map(|p| stem(&p.to_string_lossy()))
-                            .collect()
+                // like FAT: a playlist naming "ABCDEFU_x" uses the folder "Abcdefu_x";
+                // a different spelling is shown, the next export renames the folder
+                let stick = sync::Stick::new(&self.config.stick_root);
+                let key = name.to_lowercase();
+                let related: Vec<String> = stick
+                    .playlists()
+                    .into_iter()
+                    .filter_map(|p| {
+                        let other = stick.playlist_songs(&p).into_iter().find(|n| n.to_lowercase() == key)?;
+                        Some(if &other == name { p } else { format!("{}   ⚠ names it \"{}\"", p, other) })
                     })
-                    .unwrap_or_default();
+                    .collect();
                 EtDetails {
                     title: name.clone(),
                     lines: vec![
@@ -3304,7 +3472,17 @@ impl Lp16App {
                     list: names
                         .iter()
                         .enumerate()
-                        .map(|(i, n)| format!("{:>3}: {}", i + 1, n))
+                        .map(|(i, n)| {
+                            let stick = sync::Stick::new(&self.config.stick_root);
+                            let warn = if let Some(other) = stick.song_case_differs(n) {
+                                format!("   ⚠ folder is \"{}\"", other)
+                            } else if !rec.join(n).is_dir() {
+                                "   ⚠ not on the stick".to_string()
+                            } else {
+                                String::new()
+                            };
+                            format!("{:>3}: {}{}", i + 1, n, warn)
+                        })
                         .chain(std::iter::once(String::new()))
                         .chain(
                             [
@@ -3333,8 +3511,9 @@ impl Lp16App {
             ui.label(RichText::new(&d.title).size(18.0).strong());
         });
         ui.add_space(4.0);
+        let mut delete = false;
         ui.horizontal(|ui| {
-            small_btn(ui, "Delete", false);
+            delete = small_btn(ui, "Delete", true);
             if d.play_songs {
                 small_btn(ui, "New Playlist", false);
                 small_btn(ui, "Edit", false);
@@ -3342,6 +3521,10 @@ impl Lp16App {
                 small_btn(ui, "Mixer", false);
             }
         });
+        if delete {
+            self.et_ask_delete(sel);
+            return;
+        }
         ui.add_space(8.0);
         for (k, v) in &d.lines {
             kv(ui, k, v);
@@ -4056,6 +4239,80 @@ impl Lp16App {
                     Some(0) => {
                         close = true;
                         self.delete_playlist(i);
+                    }
+                    Some(_) => close = true,
+                    None => {}
+                }
+            }
+            Dialog::EtDeleteSong { name, playlists } => {
+                let mut text = format!("Do you want to delete the Song \"{}\" from the stick?", name);
+                if !playlists.is_empty() {
+                    text += &format!(
+                        "\n\nIt is still listed in these playlist(s) on the stick:\n{}",
+                        playlists.join("\n")
+                    );
+                }
+                match overlay(
+                    ctx,
+                    "dlg",
+                    order,
+                    "Delete Song from Stick",
+                    vec2(920.0, 360.0),
+                    |ui| centered_text(ui, &text),
+                    &[("Yes, delete the Song", true), ("No, cancel", true)],
+                ) {
+                    Some(0) => {
+                        close = true;
+                        let name = name.clone();
+                        self.et_delete(&[name], None);
+                    }
+                    Some(_) => close = true,
+                    None => {}
+                }
+            }
+            Dialog::EtDeletePlaylist(name) => {
+                match overlay(
+                    ctx,
+                    "dlg",
+                    order,
+                    "Delete Playlist from Stick",
+                    size,
+                    |ui| centered_text(ui, &format!("Do you want to delete the Playlist \"{}\" from the stick?\n(the songs stay on the stick)", name)),
+                    &[("Yes, delete the Playlist", true), ("No, cancel", true)],
+                ) {
+                    Some(0) => {
+                        close = true;
+                        let name = name.clone();
+                        self.et_delete(&[], Some(&name));
+                    }
+                    Some(_) => close = true,
+                    None => {}
+                }
+            }
+            Dialog::EtDeleteUnused(names, bytes) => {
+                let mut list = names.iter().take(12).cloned().collect::<Vec<_>>().join("\n");
+                if names.len() > 12 {
+                    list += &format!("\n… and {} more", names.len() - 12);
+                }
+                let text = format!(
+                    "Delete these {} Song(s) ({}) from the stick?\nNo playlist on the stick lists them.\n\n{}",
+                    names.len(),
+                    fmt_size(*bytes),
+                    list
+                );
+                match overlay(
+                    ctx,
+                    "dlg",
+                    order,
+                    "Delete Songs not in Playlists",
+                    vec2(920.0, 460.0),
+                    |ui| centered_text(ui, &text),
+                    &[("Yes, delete the Songs", true), ("No, cancel", true)],
+                ) {
+                    Some(0) => {
+                        close = true;
+                        let names = names.clone();
+                        self.et_delete(&names, None);
                     }
                     Some(_) => close = true,
                     None => {}
