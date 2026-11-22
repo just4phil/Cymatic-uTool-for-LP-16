@@ -168,15 +168,21 @@ pub struct Session {
     settings: AudioSettings,
     /// why the audio output could not be opened, or was lost
     device_error: Option<String>,
-    /// the queue: the songs of the loaded playlist, or one single song
+    /// the queue: the songs of the loaded playlist, all songs of the
+    /// library ("single song"), or one song outside the library
     entries: Arc<Vec<QueueEntry>>,
-    /// name of the loaded playlist; None for a single song
+    /// name of the loaded playlist; None for single songs
     playlist: Option<String>,
     /// the playlist as the queue was built from it, to see a change
     loaded_songs: Vec<PlaylistSong>,
     /// {$AudioLib} of the library, and its playlists
     audio_lib: String,
     library: Vec<(String, Vec<PlaylistSong>)>,
+    /// all songs of the library, the list of "single song"
+    library_songs: Vec<PlaylistSong>,
+    /// the library list is loaded and a song of it was changed: the queue
+    /// is built again with the next `set_library_songs`
+    library_stale: bool,
     /// status of the loaded song while no stream is open (lost device,
     /// test tone, nothing played yet); the position is kept
     parked: Option<Status>,
@@ -223,6 +229,8 @@ impl Session {
             loaded_songs: Vec::new(),
             audio_lib: String::new(),
             library: Vec::new(),
+            library_songs: Vec::new(),
+            library_stale: false,
             parked: None,
             notice: None,
             last_seek: None,
@@ -332,9 +340,19 @@ impl Session {
         self.library.iter().map(|(n, _)| n.clone()).collect()
     }
 
-    /// A single song (not a playlist) is loaded.
+    /// Single songs (not a playlist) are loaded.
     pub fn is_single(&self) -> bool {
         self.playlist.is_none() && !self.entries.is_empty()
+    }
+
+    /// The library list ("single song") is loaded.
+    fn library_loaded(&self) -> bool {
+        self.playlist.is_none() && !self.loaded_songs.is_empty()
+    }
+
+    /// The library has songs for "single song".
+    pub fn has_library_songs(&self) -> bool {
+        !self.library_songs.is_empty()
     }
 
     pub fn has_queue(&self) -> bool {
@@ -567,6 +585,22 @@ impl Session {
         }
     }
 
+    /// All songs of the library, in the order of the Home tab (called
+    /// whenever the library is read again). If the library list is loaded
+    /// and its songs changed, the queue is rebuilt: the song that plays goes
+    /// on, if it is still in it.
+    pub fn set_library_songs(&mut self, songs: Vec<PlaylistSong>) {
+        self.library_songs = songs;
+        if !self.library_loaded() {
+            self.library_stale = false;
+            return;
+        }
+        if self.library_stale || !same_songs(&self.library_songs, &self.loaded_songs) {
+            self.library_stale = false;
+            self.rebuild(self.library_songs.clone());
+        }
+    }
+
     /// The loaded playlist was renamed: the name follows.
     pub fn playlist_renamed(&mut self, old: &str, new: &str) {
         if self.playlist.as_deref() == Some(old) {
@@ -587,9 +621,20 @@ impl Session {
     pub fn song_changed(&mut self, path: &str) {
         // a changed song mix goes into the file first (the editor keeps it)
         self.save_song_mix(true);
-        if find_path(&self.entries, path, None).is_some() {
-            self.clear(CHANGED_NOTICE.to_string());
+        if find_path(&self.entries, path, None).is_none() {
+            return;
         }
+        if self.library_loaded() {
+            // the whole library is listed: only the loaded song has to go,
+            // the others are read again with the library
+            let loaded = self.current_status().filter(|s| s.state != PlayState::Empty).and_then(|s| s.index);
+            let is_loaded = loaded.and_then(|i| self.entries.get(i)).and_then(|e| e.path()).map(|p| same_path(p, path));
+            if is_loaded != Some(true) {
+                self.library_stale = true;
+                return;
+            }
+        }
+        self.clear(CHANGED_NOTICE.to_string());
     }
 
     /// Stop, unload everything and show `notice`.
@@ -636,10 +681,11 @@ impl Session {
             }
         }
         if loaded && at.is_none() {
-            self.notice = Some(
-                "The playlist was changed and the song that was loaded is no longer in it \u{2013} the player stopped."
-                    .to_string(),
-            );
+            let what = if self.playlist.is_some() { "playlist" } else { "library" };
+            self.notice = Some(format!(
+                "The {} was changed and the song that was loaded is no longer in it \u{2013} the player stopped.",
+                what
+            ));
         }
     }
 
@@ -649,18 +695,40 @@ impl Session {
     pub fn play_playlist(&mut self, name: &str) {
         let Some(songs) = self.library.iter().find(|(n, _)| n == name).map(|(_, s)| s.clone()) else { return };
         let entries = entries_from_playlist(&songs, &self.audio_lib);
-        self.load_queue(entries, Some(name.to_string()), songs, false);
+        self.load_queue(entries, Some(name.to_string()), songs, 0, false);
     }
 
-    /// Load `project` as a queue of one song and leave it stopped.
+    /// "Single song": all songs of the library as the list, stopped on the
+    /// first one; Previous/Next go through it.
+    pub fn play_library(&mut self) {
+        let songs = self.library_songs.clone();
+        let entries = entries_from_playlist(&songs, &self.audio_lib);
+        self.library_stale = false;
+        self.load_queue(entries, None, songs, 0, false);
+    }
+
+    /// Load `project` and leave it stopped: within the library list if it
+    /// is a song of the library, else as a queue of one song.
     pub fn load_song(&mut self, project: &SongProject) {
-        self.load_queue(vec![QueueEntry::single(project.clone())], None, Vec::new(), false);
+        self.load_single(project, false);
     }
 
-    /// Load `project` as a queue of one song and start it. If the audio
-    /// output cannot be opened, `error` tells why, and Play tries again.
+    /// Load `project` as `load_song` does and start it. If the audio output
+    /// cannot be opened, `error` tells why, and Play tries again.
     pub fn play_song(&mut self, project: &SongProject) {
-        self.load_queue(vec![QueueEntry::single(project.clone())], None, Vec::new(), true);
+        self.load_single(project, true);
+    }
+
+    fn load_single(&mut self, project: &SongProject, play: bool) {
+        let songs = self.library_songs.clone();
+        let entries = entries_from_playlist(&songs, &self.audio_lib);
+        match find_path(&entries, &project.path, None) {
+            Some(at) => {
+                self.library_stale = false;
+                self.load_queue(entries, None, songs, at, play);
+            }
+            None => self.load_queue(vec![QueueEntry::single(project.clone())], None, Vec::new(), 0, play),
+        }
     }
 
     /// Song `index` of playlist `name`: the playlist is loaded if it is not
@@ -750,9 +818,16 @@ impl Session {
         self.parked = Some(engine.status());
     }
 
-    /// Use `entries` as the queue and load its first readable song:
-    /// playing (`autoplay`) or stopped.
-    fn load_queue(&mut self, entries: Vec<QueueEntry>, playlist: Option<String>, songs: Vec<PlaylistSong>, autoplay: bool) {
+    /// Use `entries` as the queue and load its first readable song from
+    /// `at` on: playing (`autoplay`) or stopped.
+    fn load_queue(
+        &mut self,
+        entries: Vec<QueueEntry>,
+        playlist: Option<String>,
+        songs: Vec<PlaylistSong>,
+        at: usize,
+        autoplay: bool,
+    ) {
         self.entries = Arc::new(entries);
         self.playlist = playlist;
         self.loaded_songs = songs;
@@ -760,7 +835,7 @@ impl Session {
         self.last_seek = None;
         self.parked = None;
         self.names_for = None;
-        let Some(first) = self.first_readable(0) else {
+        let Some(first) = self.first_readable(at) else {
             // nothing to play: the status carries the warnings
             if self.player.is_some() {
                 self.send_queue();
@@ -1348,6 +1423,43 @@ mod tests {
         let st = s.poll().unwrap();
         s.toggle_play(&st);
         assert!(s.poll().unwrap().autoplay, "the new stream has it too");
+    }
+
+    #[test]
+    fn single_song_lists_the_library_and_next_prev_go_through_it() {
+        let dir = temp_dir("session-library");
+        let a = song_at(&dir, "a", RATE, 1.0);
+        let b = song_at(&dir, "b", RATE, 1.0);
+        let c = song_at(&dir, "c", RATE, 1.0);
+        let (mut s, dev) = session();
+        s.set_library(dir.to_str().unwrap(), Vec::new());
+        s.set_library_songs(vec![entry(&a), entry(&b), entry(&c)]);
+        assert!(s.has_library_songs());
+        s.play_library();
+        assert!(s.is_single());
+        assert_eq!(s.loaded_playlist(), None);
+        assert_eq!(s.rows(s.current_status().as_ref()).len(), 3);
+        assert_eq!(s.poll().unwrap().index, Some(0));
+        s.next_song();
+        assert_eq!(s.poll().unwrap().index, Some(1));
+        s.prev_song();
+        assert_eq!(s.poll().unwrap().index, Some(0));
+        // Home > Play in Rehearsal: the library list, on that song
+        s.load_song(&c);
+        let st = s.poll().unwrap();
+        assert_eq!((st.index, s.rows(Some(&st)).len()), (Some(2), 3));
+        s.prev_song();
+        assert_eq!(s.poll().unwrap().index, Some(1));
+        // another song changed: the loaded one stays
+        s.song_changed(&a.path);
+        assert!(s.has_queue() && s.notice().is_none());
+        s.set_library_songs(vec![entry(&b), entry(&c)]);
+        let st = s.poll().unwrap();
+        assert_eq!((st.index, s.rows(Some(&st)).len()), (Some(0), 2), "b plays on");
+        // the loaded song changed: unloaded
+        s.song_changed(&b.path);
+        assert!(!s.has_queue());
+        assert!(dev.opened().is_empty());
     }
 
     #[test]

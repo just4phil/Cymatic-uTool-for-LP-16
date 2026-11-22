@@ -36,6 +36,10 @@ The **manual** (German) covering all features is a single HTML file,
   only if everything is up to date. Handy before every gig.
 - **Edit the library:** create, reorder, rename, copy and delete playlists; create songs and drag
   WAVs onto the 16 tracks in the song editor, choose the MIDI file.
+- **Clean song endings:** detects WAVs that end with digital clipping or stop abruptly (*No clean
+  fade-out* in the song details; checked when a song is shown, after every import and for the whole
+  library with *Check song endings*) and repairs them on a click with a 50 ms fade-out, optionally
+  after cutting off the broken end. The original is kept as `.orig.wav`.
 - **Batch import of songs:** creates songs from new folders of the AudioLibrary in one go, see
   [Import](#import-batch-import-of-songs).
 - **Edit Target:** the contents of the stick as a tree, with details on songs and playlists.
@@ -476,6 +480,7 @@ damaged. Nothing is deleted on the stick.
 |---|---|
 | `src/lib.rs` | File formats: `SongProject` (one `.songprj`, producing `song.set` and the `validationcode`), `.play`, `.playlistprj`, reading WAV and MIDI, import, settings |
 | `src/project_lib.rs` | Project Library: list, create, rename, copy and delete songs and playlists. Renaming a song keeps the playlists pointing at it; a song that a playlist uses cannot be deleted. |
+| `src/wav_tail.rs` | Checks the end of a WAV (clipping, abrupt stop) and repairs it with a fade-out, keeping a `.orig.wav` backup |
 | `src/sync.rs` | Stick Sync: `plan` (what an export would do), `run` (export and verify). Command line and user interface use the same process. |
 | `src/mix.rs` | The rehearsal mix: strips, presets, config lines, saving timer |
 | `src/backup_mix.rs` | The backup mix of the stereo MP3s: left and right side, config lines, file name pattern |
@@ -488,6 +493,7 @@ damaged. Nothing is deleted on the stick.
 | `src/main.rs` | Command line |
 | `src/gui_app.rs` | User interface (egui 0.27) |
 | `src/gui_rehearsal.rs` | The Rehearsal tab |
+| `src/gui_tail.rs` | Background check of the song endings (button in Home, after an import) |
 | `src/gui_playlist.rs` | Playlist combo and song list in the Rehearsal tab |
 | `src/gui_mixer.rs` | Preset bar, meters, S/M buttons and the mixer symbol of the mixer |
 | `src/gui_mixer_tab.rs` | The mixer of the Rehearsal tab: uTool2 style strips that scale with the panel, rehearsal mix and song mode |

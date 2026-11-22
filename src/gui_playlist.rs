@@ -14,6 +14,8 @@ pub const SINGLE_SONG: &str = "(single song)";
 pub struct ListOutcome {
     /// a playlist was chosen in the combo
     pub select: Option<String>,
+    /// "(single song)" was chosen: all songs of the library
+    pub library: bool,
     /// a song was double-clicked: start it
     pub play: Option<usize>,
     /// a song was clicked: mark it (or set it as the next one while playing)
@@ -21,15 +23,43 @@ pub struct ListOutcome {
 }
 
 /// Combo and song list. `playlists` are the names of the library,
-/// `selected` the loaded one (None: a single song, or nothing).
-pub fn ui(ui: &mut Ui, playlists: &[String], selected: Option<&str>, single: bool, rows: &[SongRow]) -> ListOutcome {
+/// `selected` the loaded one (None: single songs, or nothing); `single`:
+/// single songs are loaded; `has_songs`: the library has songs, so
+/// "(single song)" can be chosen.
+pub fn ui(
+    ui: &mut Ui,
+    playlists: &[String],
+    selected: Option<&str>,
+    single: bool,
+    has_songs: bool,
+    rows: &[SongRow],
+) -> ListOutcome {
     let mut out = ListOutcome::default();
     ui.label(egui::RichText::new("Playlist").size(13.0).color(DIM));
     let width = ui.available_width() - 8.0;
-    out.select = playlist_combo(ui, "rehearsal_playlist", width, playlists, selected, single);
+    let shown = match (selected, single) {
+        (Some(n), _) => n.to_string(),
+        (None, true) => SINGLE_SONG.to_string(),
+        (None, false) => "(none)".to_string(),
+    };
+    egui::ComboBox::from_id_source("rehearsal_playlist").width(width).selected_text(shown).show_ui(ui, |ui| {
+        let on = single && selected.is_none();
+        if (has_songs || on) && ui.selectable_label(on, SINGLE_SONG).clicked() && !on {
+            out.library = true;
+        }
+        for name in playlists {
+            if ui.selectable_label(selected == Some(name.as_str()), name).clicked() && selected != Some(name.as_str()) {
+                out.select = Some(name.clone());
+            }
+        }
+    });
     ui.add_space(8.0);
     if rows.is_empty() {
-        let text = if playlists.is_empty() { "The library has no playlists." } else { "Choose a playlist." };
+        let text = if playlists.is_empty() && !has_songs {
+            "The library has no songs."
+        } else {
+            "Choose a playlist or (single song)."
+        };
         ui.label(egui::RichText::new(text).size(13.0).color(DIM));
         return out;
     }

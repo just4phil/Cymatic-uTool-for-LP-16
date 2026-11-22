@@ -335,6 +335,21 @@ stick_root = "F:\"</code></pre>
   <li>Die Taste <strong>Mixer</strong> eines Songs lädt ihn in den Player und öffnet seinen <a href="#song-mix">Song-Mix</a>.</li>
   <li>Ein <strong>Mixer-Symbol</strong> (drei kleine Fader) kennzeichnet Songs mit eigenem Song-Mix, ein Notensymbol Songs mit MIDI-Datei.</li>
 </ul>
+
+<h3 id="fade-out">Kein sauberer Fade-out</h3>
+<p>Manche DAW-Exporte (z.&nbsp;B. aus Cakewalk) enden mit ein paar Millisekunden digitalem Clipping oder brechen hart ab; der LP-16 spielt dann am Songende einen Knackser. Das Tool prüft dazu die letzten 200&nbsp;ms jeder Spur:</p>
+<ul>
+  <li>wenn ein Song in den Details angezeigt wird,</li>
+  <li>nach einem <a href="#import">Import</a> für alle neu importierten Songs (eine Meldung erscheint nur, wenn etwas gefunden wurde),</li>
+  <li>für die ganze Bibliothek mit der Taste <strong>Check song endings</strong> im Ordner Songs (läuft im Hintergrund, mit Fortschritt; am Ende eine Liste der betroffenen Songs).</li>
+</ul>
+<p>Betroffene Spuren tragen in den Song-Details den Hinweis <strong>No clean fade-out</strong> (der Tooltip nennt den Befund, z.&nbsp;B. „Clipping in the last 12 ms“), der Song das Warnzeichen „!“ in der Liste. Das Ergebnis gilt bis zum nächsten Refresh; danach zeigt die Liste das „!“ erst wieder nach einer neuen Prüfung.</p>
+<p>Ein Klick auf den Hinweis öffnet einen Dialog für alle betroffenen Spuren des Songs:</p>
+<ul>
+  <li><strong>Fade-out 50 ms</strong> blendet die letzten 50&nbsp;ms linear auf 0 aus; die Länge bleibt gleich.</li>
+  <li><strong>Cut + fade-out</strong> schneidet erst das kaputte Ende ab und blendet dann aus. Vorgeschlagen wird die Länge des geclippten Endes und der Stille dahinter plus 2&nbsp;ms; der Wert lässt sich ändern.</li>
+</ul>
+<p>Das Original bleibt beim ersten Ändern als <code>&lt;name&gt;.orig.wav</code> im selben Ordner erhalten (ein vorhandenes Backup wird nie überschrieben). Solche Backups erscheinen nicht als Spuren im Song-Editor oder beim Import. Achtung: Eine WAV, die mehrere Songs nutzen, ändert sich für alle. Der nächste Quick Export schreibt den Song neu auf den Stick.</p>
 </section>
 
 <!-- ===================================================================== -->

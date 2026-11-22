@@ -29,6 +29,7 @@ pub mod rehearsal_midi;
 #[cfg(feature = "player")]
 pub mod midi_out;
 pub mod sync;
+pub mod wav_tail;
 
 // ---------------------------------------------------------------------------
 // A very small XML reader. A .songprj is simple, flat XML with an "ns0:"
@@ -1888,7 +1889,7 @@ pub fn scan_import(import_lib: &str, library: &[LibrarySong]) -> Result<Vec<Impo
             let files = sorted_dir(&date_dir);
             let wavs: Vec<String> = files
                 .iter()
-                .filter(|p| p.is_file() && has_ext(p, &["wav"]))
+                .filter(|p| p.is_file() && has_ext(p, &["wav"]) && !wav_tail::is_backup_wav(p))
                 .map(|p| p.to_string_lossy().into_owned())
                 .collect();
             let midis: Vec<String> = files
@@ -3254,6 +3255,8 @@ mod tests {
         mk("Abc\\2026-05-10_RF\\x-2-bass.wav", &w);
         mk("Abc\\2026-05-10_RF\\x-1-klick.wav", &w);
         mk("Abc\\2026-05-10_RF\\abc.mid", &tiny_midi());
+        // a backup of the fade-out repair is no track (stereo would be invalid)
+        mk("Abc\\2026-05-10_RF\\x-2-bass.orig.wav", &mono_wav(100, 48000, 24, 2));
         // present by name
         mk("Abc\\2026-01-01\\a.wav", &w);
         // present by WAV folder

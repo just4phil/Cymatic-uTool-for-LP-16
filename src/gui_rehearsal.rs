@@ -240,9 +240,13 @@ impl RehearsalPanel {
         let rows = self.session.rows(status);
         let names = self.session.playlist_names();
         let single = self.session.is_single();
-        let out = gui_playlist::ui(ui, &names, self.session.loaded_playlist(), single, &rows);
+        let has_songs = self.session.has_library_songs();
+        let out = gui_playlist::ui(ui, &names, self.session.loaded_playlist(), single, has_songs, &rows);
         if let Some(name) = out.select {
             self.session.play_playlist(&name);
+        }
+        if out.library {
+            self.session.play_library();
         }
         if let Some(i) = out.click {
             self.session.click_song(i);
@@ -596,7 +600,7 @@ mod tests {
             egui::CentralPanel::default().show(ctx, |ui| {
                 egui::SidePanel::left("list").default_width(LIST_WIDTH).show_inside(ui, |ui| {
                     let out = egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                        gui_playlist::ui(ui, &[], None, false, &rows(n));
+                        gui_playlist::ui(ui, &[], None, false, false, &rows(n));
                     });
                     result = (out.inner_rect.height(), out.content_size.y);
                 });

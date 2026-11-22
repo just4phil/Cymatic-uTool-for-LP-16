@@ -15,6 +15,7 @@ use crate::gui_audio::AudioPanel;
 use crate::gui_backup::BackupPanel;
 use crate::gui_midi::MidiPanel;
 use crate::gui_rehearsal::RehearsalPanel;
+use crate::gui_tail::{TailCheck, TailCheckKind};
 use eframe::egui::{
     self, pos2, vec2, Align, Align2, Color32, FontId, Layout, Margin, Rect, RichText, Sense,
     Stroke, Ui,
@@ -23,6 +24,7 @@ use lp16_tool::audio_out::AudioSettings;
 use lp16_tool::mix::MixSaver;
 use lp16_tool::project_lib::ProjectLibrary;
 use lp16_tool::sync::{self, Action, ExportMode, Progress};
+use lp16_tool::wav_tail::{self, TailReport};
 use lp16_tool::{
     import_songs, init_folders,
     library_songs, midi_duration, natural_cmp, newest_version, scan_import, ImportItem, ImportStatus, LibrarySong,
@@ -90,6 +92,12 @@ struct TrackInfo {
     name: String,
     wav: String,
     exists: bool,
+    /// end of the WAV (`wav_tail::analyze_tail`): None = not looked at yet,
+    /// Some(None) = clean. Filled when the song is shown in Home.
+    tail: Option<Option<TailReport>>,
+    /// size and modification time of the WAV: a refresh keeps `tail` while
+    /// they are the same
+    stamp: (u64, i64),
 }
 
 struct SongInfo {
@@ -110,7 +118,8 @@ struct SongInfo {
 
 impl SongInfo {
     fn warn(&self) -> bool {
-        self.tracks.iter().any(|t| !t.exists) || (!self.midi_full.is_empty() && !self.midi_exists)
+        self.tracks.iter().any(|t| !t.exists || matches!(t.tail, Some(Some(_))))
+            || (!self.midi_full.is_empty() && !self.midi_exists)
     }
     fn format_line(&self) -> String {
         format!("{} ch - {}-bit", self.tracks.len(), self.bits)
@@ -166,6 +175,11 @@ enum Dialog {
     SongEditorClose,
     /// import tab: import the checked songs?
     ImportConfirm,
+    /// Home: repair WAVs without a clean end of song `song`
+    /// (track name, wav, finding); `trim_ms` is cut before the fade-out
+    FixTail { song: usize, tracks: Vec<(String, String, TailReport)>, trim_ms: f64 },
+    /// export: songs to export end without a clean fade-out, export anyway?
+    ExportTails(String),
 }
 
 /// "Update Playlist" overlay: a new playlist from an existing one, every song
@@ -313,6 +327,8 @@ struct EtDetails {
 pub struct Lp16App {
     config: Config,
     tab: Tab,
+    /// the tab of the last frame (to see a switch to Home)
+    shown_tab: Tab,
     songs: Vec<SongInfo>,
     song_idx: HashMap<String, usize>,
     playlists: Vec<PlaylistInfo>,
@@ -351,6 +367,11 @@ pub struct Lp16App {
     audio: AudioPanel,
     // settings: the "MIDI output" area
     midi: MidiPanel,
+    // WAV endings: the running check (with the song keys it covers), checks
+    // waiting for it, and its message once no dialog is open
+    tail_check: Option<(TailCheck, Vec<String>)>,
+    tail_queue: Vec<(TailCheckKind, Option<Vec<String>>)>,
+    tail_msg: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -671,7 +692,9 @@ fn load_song(path: &Path, audio_lib: &str) -> SongInfo {
                 // prefer the track name stored in the project
                 name: if t.name.is_empty() { stem(&wav) } else { t.name.clone() },
                 exists: meta.is_ok(),
+                stamp: (meta.as_ref().map(|m| m.len()).unwrap_or(0), mtime(Path::new(&wav))),
                 wav,
+                tail: None,
             }
         })
         .collect();
@@ -852,6 +875,13 @@ fn paint_song_cols(p: &egui::Painter, rect: Rect, s: &SongInfo) {
     if s.song_mix {
         crate::gui_mixer::paint_mixer_icon(p, pos2(rect.right() - 175.0, rect.center().y), 12.0, ORANGE);
     }
+    // MIDI tag: white = MIDI file present, red = set but missing on disk
+    if !s.midi_full.is_empty() {
+        let c = if s.midi_exists { Color32::WHITE } else { RED };
+        let r = Rect::from_center_size(pos2(rect.right() - 210.0, rect.center().y), vec2(30.0, 14.0));
+        p.rect_stroke(r, 3.0, Stroke::new(1.0_f32, c));
+        p.text(r.center(), Align2::CENTER_CENTER, "MIDI", FontId::proportional(9.0), c);
+    }
     if s.warn() {
         paint_warn(p, rect);
     }
@@ -893,7 +923,7 @@ fn badge(ui: &mut Ui, text: &str) -> egui::Response {
         .painter()
         .layout_no_wrap(text.to_string(), FontId::proportional(11.0), Color32::WHITE);
     let size = galley.size() + vec2(8.0, 4.0);
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     ui.painter().rect_filled(rect, 2.0, ORANGE);
     ui.painter().galley(rect.min + vec2(4.0, 2.0), galley, Color32::WHITE);
     resp
@@ -1084,12 +1114,13 @@ fn visuals() -> egui::Visuals {
 impl Lp16App {
     pub fn new(config: Config) -> Self {
         let mut open = HashSet::new();
-        for k in ["h:root", "t:rec", "t:pl", "e:rec", "e:pl", "x:pl"] {
+        for k in ["h:root", "h:songs", "t:rec", "t:pl", "e:rec", "e:pl", "x:pl"] {
             open.insert(k.to_string());
         }
         let mut app = Lp16App {
             config,
             tab: Tab::Home,
+            shown_tab: Tab::Home,
             songs: Vec::new(),
             song_idx: HashMap::new(),
             playlists: Vec::new(),
@@ -1119,6 +1150,9 @@ impl Lp16App {
             backup_saver: MixSaver::default(),
             audio: AudioPanel::default(),
             midi: MidiPanel::default(),
+            tail_check: None,
+            tail_queue: Vec::new(),
+            tail_msg: None,
         };
         app.rehearsal.session.set_settings(AudioSettings::from(&app.config));
         app.rehearsal.session.set_midi_port(&app.config.midi_port);
@@ -1126,6 +1160,113 @@ impl Lp16App {
         app.rehearsal.session.set_mix(app.config.mixes.active().params());
         app.refresh();
         app
+    }
+
+    /// Start waiting WAV-end checks, take over finished results and show
+    /// their message once no other dialog is open.
+    fn tail_check_tick(&mut self, ctx: &egui::Context) {
+        if let Some((check, keys)) = &self.tail_check {
+            if let Some(results) = check.take_finished() {
+                let kind = check.kind;
+                let keys: HashSet<String> = keys.iter().cloned().collect();
+                let found: HashMap<String, Option<TailReport>> =
+                    results.into_iter().map(|(w, r)| (key(&w), r)).collect();
+                let mut affected = Vec::new();
+                for s in self.songs.iter_mut() {
+                    for t in s.tracks.iter_mut() {
+                        if let Some(r) = found.get(&key(&t.wav)) {
+                            t.tail = Some(*r);
+                        }
+                    }
+                    if keys.contains(&key(&s.path)) && s.tracks.iter().any(|t| matches!(t.tail, Some(Some(_)))) {
+                        affected.push(s.name.clone());
+                    }
+                }
+                self.tail_msg = crate::gui_tail::summary(kind, keys.len(), found.len(), &affected);
+                self.tail_check = None;
+                if kind == TailCheckKind::Export {
+                    if affected.is_empty() {
+                        self.start_export(ctx);
+                    } else {
+                        let text = crate::gui_tail::export_question(keys.len(), &affected);
+                        self.dialog = Some(Dialog::ExportTails(text));
+                    }
+                }
+            }
+        }
+        if self.tail_check.is_none() && !self.tail_queue.is_empty() {
+            let (kind, only) = self.tail_queue.remove(0);
+            let songs: Vec<&SongInfo> = match &only {
+                Some(keys) => self.songs.iter().filter(|s| keys.contains(&key(&s.path))).collect(),
+                None => self.songs.iter().collect(),
+            };
+            let mut seen = HashSet::new();
+            let wavs: Vec<String> = songs
+                .iter()
+                .flat_map(|s| s.tracks.iter())
+                .filter(|t| t.exists && seen.insert(key(&t.wav)))
+                .map(|t| t.wav.clone())
+                .collect();
+            let keys = songs.iter().map(|s| key(&s.path)).collect();
+            self.tail_check = Some((TailCheck::start(kind, wavs, ctx), keys));
+        }
+        if self.dialog.is_none() && self.pl_update.is_none() && self.pl_editor.is_none() && self.song_ed.is_none() {
+            if let Some(text) = self.tail_msg.take() {
+                self.message("Song endings", text);
+            }
+        }
+    }
+
+    /// Offer to repair the WAVs of song `index` that end without a fade-out.
+    fn fix_tail_dialog(&mut self, index: usize) {
+        let tracks: Vec<(String, String, TailReport)> = self.songs[index]
+            .tracks
+            .iter()
+            .filter_map(|t| match &t.tail {
+                Some(Some(r)) => Some((t.name.clone(), t.wav.clone(), *r)),
+                _ => None,
+            })
+            .collect();
+        let trim_ms = tracks.iter().map(|(_, _, r)| r.suggested_trim_ms).fold(0.0, f64::max);
+        if !tracks.is_empty() {
+            self.dialog = Some(Dialog::FixTail { song: index, tracks, trim_ms });
+        }
+    }
+
+    /// Cut `trim_ms` off the WAVs and fade them out, then show the result.
+    fn fix_tail_run(&mut self, song: usize, wavs: &[String], trim_ms: f64) {
+        let path = self.songs[song].path.clone();
+        // the player must not hold the old files
+        self.rehearsal.session.song_changed(&path);
+        let mut errors = Vec::new();
+        for wav in wavs {
+            if let Err(e) = wav_tail::fix_tail(wav, trim_ms, wav_tail::FADE_MS) {
+                errors.push(e.to_string());
+            }
+        }
+        let audio_lib = self.config.audio_lib.clone();
+        let k = key(&path);
+        let fixed: HashSet<String> = wavs.iter().map(|w| key(w)).collect();
+        for s in self.songs.iter_mut() {
+            // other songs may use the same WAVs: look at them again
+            if key(&s.path) == k || s.tracks.iter().any(|t| fixed.contains(&key(&t.wav))) {
+                let p = s.path.clone();
+                *s = load_song(Path::new(&p), &audio_lib);
+            }
+        }
+        let done = wavs.len() - errors.len();
+        let mut text = if trim_ms > 0.0 {
+            format!("{} WAV file(s) shortened by {:.0} ms and faded out over {:.0} ms.", done, trim_ms, wav_tail::FADE_MS)
+        } else {
+            format!("{} WAV file(s) faded out over {:.0} ms.", done, wav_tail::FADE_MS)
+        };
+        if done > 0 {
+            text += "\nThe originals are kept as *.orig.wav next to them.";
+        }
+        if !errors.is_empty() {
+            text += &format!("\n\nFailed:\n{}", errors.join("\n"));
+        }
+        self.message("Fade-out", text);
     }
 
     fn message(&mut self, title: &str, text: impl Into<String>) {
@@ -1153,7 +1294,21 @@ impl Lp16App {
     fn refresh(&mut self) {
         let lib = self.lib();
         let audio_lib = self.config.audio_lib.clone();
+        // checked WAV endings stay known while the WAV is unchanged
+        let known: HashMap<String, ((u64, i64), Option<TailReport>)> = self
+            .songs
+            .iter()
+            .flat_map(|s| s.tracks.iter())
+            .filter_map(|t| t.tail.map(|r| (key(&t.wav), (t.stamp, r))))
+            .collect();
         self.songs = lib.song_files().iter().map(|p| load_song(p, &audio_lib)).collect();
+        for t in self.songs.iter_mut().flat_map(|s| s.tracks.iter_mut()) {
+            if let Some((stamp, r)) = known.get(&key(&t.wav)) {
+                if *stamp == t.stamp {
+                    t.tail = Some(*r);
+                }
+            }
+        }
         self.song_idx = self
             .songs
             .iter()
@@ -1183,6 +1338,18 @@ impl Lp16App {
         let for_player: Vec<_> = self.playlists.iter().map(|p| (p.name.clone(), to_pl_songs(&p.songs))).collect();
         self.backup.set_library(&audio_lib, for_player.clone());
         self.rehearsal.session.set_library(&audio_lib, for_player);
+        // "(single song)" lists all songs of the library
+        let all_songs: Vec<PlaylistSong> = self
+            .songs
+            .iter()
+            .map(|s| PlaylistSong {
+                name: s.name.clone(),
+                songprj: s.path.clone(),
+                mode: lp16_tool::rehearsal_queue::WAIT_MODE.to_string(),
+                delay: "0".into(),
+            })
+            .collect();
+        self.rehearsal.session.set_library_songs(all_songs);
         self.x_songs.retain(|&i| i < self.songs.len());
         self.x_playlists.retain(|&i| i < self.playlists.len());
         self.drives = list_drives();
@@ -1494,6 +1661,23 @@ impl Lp16App {
             .collect()
     }
 
+    /// The Export button: check the endings of the songs to export first
+    /// (`tail_check_tick` exports when they are clean, else asks).
+    fn export_check(&mut self) {
+        let target = self.config.stick_root.clone();
+        if target.trim().is_empty() || !Path::new(&target).is_dir() {
+            self.message("Export", "No target location selected.");
+            return;
+        }
+        let (prjs, pls) = self.export_selection();
+        if prjs.is_empty() && pls.is_empty() {
+            self.message("Export", "Nothing selected.");
+            return;
+        }
+        let keys = prjs.iter().map(|p| key(p)).collect();
+        self.tail_queue.push((TailCheckKind::Export, Some(keys)));
+    }
+
     fn start_export(&mut self, ctx: &egui::Context) {
         let target = self.config.stick_root.clone();
         if target.trim().is_empty() || !Path::new(&target).is_dir() {
@@ -1595,6 +1779,11 @@ impl eframe::App for Lp16App {
             }))
             .show_separator_line(false)
             .show(ctx, |ui| self.tab_bar(ui));
+        // coming to Home reads the library again
+        if self.tab == Tab::Home && self.shown_tab != Tab::Home {
+            self.refresh();
+        }
+        self.shown_tab = self.tab;
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(BG).inner_margin(Margin::same(10.0)))
             .show(ctx, |ui| match self.tab {
@@ -1628,6 +1817,7 @@ impl eframe::App for Lp16App {
                 *s = load_song(Path::new(&path), &audio_lib);
             }
         }
+        self.tail_check_tick(ctx);
         // the autoplay checkbox of the Rehearsal tab
         if let Some(on) = self.rehearsal.take_autoplay_change() {
             self.config.rehearsal_autoplay = on;
@@ -1858,9 +2048,7 @@ impl Lp16App {
                             }
                         }
                     }
-                    tree_row(ui, 1, Some(false), None, "", "Stereo Playlists", false, false, |_, _| {});
                 }
-                tree_row(ui, 0, Some(false), None, "", "Stereo Songs", false, false, |_, _| {});
             });
     }
 
@@ -1878,10 +2066,15 @@ impl Lp16App {
             }
             Sel::SongsFolder => {
                 title(ui, "Multitrack Songs");
-                let (mut new, mut refresh) = (false, false);
+                let (mut new, mut refresh, mut check) = (false, false, false);
+                let running = self.tail_check.as_ref().map(|(c, _)| c.progress());
                 ui.horizontal(|ui| {
                     new = small_btn(ui, "New Multitrack Song", true);
                     refresh = small_btn(ui, "Refresh", true);
+                    check = small_btn(ui, "Check song endings", running.is_none());
+                    if let Some((done, total)) = running {
+                        ui.label(format!("Checking song endings: {} / {} WAV files", done, total));
+                    }
                 });
                 ui.add_space(8.0);
                 field_box(ui, "Target Disk Location", "\\Recording");
@@ -1907,6 +2100,9 @@ impl Lp16App {
                 if refresh {
                     self.refresh();
                 }
+                if check {
+                    self.tail_queue.push((TailCheckKind::Library, None));
+                }
             }
             Sel::PlaylistsFolder => {
                 title(ui, "Multitrack Playlists");
@@ -1928,6 +2124,10 @@ impl Lp16App {
             }
             Sel::Song(i) => {
                 let mut act = 0;
+                // look at the WAV ends once (the last 200 ms of each track)
+                for t in self.songs[i].tracks.iter_mut().filter(|t| t.exists && t.tail.is_none()) {
+                    t.tail = Some(wav_tail::analyze_tail(&t.wav).ok().flatten());
+                }
                 {
                     let s = &self.songs[i];
                     title(ui, &s.name);
@@ -1965,6 +2165,15 @@ impl Lp16App {
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                         badge(ui, "Missing Wav file")
                                             .on_hover_text(format!("Expected wav file:\n{}", t.wav));
+                                    });
+                                } else if let Some(Some(r)) = &t.tail {
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        let b = badge(ui, "No clean fade-out")
+                                            .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                            .on_hover_text(format!("{}.\nClick to add a fade-out.", r.describe()));
+                                        if b.clicked() {
+                                            act = 6;
+                                        }
                                     });
                                 }
                             });
@@ -2014,6 +2223,7 @@ impl Lp16App {
                         })
                     }
                     5 => self.open_in_mixer(i),
+                    6 => self.fix_tail_dialog(i),
                     _ => {}
                 }
             }
@@ -2216,7 +2426,10 @@ impl Lp16App {
             },
         );
         ui.add_space(6.0);
-        let can_export = !self.x_songs.is_empty() || !self.x_playlists.is_empty();
+        // the check of the song endings before an export (queued or running)
+        let checking = self.tail_queue.iter().any(|(k, _)| *k == TailCheckKind::Export)
+            || self.tail_check.as_ref().map(|(c, _)| c.kind == TailCheckKind::Export).unwrap_or(false);
+        let can_export = (!self.x_songs.is_empty() || !self.x_playlists.is_empty()) && !checking;
         let mut go = false;
         ui.horizontal(|ui| {
             let w = ui.available_width();
@@ -2227,13 +2440,22 @@ impl Lp16App {
                     egui::Button::new(RichText::new("Export").color(TEXT)).min_size(vec2(100.0, 28.0)),
                 )
                 .clicked();
+            if checking {
+                let text = match self.tail_check.as_ref().filter(|(c, _)| c.kind == TailCheckKind::Export) {
+                    Some((c, _)) => {
+                        let (done, total) = c.progress();
+                        format!("Checking song endings: {} / {} WAV files", done, total)
+                    }
+                    None => "Checking song endings …".to_string(),
+                };
+                ui.label(RichText::new(text).color(DIM));
+            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add_enabled(false, egui::Button::new("Export Batch").min_size(vec2(110.0, 28.0)));
             });
         });
         if go {
-            let ctx = ui.ctx().clone();
-            self.start_export(&ctx);
+            self.export_check();
         }
     }
 
@@ -2522,6 +2744,9 @@ impl Lp16App {
         self.import_rescan();
         match result {
             Ok(w) => {
+                if !w.is_empty() {
+                    self.tail_queue.push((TailCheckKind::Import, Some(w.iter().map(|p| key(p)).collect())));
+                }
                 let info = format!("{} Song(s) imported into the Project Library.", w.len());
                 if !self.open_playlist_update(None, &w, &info) {
                     self.message("Import", info);
@@ -3714,6 +3939,65 @@ impl Lp16App {
                 }
             }
             Dialog::SongName { .. } | Dialog::PlaylistName { .. } | Dialog::NewSong { .. } => {}
+            Dialog::FixTail { song, tracks, trim_ms } => {
+                let fade_label = format!("Fade-out {:.0} ms", wav_tail::FADE_MS);
+                let can_cut = *trim_ms >= 1.0;
+                let clicked = overlay(
+                    ctx,
+                    "dlg",
+                    order,
+                    "No clean fade-out",
+                    vec2(920.0, 400.0),
+                    |ui| {
+                        ui.label("These WAV files do not end cleanly (the LP-16 may play a click at the end):");
+                        ui.add_space(6.0);
+                        egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
+                            for (name, _, r) in tracks.iter() {
+                                ui.label(format!("    {}:  {}", name, r.describe()));
+                            }
+                        });
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            ui.label("Cut off before the fade-out:");
+                            ui.add(egui::DragValue::new(trim_ms).clamp_range(0.0..=2000.0).speed(1.0).suffix(" ms"));
+                            ui.label("(suggested: the clipped end and the silence after it, plus 2 ms)");
+                        });
+                        ui.add_space(10.0);
+                        ui.label(format!(
+                            "\"{}\" only fades the end out, \"Cut + fade-out\" removes the broken end first.",
+                            fade_label
+                        ));
+                        ui.label("The originals are kept as *.orig.wav. A WAV used by several songs changes for all of them.");
+                    },
+                    &[(fade_label.as_str(), true), ("Cut + fade-out", can_cut), ("Cancel", true)],
+                );
+                if let Some(b) = clicked {
+                    close = true;
+                    if b < 2 {
+                        let wavs: Vec<String> = tracks.iter().map(|(_, w, _)| w.clone()).collect();
+                        let trim = if b == 1 { trim_ms.round() } else { 0.0 };
+                        self.fix_tail_run(*song, &wavs, trim);
+                    }
+                }
+            }
+            Dialog::ExportTails(text) => {
+                match overlay(
+                    ctx,
+                    "dlg",
+                    order,
+                    "Export",
+                    vec2(920.0, 420.0),
+                    |ui| centered_text(ui, text),
+                    &[("Yes, export anyway", true), ("No, cancel", true)],
+                ) {
+                    Some(0) => {
+                        close = true;
+                        self.start_export(ctx);
+                    }
+                    Some(_) => close = true,
+                    None => {}
+                }
+            }
             Dialog::ImportConfirm => {
                 let names: Vec<String> = self.import_selected().iter().map(|i| i.name.clone()).collect();
                 let mut list = names.iter().take(12).cloned().collect::<Vec<_>>().join("\n");
@@ -4075,7 +4359,7 @@ fn list_audio(folder: &str) -> Vec<AudioEntry> {
             let path = p.to_string_lossy().into_owned();
             if p.is_dir() {
                 dirs.push(AudioEntry { name, path, dir: true, info: None });
-            } else if name.to_lowercase().ends_with(".wav") {
+            } else if name.to_lowercase().ends_with(".wav") && !wav_tail::is_backup_wav(&p) {
                 let info = WavInfo::read(&path).ok();
                 wavs.push(AudioEntry { name, path, dir: false, info });
             }

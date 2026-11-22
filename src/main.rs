@@ -29,6 +29,8 @@ mod gui_mixer_tab;
 mod gui_playlist;
 #[cfg(feature = "gui")]
 mod gui_rehearsal;
+#[cfg(feature = "gui")]
+mod gui_tail;
 
 #[cfg(feature = "gui")]
 use crate::gui_app::run_gui;

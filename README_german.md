@@ -37,6 +37,11 @@ Das **Handbuch** mit dem ganzen Funktionsumfang liegt als einzelne HTML-Datei in
 - **Bibliothek bearbeiten:** Playlists anlegen, umsortieren, umbenennen, kopieren und löschen;
   Songs anlegen und im Song-Editor WAVs per Drag & Drop auf die 16 Spuren ziehen, MIDI-Datei
   wählen.
+- **Sauberes Songende:** erkennt WAVs, die mit digitalem Clipping enden oder hart abbrechen
+  (Hinweis *No clean fade-out* in den Song-Details; geprüft beim Anzeigen eines Songs, nach jedem
+  Import und für die ganze Bibliothek per *Check song endings*), und repariert sie auf Klick mit einem
+  50-ms-Fade-out, auf Wunsch nach dem Abschneiden des kaputten Endes. Das Original bleibt als
+  `.orig.wav` erhalten.
 - **Batch-Import von Songs:** legt aus neuen Ordnern der AudioLibrary auf einen Schlag Songs an,
   siehe [Import](#import-batch-import-von-songs).
 - **Edit Target:** Inhalt des Sticks als Baum, mit Details zu Songs und Playlists.
@@ -489,6 +494,7 @@ Dateien auf dem Stick beschädigt sein könnten. Gelöscht wird auf dem Stick ni
 |---|---|
 | `src/lib.rs` | Dateiformate: `SongProject` (eine `.songprj`, daraus `song.set` und `validationcode`), `.play`, `.playlistprj`, WAV- und MIDI-Lesen, Import, Einstellungen |
 | `src/project_lib.rs` | Projektbibliothek: Songs und Playlists auflisten, anlegen, umbenennen, kopieren und löschen. Beim Umbenennen eines Songs zeigen die Playlists weiter auf ihn; ein Song, den eine Playlist nutzt, lässt sich nicht löschen. |
+| `src/wav_tail.rs` | Songende prüfen (Clipping, harter Abbruch) und mit Fade-out reparieren, Backup als `.orig.wav` |
 | `src/sync.rs` | Stick Sync: `plan` (was ein Export tun würde), `run` (exportieren und prüfen). Kommandozeile und Oberfläche nutzen denselben Ablauf. |
 | `src/mix.rs` | Der Proben-Mix: Kanalzüge, Presets, Config-Zeilen, Speicher-Timer |
 | `src/backup_mix.rs` | Der Backup-Mix für die Stereo-MP3s: linke und rechte Seite, Config-Zeilen, Namensschema |
@@ -501,6 +507,7 @@ Dateien auf dem Stick beschädigt sein könnten. Gelöscht wird auf dem Stick ni
 | `src/main.rs` | Kommandozeile |
 | `src/gui_app.rs` | Oberfläche (egui 0.27) |
 | `src/gui_rehearsal.rs` | Der Reiter Rehearsal |
+| `src/gui_tail.rs` | Prüfung der Songenden im Hintergrund (Taste in Home, nach dem Import) |
 | `src/gui_playlist.rs` | Playlist-Combo und Songliste im Reiter Rehearsal |
 | `src/gui_mixer.rs` | Preset-Leiste, Pegelanzeigen, S/M-Tasten und das Mixer-Symbol des Mixers |
 | `src/gui_mixer_tab.rs` | Der Mixer im Reiter Rehearsal: Kanalzüge im uTool2-Stil, die mit dem Bereich skalieren, Proben-Mix und Song-Modus |
