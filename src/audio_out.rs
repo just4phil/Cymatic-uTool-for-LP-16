@@ -379,9 +379,48 @@ pub fn no_asio_driver_message() -> String {
         .to_string()
 }
 
-/// The output devices of host `host` (empty = default host).
+/// ASIO devices with an open stream of this program. Listing the ASIO
+/// devices loads every driver again, which silently stops a running ASIO
+/// stream (no error is reported); while one is open, the list is these.
+static ASIO_IN_USE: Mutex<Vec<(u64, DeviceInfo)>> = Mutex::new(Vec::new());
+static NEXT_CLAIM: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// An ASIO device in use by an open stream; dropped with the stream.
+struct AsioClaim(u64);
+
+impl AsioClaim {
+    fn new(device: DeviceInfo) -> AsioClaim {
+        let id = NEXT_CLAIM.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut v) = ASIO_IN_USE.lock() {
+            v.push((id, device));
+        }
+        AsioClaim(id)
+    }
+}
+
+impl Drop for AsioClaim {
+    fn drop(&mut self) {
+        if let Ok(mut v) = ASIO_IN_USE.lock() {
+            v.retain(|(id, _)| *id != self.0);
+        }
+    }
+}
+
+fn is_asio(host: &str) -> bool {
+    host.trim().eq_ignore_ascii_case("asio")
+}
+
+/// The output devices of host `host` (empty = default host). While this
+/// program has an ASIO stream open, the ASIO list is only the device in
+/// use: listing the drivers would stop that stream.
 pub fn list_devices(host: &str) -> Result<Vec<DeviceInfo>, String> {
-    let is_asio = host.trim().eq_ignore_ascii_case("asio");
+    let is_asio = is_asio(host);
+    if is_asio {
+        let in_use: Vec<DeviceInfo> = ASIO_IN_USE.lock().map(|v| v.iter().map(|(_, d)| d.clone()).collect()).unwrap_or_default();
+        if !in_use.is_empty() {
+            return Ok(in_use);
+        }
+    }
     let list = list_devices_of(host)?;
     if is_asio && list.is_empty() {
         return Err(no_asio_driver_message());
@@ -548,6 +587,22 @@ impl Callback {
         }
     }
 
+    /// Apply the waiting commands and wait until the songs are open and
+    /// their buffers are filled, without rendering (the in-memory output
+    /// of the tests; never call it from the audio callback).
+    pub fn apply_pending(&mut self) {
+        while let Ok(cmd) = self.commands.try_recv() {
+            self.apply(cmd);
+        }
+        self.engine.wait_ready(Duration::from_secs(10));
+        self.empty_garbage();
+        if let Ok(mut st) = self.status.try_lock() {
+            let unread = st.levels;
+            *st = self.engine.take_status();
+            st.levels.merge_peaks(&unread);
+        }
+    }
+
     /// One audio callback: commands, render, distribute, status.
     pub fn fill<T: OutSample>(&mut self, out: &mut [T], channels: usize) {
         while let Ok(cmd) = self.commands.try_recv() {
@@ -677,7 +732,7 @@ fn open_stream<S: Source>(
     rate: RateChoice,
     lost: Lost,
     mut make: impl FnMut(u32) -> S,
-) -> Result<(Stream, StreamInfo), String> {
+) -> Result<(Stream, StreamInfo, Option<AsioClaim>), String> {
     let host = host_by_name(&settings.host)?;
     let device = find_device(&host, &settings.device)?;
     let name = device.name().unwrap_or_else(|_| "default device".to_string());
@@ -752,8 +807,12 @@ fn open_stream<S: Source>(
         Err(e) => return Err(describe(e)),
     };
     stream.play().map_err(|e| open_error(&name, e))?;
+    let claim = (host.id() == cpal::HostId::Asio).then(|| {
+        let max_channels = infos.iter().map(|r| r.channels).max().unwrap_or(channels);
+        AsioClaim::new(DeviceInfo { name: name.clone(), max_channels, is_default: false })
+    });
     let info = StreamInfo { host: host.id().name().to_string(), device: name, rate, channels, buffer, note };
-    Ok((stream, info))
+    Ok((stream, info, claim))
 }
 
 // ---------------------------------------------------------------------------
@@ -772,6 +831,8 @@ pub struct Player {
     opener: Option<OpenerThread>,
     info: StreamInfo,
     settings: AudioSettings,
+    /// released after the stream is closed (field order)
+    _claim: Option<AsioClaim>,
 }
 
 impl Player {
@@ -785,7 +846,7 @@ impl Player {
         // `make` runs once per build attempt; the ends of the queues of
         // the last attempt stay here
         let mut ends: Option<(Sender<Command>, Receiver<Trash>, Arc<Opener>)> = None;
-        let (stream, info) = open_stream(settings, RateChoice::Exact(rate), lost.clone(), |rate| {
+        let (stream, info, claim) = open_stream(settings, RateChoice::Exact(rate), lost.clone(), |rate| {
             let (commands, rx) = channel();
             let (trash_tx, trash_rx) = channel::<Trash>();
             let engine = Engine::new(rate);
@@ -812,6 +873,7 @@ impl Player {
             opener: Some(OpenerThread::spawn(opener)),
             info,
             settings: settings.clone(),
+            _claim: claim,
         })
     }
 
@@ -891,6 +953,8 @@ impl Drop for Player {
 /// A running test tone. Dropping it stops it.
 pub struct ToneStream {
     _stream: Stream,
+    /// dropped after the stream (field order)
+    _claim: Option<AsioClaim>,
     done: Arc<AtomicBool>,
     info: StreamInfo,
 }
@@ -912,7 +976,7 @@ pub fn start_test_tone(settings: &AudioSettings) -> Result<ToneStream, String> {
     let done = Arc::new(AtomicBool::new(false));
     let lost: Lost = Arc::new(Mutex::new(None));
     let flag = done.clone();
-    let (stream, info) = open_stream(settings, RateChoice::Prefer(TONE_RATE), lost, |rate| ToneSource {
+    let (stream, info, claim) = open_stream(settings, RateChoice::Prefer(TONE_RATE), lost, |rate| ToneSource {
         samples: test_tone(rate),
         pos: 0,
         tail: rate as usize / 5,
@@ -920,7 +984,7 @@ pub fn start_test_tone(settings: &AudioSettings) -> Result<ToneStream, String> {
         right: settings.right as usize,
         done: flag.clone(),
     })?;
-    Ok(ToneStream { _stream: stream, done, info })
+    Ok(ToneStream { _stream: stream, _claim: claim, done, info })
 }
 
 #[cfg(test)]

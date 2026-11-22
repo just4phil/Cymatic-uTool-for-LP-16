@@ -1120,10 +1120,10 @@ impl Lp16App {
             audio: AudioPanel::default(),
             midi: MidiPanel::default(),
         };
-        app.rehearsal.set_settings(AudioSettings::from(&app.config));
-        app.rehearsal.set_midi_port(&app.config.midi_port);
-        app.rehearsal.set_autoplay(app.config.rehearsal_autoplay);
-        app.rehearsal.set_mix(app.config.mixes.active().params());
+        app.rehearsal.session.set_settings(AudioSettings::from(&app.config));
+        app.rehearsal.session.set_midi_port(&app.config.midi_port);
+        app.rehearsal.session.set_autoplay(app.config.rehearsal_autoplay);
+        app.rehearsal.session.set_mix(app.config.mixes.active().params());
         app.refresh();
         app
     }
@@ -1182,7 +1182,7 @@ impl Lp16App {
         // the Rehearsal tab plays these playlists
         let for_player: Vec<_> = self.playlists.iter().map(|p| (p.name.clone(), to_pl_songs(&p.songs))).collect();
         self.backup.set_library(&audio_lib, for_player.clone());
-        self.rehearsal.set_library(&audio_lib, for_player);
+        self.rehearsal.session.set_library(&audio_lib, for_player);
         self.x_songs.retain(|&i| i < self.songs.len());
         self.x_playlists.retain(|&i| i < self.playlists.len());
         self.drives = list_drives();
@@ -1240,7 +1240,7 @@ impl Lp16App {
         let lib = self.lib();
         let old = PathBuf::from(&self.songs[index].path);
         if !copy {
-            self.rehearsal.song_changed(&self.songs[index].path);
+            self.rehearsal.session.song_changed(&self.songs[index].path);
         }
         let result = if copy { lib.copy_song(&old, new_name) } else { lib.rename_song(&old, new_name) };
         let ok = self.lib_ok(result);
@@ -1255,7 +1255,7 @@ impl Lp16App {
         let result = self.lib().rename_playlist(&old, new_name, copy);
         if self.lib_ok(result) {
             if !copy {
-                self.rehearsal.playlist_renamed(&old, new_name);
+                self.rehearsal.session.playlist_renamed(&old, new_name);
             }
             self.refresh();
             self.select_playlist_name(new_name);
@@ -1263,7 +1263,7 @@ impl Lp16App {
     }
 
     fn delete_song(&mut self, index: usize) {
-        self.rehearsal.song_changed(&self.songs[index].path);
+        self.rehearsal.session.song_changed(&self.songs[index].path);
         let path = PathBuf::from(&self.songs[index].path);
         match self.lib().delete_song(&path) {
             Ok(()) => {
@@ -1278,7 +1278,7 @@ impl Lp16App {
         let name = self.playlists[index].name.clone();
         let result = self.lib().delete_playlist(&name);
         if self.lib_ok(result) {
-            self.rehearsal.playlist_deleted(&name);
+            self.rehearsal.session.playlist_deleted(&name);
             self.sel = Sel::PlaylistsFolder;
             self.refresh();
         }
@@ -1339,7 +1339,7 @@ impl Lp16App {
         if let (Some(i), false, Some(false)) = (index, same_name, copy_or_rename) {
             // saved under a new name and the old one removed: a rename
             let old = self.playlists[i].name.clone();
-            self.rehearsal.playlist_renamed(&old, &name);
+            self.rehearsal.session.playlist_renamed(&old, &name);
         }
         self.refresh();
         self.select_playlist_name(&name);
@@ -1617,11 +1617,11 @@ impl eframe::App for Lp16App {
             });
         // while the backup tab is shown the player plays its mix
         let stereo = (self.tab == Tab::Backup).then(|| self.backup.preview(&self.config.backup.mix));
-        self.rehearsal.set_stereo(stereo);
+        self.rehearsal.session.set_stereo(stereo);
         // a changed song mix is saved a moment after the last change; the
         // lists show the mixer symbol from the file
         self.rehearsal.tick(ctx);
-        for path in self.rehearsal.take_saved_songs() {
+        for path in self.rehearsal.session.take_saved_songs() {
             let k = key(&path);
             let audio_lib = self.config.audio_lib.clone();
             for s in self.songs.iter_mut().filter(|s| key(&s.path) == k) {
@@ -1657,7 +1657,7 @@ impl eframe::App for Lp16App {
             ctx.request_repaint_after(wait);
         }
         // the position display moves while a song plays
-        if self.rehearsal.is_playing() {
+        if self.rehearsal.session.is_playing() {
             ctx.request_repaint_after(std::time::Duration::from_millis(33));
         }
     }
@@ -1666,7 +1666,7 @@ impl eframe::App for Lp16App {
         // the rehearsal mix is always saved when the program ends
         let _ = save_mixes(&config_path(), &self.config.mixes);
         let _ = save_backup(&config_path(), &self.config.backup);
-        self.rehearsal.shutdown();
+        self.rehearsal.session.shutdown();
     }
 }
 
@@ -3245,19 +3245,19 @@ impl Lp16App {
     /// are saved at once and handed to the rehearsal player, which uses
     /// them the next time it opens its stream.
     fn audio_output(&mut self, ui: &mut Ui) {
-        let running = self.rehearsal.stream_info().cloned();
-        let playing = self.rehearsal.is_playing();
-        let error = self.rehearsal.error().map(str::to_string);
+        let running = self.rehearsal.session.stream_info().cloned();
+        let playing = self.rehearsal.session.is_playing();
+        let error = self.rehearsal.session.error().map(str::to_string);
         let out = self.audio.ui(ui, &mut self.config, running.as_ref(), playing, error.as_deref());
         if out.changed {
-            self.rehearsal.set_settings(AudioSettings::from(&self.config));
+            self.rehearsal.session.set_settings(AudioSettings::from(&self.config));
             if let Err(e) = save_config(&config_path(), &self.config) {
                 self.message("Settings", format!("Cannot save {}:\n{}", config_path().display(), e));
             }
         }
         if out.tone {
             // the tone may need the device that the idle stream holds
-            self.rehearsal.park();
+            self.rehearsal.session.park();
             self.audio.start_tone(&self.config);
         }
     }
@@ -3266,18 +3266,18 @@ impl Lp16App {
     /// is saved at once and handed to the rehearsal player, which opens it
     /// at the next Play.
     fn midi_output(&mut self, ui: &mut Ui) {
-        let status = self.rehearsal.midi_status();
-        let can_test = self.rehearsal.has_midi_file();
+        let status = self.rehearsal.session.midi_status();
+        let can_test = self.rehearsal.session.has_midi_file();
         let out = self.midi.ui(ui, &mut self.config, can_test, &status);
         if out.changed {
-            self.rehearsal.set_midi_port(&self.config.midi_port);
+            self.rehearsal.session.set_midi_port(&self.config.midi_port);
             if let Err(e) = save_config(&config_path(), &self.config) {
                 self.message("Settings", format!("Cannot save {}:
 {}", config_path().display(), e));
             }
         }
         if out.test {
-            let sent = self.rehearsal.send_midi_test();
+            let sent = self.rehearsal.session.send_midi_test();
             self.midi.set_test_note(if sent { None } else { Some("The MIDI file of the loaded song could not be read.".to_string()) });
         }
     }
@@ -3571,7 +3571,7 @@ impl Lp16App {
         let path = self.songs[index].path.clone();
         match SongProject::load(&path, &self.config.audio_lib) {
             Ok(prj) => {
-                self.rehearsal.play_song(&prj);
+                self.rehearsal.session.play_song(&prj);
                 self.tab = Tab::Rehearsal;
             }
             Err(e) => self.message("Play in Rehearsal", format!("The Song can't be opened:
@@ -3591,8 +3591,8 @@ impl Lp16App {
     fn load_in_mixer(&mut self, path: &str, title: &str) {
         match SongProject::load(path, &self.config.audio_lib) {
             Ok(prj) => {
-                self.rehearsal.load_song(&prj);
-                self.rehearsal.edit_song_mix();
+                self.rehearsal.session.load_song(&prj);
+                self.rehearsal.session.edit_song_mix();
                 self.tab = Tab::Rehearsal;
             }
             Err(e) => self.message(title, format!("The Song can't be opened:
@@ -3604,7 +3604,7 @@ impl Lp16App {
     /// first song, show the tab.
     fn play_playlist_in_rehearsal(&mut self, index: usize) {
         let name = self.playlists[index].name.clone();
-        self.rehearsal.play_playlist(&name);
+        self.rehearsal.session.play_playlist(&name);
         self.tab = Tab::Rehearsal;
     }
 
@@ -3667,7 +3667,7 @@ impl Lp16App {
         }
         match clicked {
             Some(0) => {
-                self.rehearsal.song_changed(&path);
+                self.rehearsal.session.song_changed(&path);
                 let ed = self.song_ed.as_mut().unwrap();
                 match ed.save() {
                     Ok(()) => {

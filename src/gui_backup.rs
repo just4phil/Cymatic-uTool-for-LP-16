@@ -14,7 +14,8 @@ use crate::gui_app::{folder_btn, small_btn, DIM, ORANGE, PANEL, RED, TEXT};
 use crate::gui_mixer::{update_shown, FLOOR_DB, GREEN};
 use crate::gui_mixer_tab::backup_side;
 use crate::gui_playlist::playlist_combo;
-use crate::gui_rehearsal::{track_names, RehearsalPanel, TRANSPORT_SMALL};
+use crate::gui_rehearsal::{RehearsalPanel, TRANSPORT_SMALL};
+use lp16_tool::rehearsal_session::track_names;
 use eframe::egui::{self, vec2, Align2, Color32, FontId, RichText, Sense, Stroke, Ui};
 use lp16_tool::backup::{render_song, Tags};
 use lp16_tool::backup_mix::{file_name, unique_names, BackupMix, BackupSettings};
@@ -306,7 +307,7 @@ impl BackupPanel {
         let Some(playlist) = self.playlist.clone() else { return };
         let songs: Vec<String> = self.songs().map(|s| s.iter().map(|s| s.name.clone()).collect()).unwrap_or_default();
         // the player has this playlist loaded: its transport applies
-        let ours = player.loaded_playlist() == Some(playlist.as_str());
+        let ours = player.session.loaded_playlist() == Some(playlist.as_str());
         let st = status.filter(|s| ours && s.state != PlayState::Empty);
         if let Some(st) = st {
             player.keys(ui, st);
@@ -328,7 +329,7 @@ impl BackupPanel {
                 });
                 if let Some(i) = chosen {
                     self.preview_index = i;
-                    player.preview_song(&playlist, i, playing);
+                    player.session.preview_song(&playlist, i, playing);
                 }
                 ui.add_space(8.0);
                 if ours {
@@ -338,7 +339,7 @@ impl BackupPanel {
                     .on_hover_text("Load the playlist into the player and play the chosen song")
                     .clicked()
                 {
-                    player.preview_song(&playlist, current, true);
+                    player.session.preview_song(&playlist, current, true);
                 }
                 if let Some(st) = st {
                     let (text, dragging) = player.time_text(st);
@@ -361,7 +362,7 @@ impl BackupPanel {
                 p.circle_filled(egui::pos2(rect.left() + 9.0, rect.center().y), 5.0, if clip { RED } else { Color32::from_rgb(0x50, 0x28, 0x28) });
                 p.text(egui::pos2(rect.left() + 20.0, rect.center().y), Align2::LEFT_CENTER, "CLIP", FontId::proportional(11.0), if clip { RED } else { DIM });
                 if resp.on_hover_text("A side went above 0 dBFS (the MP3 would be clipped). Click to reset.").clicked() {
-                    player.reset_clip();
+                    player.session.reset_clip();
                 }
             });
             if let Some(st) = st {
@@ -369,9 +370,9 @@ impl BackupPanel {
                 let w = ui.available_width();
                 player.progress(ui, st, w);
             }
-            if let Some(e) = player.error() {
+            if let Some(e) = player.session.error() {
                 ui.label(RichText::new(e).size(12.5).color(RED));
-            } else if !ours && player.loaded_playlist().is_some() && status.map(|s| s.state == PlayState::Playing).unwrap_or(false) {
+            } else if !ours && player.session.loaded_playlist().is_some() && status.map(|s| s.state == PlayState::Playing).unwrap_or(false) {
                 ui.label(
                     RichText::new("The player is playing another playlist (Rehearsal tab); Play loads this one.")
                         .size(12.5)

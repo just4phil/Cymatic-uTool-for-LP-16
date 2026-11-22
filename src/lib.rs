@@ -21,6 +21,9 @@ pub mod audio_out;
 pub mod rehearsal;
 #[cfg(feature = "player")]
 pub mod rehearsal_queue;
+/// The rehearsal player's session: queue, stream life cycle, song mix.
+#[cfg(feature = "player")]
+pub mod rehearsal_session;
 #[cfg(feature = "player")]
 pub mod rehearsal_midi;
 #[cfg(feature = "player")]
