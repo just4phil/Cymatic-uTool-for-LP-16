@@ -1,21 +1,25 @@
 //! The "Rehearsal" tab: the playlist and song list on the left, the song in
-//! the rehearsal player in the middle, the rehearsal mix below. All the
+//! the rehearsal player in the middle, the mixer below it. The list and the
+//! mixer can be dragged wider and taller; the strips scale with the mixer's
+//! frame. The mixer edits the rehearsal mix or, in song mode, the song mix of
+//! the loaded song (its uTool2 mixer values, saved in its .songprj). All the
 //! logic (mixing, transport, the queue, reading) is in the library
 //! (`lp16_tool::rehearsal`, `lp16_tool::rehearsal_queue`,
 //! `lp16_tool::audio_out`); this only draws and sends commands.
 
 use crate::gui_app::{DIM, LINE, ORANGE, PANEL, RED, TEXT};
-use crate::gui_mixer::MixerPanel;
+use crate::gui_mixer::MixerOutcome;
+use crate::gui_mixer_tab::{ConsoleMode, MixerConsole};
 use crate::gui_playlist;
-use eframe::egui::{self, vec2, Align, Color32, Key, Layout, Modifiers, RichText, Sense, Stroke, Ui};
+use eframe::egui::{self, vec2, Align, Color32, Key, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui};
 use lp16_tool::audio_out::{AudioSettings, Command, Player, StreamInfo};
 use lp16_tool::midi_out::{MidiLink, PortStatus};
-use lp16_tool::mix::{MixLibrary, MixParams, STRIPS};
+use lp16_tool::mix::{set_song_strip, song_strips, MixLibrary, MixParams, SongStrip, STRIPS};
 use lp16_tool::read_midi_events;
-use lp16_tool::rehearsal::{fmt_clock, Engine, Levels, PlayState, Status};
+use lp16_tool::rehearsal::{fmt_clock, Engine, Levels, PlayState, Status, StereoGains};
 use lp16_tool::rehearsal_midi::start_messages;
 use lp16_tool::rehearsal_queue::{
-    entries_from_playlist, find_path, next_caption, same_songs, song_rows, QueueEntry, SongRow,
+    entries_from_playlist, find_path, next_caption, same_path, same_songs, song_rows, QueueEntry, SongRow,
 };
 use lp16_tool::{PlaylistSong, SongProject};
 use std::sync::Arc;
@@ -27,12 +31,19 @@ const LONG_STEP_SECONDS: f64 = 30.0;
 /// Quick jumps add up to the last target for this long, because the status
 /// only shows it after the next audio block.
 const SEEK_MEMORY: Duration = Duration::from_millis(400);
-/// Width of the left part (playlist and song list).
+/// Width of the left part (playlist and song list) at the start, and the
+/// narrowest it can be dragged; at most it takes this share of the tab.
 const LIST_WIDTH: f32 = 290.0;
-/// The song list scrolls beyond this height.
-const LIST_MAX_HEIGHT: f32 = 330.0;
-/// Height reserved above the song list for the autoplay checkbox.
-const LIST_HEADER: f32 = 28.0;
+const MIN_LIST_WIDTH: f32 = 160.0;
+const MAX_LIST_SHARE: f32 = 0.6;
+/// Share of the height the mixer gets at the start, the lowest it can be
+/// dragged, and the room it always leaves to the player above it.
+const MIXER_SHARE: f32 = 0.6;
+const MIN_MIXER_HEIGHT: f32 = 120.0;
+const MIN_PLAYER_HEIGHT: f32 = 120.0;
+/// A changed song mix is saved this long after the last change (and when
+/// the song changes, the mode is left or the program ends).
+const SONG_SAVE_DELAY: Duration = Duration::from_millis(800);
 /// How long the MIDI indicator stays lit after a message.
 const MIDI_FLASH: Duration = Duration::from_millis(150);
 
@@ -67,9 +78,12 @@ pub struct RehearsalPanel {
     /// the last target sent, and when
     last_seek: Option<(f64, Instant)>,
     /// the rehearsal mix (below the player)
-    mixer: MixerPanel,
+    mixer: MixerConsole,
     /// the mix the engine should use; sent again to every new stream
     mix: MixParams,
+    /// left/right gains instead of the mix (the preview of the MP3 backup
+    /// tab); sent again to every new stream
+    stereo: Option<StereoGains>,
     /// per LP-16 output the names of the tracks of the loaded song, and the
     /// queue index they are for
     track_names: [String; STRIPS],
@@ -82,16 +96,40 @@ pub struct RehearsalPanel {
     autoplay: bool,
     /// the checkbox was changed (see `take_autoplay_change`)
     autoplay_changed: bool,
+    /// the mixer edits the song mix of the loaded song
+    song_mode: bool,
+    /// the song mix being edited (follows the loaded song in song mode)
+    song_edit: Option<SongEdit>,
+    /// why the last save of a song mix failed
+    song_error: Option<String>,
+    /// song files whose mix was saved (see `take_saved_songs`)
+    saved_songs: Vec<String>,
 }
 
-/// The height the song list and the player get: from `top` down to the
-/// bottom of the window, but at least `LIST_MAX_HEIGHT`.
-pub(crate) fn list_room(window_bottom: f32, top: f32) -> f32 {
-    (window_bottom - top).max(LIST_MAX_HEIGHT)
+/// The song mix of one song while it is edited.
+struct SongEdit {
+    /// queue entry
+    index: usize,
+    project: SongProject,
+    strips: [SongStrip; STRIPS],
+    /// outputs the song has a track on
+    used: [bool; STRIPS],
+    /// changed and not saved yet, since
+    dirty: Option<Instant>,
+}
+
+/// The range the list can be dragged in, for a tab `total` wide.
+fn list_width_range(total: f32) -> std::ops::RangeInclusive<f32> {
+    MIN_LIST_WIDTH..=(total * MAX_LIST_SHARE).max(MIN_LIST_WIDTH)
+}
+
+/// The range the mixer can be dragged in, for a tab `total` high.
+fn mixer_height_range(total: f32) -> std::ops::RangeInclusive<f32> {
+    MIN_MIXER_HEIGHT..=(total - MIN_PLAYER_HEIGHT).max(MIN_MIXER_HEIGHT)
 }
 
 /// The track names per strip: tracks on the same output are joined.
-fn track_names(project: &SongProject) -> [String; STRIPS] {
+pub(crate) fn track_names(project: &SongProject) -> [String; STRIPS] {
     let mut names: [String; STRIPS] = Default::default();
     for t in &project.tracks {
         if t.channel < 0 || t.channel as usize >= STRIPS {
@@ -182,6 +220,38 @@ impl RehearsalPanel {
         }
     }
 
+    /// Play with these left/right gains per strip instead of the rehearsal
+    /// mix (the "Export Stereo-MP3" tab while it is shown); None = the
+    /// rehearsal mix. Only a change is sent.
+    pub fn set_stereo(&mut self, stereo: Option<StereoGains>) {
+        if stereo == self.stereo {
+            return;
+        }
+        self.stereo = stereo;
+        if let Some(player) = &self.player {
+            player.send(Command::SetStereo(stereo));
+        }
+    }
+
+    /// Name of the loaded playlist (None: a single song or nothing).
+    pub fn loaded_playlist(&self) -> Option<&str> {
+        self.playlist.as_deref()
+    }
+
+    /// Song `index` of playlist `name`: the playlist is loaded if it is not
+    /// the loaded one, then the song is started (`play`) or loaded stopped
+    /// at its beginning.
+    pub fn preview_song(&mut self, name: &str, index: usize, play: bool) {
+        if self.playlist.as_deref() != Some(name) {
+            self.play_playlist(name);
+        }
+        if play {
+            self.start(index, true, false);
+        } else {
+            self.click_song(index);
+        }
+    }
+
     /// What the open stream runs with (for the settings).
     pub fn stream_info(&self) -> Option<&StreamInfo> {
         self.player.as_ref().map(|p| p.info())
@@ -190,6 +260,123 @@ impl RehearsalPanel {
     /// The last error of the audio output, if any.
     pub fn error(&self) -> Option<&str> {
         self.device_error.as_deref()
+    }
+
+    // -- the song mix ----------------------------------------------------------
+
+    /// Show the song mix of the loaded song in the mixer (Home > song >
+    /// Mixer, or the "Song mix" button).
+    pub fn edit_song_mix(&mut self) {
+        self.song_mode = true;
+        self.song_error = None;
+    }
+
+    /// Back to the rehearsal mix; a changed song mix is saved now.
+    pub fn leave_song_mix(&mut self) {
+        self.save_song_mix(true);
+        self.song_mode = false;
+        self.song_edit = None;
+    }
+
+    /// The song files whose song mix was saved since the last call, so the
+    /// owner reads them again (the symbol in the lists).
+    pub fn take_saved_songs(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.saved_songs)
+    }
+
+    /// Called every frame, whichever tab is shown: saves a changed song mix
+    /// once the user paused, and asks for the frame that does it.
+    pub fn tick(&mut self, ctx: &egui::Context) {
+        self.save_song_mix(false);
+        if self.song_edit.as_ref().map(|e| e.dirty.is_some()).unwrap_or(false) {
+            ctx.request_repaint_after(SONG_SAVE_DELAY);
+        }
+    }
+
+    /// In song mode the edited song follows the loaded one (queue entry
+    /// `index`); the song mix of the one before is saved first.
+    fn follow_song(&mut self, index: Option<usize>) {
+        if !self.song_mode {
+            return;
+        }
+        let path = index.and_then(|i| self.entries.get(i)).and_then(|e| e.path()).map(str::to_string);
+        let same = match (&self.song_edit, &path) {
+            (Some(e), Some(p)) => Some(e.index) == index && same_path(&e.project.path, p),
+            _ => false,
+        };
+        if same {
+            return;
+        }
+        self.save_song_mix(true);
+        self.song_edit = index.and_then(|i| {
+            let project = self.entries.get(i)?.project.as_ref().ok()?.clone();
+            let mut used = [false; STRIPS];
+            for t in &project.tracks {
+                if t.channel >= 0 && (t.channel as usize) < STRIPS {
+                    used[t.channel as usize] = true;
+                }
+            }
+            Some(SongEdit { index: i, strips: song_strips(&project), project, used, dirty: None })
+        });
+        if self.song_edit.is_none() {
+            // nothing loaded (any more): the rehearsal mix again
+            self.song_mode = false;
+        }
+    }
+
+    /// The song mix was changed in the mixer: into the project, to the
+    /// engine at once, saved a little later.
+    fn song_mix_changed(&mut self) {
+        let Some(edit) = self.song_edit.as_mut() else { return };
+        let mut changed = false;
+        for k in 0..STRIPS {
+            changed |= set_song_strip(&mut edit.project, k, edit.strips[k]);
+        }
+        // what the project holds now (a level is stored with one decimal)
+        edit.strips = song_strips(&edit.project);
+        if !changed {
+            return;
+        }
+        edit.dirty = Some(Instant::now());
+        if let Some(player) = &self.player {
+            player.send(Command::SetSongGains(edit.index, edit.strips.map(|s| s.gain())));
+        }
+    }
+
+    /// Write a changed song mix into the song file (`force`: now, else only
+    /// after `SONG_SAVE_DELAY`). The queue gets the new project too, so the
+    /// song plays with it the next time it is opened.
+    fn save_song_mix(&mut self, force: bool) {
+        let Some(edit) = self.song_edit.as_mut() else { return };
+        let Some(since) = edit.dirty else { return };
+        if !force && since.elapsed() < SONG_SAVE_DELAY {
+            return;
+        }
+        edit.dirty = None;
+        if let Err(e) = edit.project.save() {
+            self.song_error = Some(e.to_string());
+            return;
+        }
+        self.song_error = None;
+        let project = edit.project.clone();
+        self.saved_songs.push(project.path.clone());
+        let mut entries: Vec<QueueEntry> = (*self.entries).clone();
+        let mut any = false;
+        for e in entries.iter_mut() {
+            if let Ok(p) = e.project.as_mut() {
+                if same_path(&p.path, &project.path) {
+                    *p = project.clone();
+                    any = true;
+                }
+            }
+        }
+        if any {
+            let entries = Arc::new(entries);
+            self.entries = entries.clone();
+            if let Some(player) = &self.player {
+                player.send(Command::ReplaceQueue(entries));
+            }
+        }
     }
 
     // -- the library -----------------------------------------------------------
@@ -230,6 +417,8 @@ impl RehearsalPanel {
     /// The song file `path` is about to be renamed, deleted or saved: stop
     /// and unload the queue if the song is in it.
     pub fn song_changed(&mut self, path: &str) {
+        // a changed song mix goes into the file first (the editor keeps it)
+        self.save_song_mix(true);
         if find_path(&self.entries, path, None).is_some() {
             self.clear(CHANGED_NOTICE.to_string());
         }
@@ -247,6 +436,8 @@ impl RehearsalPanel {
         self.parked = None;
         self.names_for = None;
         self.track_names = Default::default();
+        self.song_edit = None;
+        self.song_mode = false;
         self.notice = Some(notice);
     }
 
@@ -326,6 +517,7 @@ impl RehearsalPanel {
         match Player::open(&self.settings, rate, Some(&self.midi)) {
             Ok(p) => {
                 p.send(Command::SetMix(self.mix));
+                p.send(Command::SetStereo(self.stereo));
                 p.send(Command::SetAutoplay(self.autoplay));
                 self.player = Some(p);
                 self.device_error = None;
@@ -536,6 +728,7 @@ impl RehearsalPanel {
 
     /// End the audio stream and the reader thread (closing the program).
     pub fn shutdown(&mut self) {
+        self.save_song_mix(true);
         self.player = None;
         self.midi.shutdown(); // All Notes Off for sounding notes, closes the port
     }
@@ -685,57 +878,96 @@ impl RehearsalPanel {
 
     // -- drawing ---------------------------------------------------------------
 
-    /// Draw the tab: the playlist and the player, below them the rehearsal
-    /// mix `mixes`. Returns true if the mix (values or presets) was changed,
-    /// so the caller saves the config.
+    /// Draw the tab: the song list on the left, the player, below it the
+    /// rehearsal mix `mixes`. The list and the mixer are panels the user can
+    /// drag wider and taller (egui keeps their size while the program runs).
+    /// Returns true if the mix (values or presets) was changed, so the
+    /// caller saves the config.
     pub fn ui(&mut self, ui: &mut Ui, mixes: &mut MixLibrary) -> bool {
         let status = self.begin_frame(ui.ctx());
         let levels = self.take_levels();
-        let mut changed = false;
-        egui::ScrollArea::vertical().id_source("rehearsal_scroll").auto_shrink([false, false]).show(ui, |ui| {
-            // the compact mixer on top
-            let out = self.mixer.ui(ui, mixes, &self.track_names, &levels);
-            if out.changed {
-                changed = true;
-                self.set_mix(mixes.active().params());
-            }
-            if out.reset_clip {
-                self.reset_clip();
-            }
-            ui.add_space(10.0);
-            ui.separator();
-            ui.add_space(6.0);
-            // below it the song list and the player; the list scrolls by
-            // itself, so the player stays in view
-            ui.horizontal_top(|ui| {
-                let total = ui.available_width();
-                let left = LIST_WIDTH.min(total * 0.4);
-                // `horizontal_top` only offers one line of height, and a child
-                // gets exactly the height it is allocated: so give the list and
-                // the player the room down to the bottom of the window (at
-                // least `LIST_MAX_HEIGHT`). The list takes what it needs and
-                // scrolls beyond that.
-                let room = list_room(ui.ctx().screen_rect().bottom(), ui.cursor().min.y);
-                ui.allocate_ui_with_layout(vec2(left, room), Layout::top_down(Align::LEFT), |ui| {
-                    ui.set_width(left);
-                    self.autoplay_option(ui);
-                    ui.add_space(4.0);
-                    egui::ScrollArea::vertical()
-                        .id_source("rehearsal_list_scroll")
-                        .max_height((room - LIST_HEADER).max(LIST_MAX_HEIGHT - LIST_HEADER))
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| self.list_area(ui, status.as_ref()));
-                    self.list_warnings(ui, status.as_ref());
-                });
-                ui.separator();
-                let right = ui.available_width().max(300.0);
-                ui.allocate_ui_with_layout(vec2(right, room), Layout::top_down(Align::Center), |ui| {
-                    ui.set_width(right);
-                    self.player_area(ui, status.as_ref());
-                });
+        let (total_w, total_h) = (ui.available_width(), ui.available_height());
+        egui::SidePanel::left("rehearsal_list_panel")
+            .resizable(true)
+            .default_width(LIST_WIDTH)
+            .width_range(list_width_range(total_w))
+            .frame(egui::Frame::none().inner_margin(Margin { right: 6.0, ..Default::default() }))
+            .show_inside(ui, |ui| self.list_side(ui, status.as_ref()));
+        let mut out = MixerOutcome::default();
+        egui::TopBottomPanel::bottom("rehearsal_mixer_panel")
+            .resizable(true)
+            .default_height((total_h * MIXER_SHARE).max(MIN_MIXER_HEIGHT))
+            .height_range(mixer_height_range(total_h))
+            .frame(egui::Frame::none().inner_margin(Margin { left: 6.0, top: 8.0, ..Default::default() }))
+            .show_inside(ui, |ui| {
+                let loaded = status.as_ref().filter(|s| s.state != PlayState::Empty);
+                self.follow_song(loaded.and_then(|s| s.index));
+                let names = self.track_names.clone();
+                let error = self.song_error.clone();
+                let mode = match self.song_edit.as_mut() {
+                    Some(edit) if self.song_mode => ConsoleMode::Song {
+                        name: &edit.project.name,
+                        strips: &mut edit.strips,
+                        used: edit.used,
+                        error: error.as_deref(),
+                    },
+                    _ => {
+                        let song = loaded
+                            .and_then(|s| s.index)
+                            .and_then(|i| self.entries.get(i))
+                            .and_then(|e| e.project.as_ref().ok());
+                        ConsoleMode::Rehearsal {
+                            song: song.map(song_strips).unwrap_or([SongStrip::default(); STRIPS]),
+                            song_name: song.map(|p| p.name.as_str()),
+                        }
+                    }
+                };
+                out = self.mixer.ui(ui, "rehearsal_mixer_scroll", mixes, mode, &names, &levels);
             });
-        });
-        changed
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().inner_margin(Margin { left: 6.0, ..Default::default() }))
+            .show_inside(ui, |ui| {
+                egui::ScrollArea::vertical().id_source("rehearsal_player_scroll").auto_shrink([false, false]).show(
+                    ui,
+                    |ui| {
+                        ui.with_layout(Layout::top_down(Align::Center), |ui| self.player_area(ui, status.as_ref()));
+                    },
+                );
+            });
+        if out.changed {
+            self.set_mix(mixes.active().params());
+        }
+        if out.reset_clip {
+            self.reset_clip();
+        }
+        if out.song_changed {
+            self.song_mix_changed();
+        }
+        if out.leave_song {
+            self.leave_song_mix();
+        }
+        if out.enter_song {
+            self.edit_song_mix();
+            ui.ctx().request_repaint();
+        }
+        out.changed
+    }
+
+    /// The left panel: autoplay, the playlist and the song list (it scrolls
+    /// by itself), the skipped songs at the bottom.
+    fn list_side(&mut self, ui: &mut Ui, status: Option<&Status>) {
+        self.autoplay_option(ui);
+        ui.add_space(4.0);
+        if status.map(|s| !s.queue_warnings.is_empty()).unwrap_or(false) {
+            egui::TopBottomPanel::bottom("rehearsal_list_warnings")
+                .frame(egui::Frame::none())
+                .show_separator_line(false)
+                .show_inside(ui, |ui| self.list_warnings(ui, status));
+        }
+        egui::ScrollArea::vertical()
+            .id_source("rehearsal_list_scroll")
+            .auto_shrink([false, false])
+            .show(ui, |ui| self.list_area(ui, status));
     }
 
     /// The work every tab that shows the player does first in each frame:
@@ -773,12 +1005,6 @@ impl RehearsalPanel {
         self.player.as_ref().map(|p| p.take_levels()).unwrap_or_default()
     }
 
-    /// The names of the tracks of the loaded song per LP-16 output (empty =
-    /// no track).
-    pub fn strip_names(&self) -> &[String; STRIPS] {
-        &self.track_names
-    }
-
     /// The clip LED of the master was clicked.
     pub fn reset_clip(&mut self) {
         if let Some(player) = &self.player {
@@ -806,24 +1032,6 @@ impl RehearsalPanel {
         self.playlist.is_none() && !self.entries.is_empty()
     }
 
-    /// The playlist combo; choosing a playlist loads it (stopped).
-    pub fn playlist_picker(&mut self, ui: &mut Ui, id: &str, width: f32) {
-        let names = self.playlist_names();
-        let single = self.is_single();
-        if let Some(name) = gui_playlist::playlist_combo(ui, id, width, &names, self.playlist.as_deref(), single) {
-            self.play_playlist(&name);
-        }
-    }
-
-    /// The song combo of the loaded playlist; choosing a song is a single
-    /// click in the list (`click_song`), Play starts it.
-    pub fn song_picker(&mut self, ui: &mut Ui, id: &str, width: f32, status: Option<&Status>) {
-        let rows = self.rows(status);
-        if let Some(i) = gui_playlist::song_combo(ui, id, width, &rows) {
-            self.click_song(i);
-        }
-    }
-
     /// Playlist combo and song list.
     fn list_area(&mut self, ui: &mut Ui, status: Option<&Status>) {
         let rows = self.rows(status);
@@ -849,37 +1057,6 @@ impl RehearsalPanel {
                 ui.add(egui::Label::new(RichText::new(format!("Warning: {}", w)).size(12.0).color(ORANGE)).wrap(true));
             }
         }
-    }
-
-    /// "Next: <song> ..." while the player waits, else the song that comes
-    /// next in the playlist.
-    pub fn next_line(&self, st: &Status) -> Option<String> {
-        if let Some(c) = next_caption(st.state, &st.song_name, st.countdown_seconds) {
-            return Some(c);
-        }
-        let entry = st.next_index.and_then(|i| self.entries.get(i))?;
-        Some(format!("Next: {}", entry.display_name()))
-    }
-
-    /// Problems of the player in a short form: (text, is an error). The
-    /// notice, the audio error, dropouts and the warnings.
-    pub fn problems(&self, status: Option<&Status>) -> Vec<(String, bool)> {
-        let mut v = Vec::new();
-        if let Some(n) = &self.notice {
-            v.push((n.clone(), false));
-        }
-        if let Some(e) = &self.device_error {
-            v.push((e.clone(), true));
-        }
-        if let Some(st) = status {
-            if st.underruns > 0 {
-                v.push((format!("Dropouts: {}", st.underruns), true));
-            }
-            for w in st.queue_warnings.iter().chain(st.warnings.iter()) {
-                v.push((format!("Warning: {}", w), false));
-            }
-        }
-        v
     }
 
     /// "pos / length" for the clock; while the progress bar is dragged it
@@ -919,8 +1096,9 @@ impl RehearsalPanel {
             let playing = st.map(|s| s.state == PlayState::Playing).unwrap_or(false);
             prev = btn(ui, "\u{23ee}", has_prev, small).on_hover_text("Previous song").clicked();
             back = btn(ui, "\u{2212}10 s", st.is_some(), w).clicked();
-            toggle = btn(ui, if playing { "Pause" } else { "Play" }, can_play, w).clicked();
-            stop = btn(ui, "Stop", st.is_some(), w).clicked();
+            let (icon, tip) = if playing { (Icon::Pause, "Pause (Space)") } else { (Icon::Play, "Play (Space)") };
+            toggle = icon_button(ui, icon, can_play, w, style.height).on_hover_text(tip).clicked();
+            stop = icon_button(ui, Icon::Stop, st.is_some(), w, style.height).on_hover_text("Stop (Esc)").clicked();
             forward = btn(ui, "+10 s", st.is_some(), w).clicked();
             next = btn(ui, "\u{23ed}", has_next, small).on_hover_text("Next song").clicked();
         });
@@ -991,7 +1169,7 @@ impl RehearsalPanel {
             );
         } else if has_queue {
             // a playlist is chosen, nothing is loaded yet
-            if big_button(ui, "Play", true, 110.0).clicked() {
+            if icon_button(ui, Icon::Play, true, 110.0, 44.0).on_hover_text("Play (Space)").clicked() {
                 if let Some(first) = self.first_readable(0) {
                     self.start(first, true, true);
                 }
@@ -1090,10 +1268,6 @@ fn midi_summary(port: &str, st: &Status) -> (String, Option<Duration>) {
     (format!("MIDI: {} \u{b7} {} events", port, st.midi.events_sent), lit)
 }
 
-fn big_button(ui: &mut Ui, text: &str, enabled: bool, width: f32) -> egui::Response {
-    sized_button(ui, text, enabled, width, 22.0, 44.0)
-}
-
 fn sized_button(ui: &mut Ui, text: &str, enabled: bool, width: f32, font: f32, height: f32) -> egui::Response {
     ui.add_enabled(
         enabled,
@@ -1103,6 +1277,44 @@ fn sized_button(ui: &mut Ui, text: &str, enabled: bool, width: f32, font: f32, h
             .rounding(4.0)
             .min_size(vec2(width, height)),
     )
+}
+
+/// The symbols of the transport buttons, drawn (not taken from the font).
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Icon {
+    Play,
+    Pause,
+    Stop,
+}
+
+/// A transport button with `icon`; the symbol is scaled to the height.
+fn icon_button(ui: &mut Ui, icon: Icon, enabled: bool, width: f32, height: f32) -> egui::Response {
+    let resp = sized_button(ui, "", enabled, width, 12.0, height);
+    let color = if enabled { TEXT } else { DIM };
+    let c = resp.rect.center();
+    let s = height * 0.42; // size of the symbol
+    let p = ui.painter();
+    match icon {
+        Icon::Play => {
+            // a triangle pointing right, centred by its area
+            let pts = vec![
+                egui::pos2(c.x - s * 0.4, c.y - s / 2.0),
+                egui::pos2(c.x + s * 0.55, c.y),
+                egui::pos2(c.x - s * 0.4, c.y + s / 2.0),
+            ];
+            p.add(egui::Shape::convex_polygon(pts, color, Stroke::NONE));
+        }
+        Icon::Pause => {
+            let bar = vec2(s * 0.3, s);
+            for dx in [-s * 0.27, s * 0.27] {
+                p.rect_filled(egui::Rect::from_center_size(egui::pos2(c.x + dx, c.y), bar), 1.0, color);
+            }
+        }
+        Icon::Stop => {
+            p.rect_filled(egui::Rect::from_center_size(c, vec2(s * 0.85, s * 0.85)), 1.5, color);
+        }
+    }
+    resp
 }
 
 /// Size of the transport buttons.
@@ -1118,10 +1330,11 @@ pub struct TransportStyle {
     pub center: bool,
 }
 
+/// The small buttons of the preview player in the "Export Stereo-MP3" tab.
+pub const TRANSPORT_SMALL: TransportStyle = TransportStyle { font: 14.0, height: 28.0, wide: 62.0, small: 38.0, center: false };
+
 /// The big buttons of the Rehearsal tab.
 pub const TRANSPORT_BIG: TransportStyle = TransportStyle { font: 22.0, height: 44.0, wide: 100.0, small: 56.0, center: true };
-/// The buttons in the bar of the Mixer tab.
-pub const TRANSPORT_COMPACT: TransportStyle = TransportStyle { font: 15.0, height: 28.0, wide: 62.0, small: 38.0, center: false };
 
 /// Position in the song. Click or drag to jump: while dragging `drag`
 /// holds the target (seconds), the jump is returned when the mouse is
@@ -1162,6 +1375,57 @@ mod tests {
     use super::*;
     use lp16_tool::rehearsal_queue::SongRow;
 
+    /// A .songprj with tracks on `channels` (the WAVs need not exist).
+    fn song_file(dir: &std::path::Path, channels: &[i32]) -> SongProject {
+        let _ = std::fs::create_dir_all(dir);
+        let xml = lp16_tool::generate_songprj("Mix Test", 0, 48000, 24, 1);
+        let mut prj = SongProject::parse(&xml, "");
+        prj.tracks = channels.iter().map(|c| lp16_tool::ProjectTrack::new(*c, &format!("t{}.wav", c), "")).collect();
+        let path = dir.join("mixtest.songprj");
+        prj.save_as(path.to_str().unwrap()).unwrap();
+        SongProject::load(path.to_str().unwrap(), "").unwrap()
+    }
+
+    #[test]
+    fn the_song_mix_is_saved_into_the_song_and_used_by_the_queue() {
+        let dir = std::env::temp_dir().join(format!("lp16-gui-songmix-{}", std::process::id()));
+        let prj = song_file(&dir, &[0, 2]);
+        let mut panel = RehearsalPanel::default();
+        panel.load_song(&prj);
+        panel.edit_song_mix();
+        let index = panel.current_status().and_then(|s| s.index);
+        assert_eq!(index, Some(0));
+        panel.follow_song(index);
+        let edit = panel.song_edit.as_mut().expect("song mode edits the loaded song");
+        assert_eq!(edit.used[0..3], [true, false, true]);
+        edit.strips[2] = SongStrip { level_db: 2.0, mute: false };
+        panel.song_mix_changed();
+        // not yet on disk: it waits for a pause of the user
+        let disk = SongProject::load(&prj.path, "").unwrap();
+        assert_eq!(song_strips(&disk)[2], SongStrip::default());
+        panel.save_song_mix(true);
+        let disk = SongProject::load(&prj.path, "").unwrap();
+        assert_eq!(song_strips(&disk)[2], SongStrip { level_db: 2.0, mute: false });
+        assert!(lp16_tool::mix::has_song_mix(&disk));
+        assert_eq!(panel.take_saved_songs(), vec![prj.path.clone()]);
+        // the queue has it too: the next time the song is opened, it plays with it
+        let queued = panel.entries[0].project.as_ref().unwrap();
+        assert_eq!(song_strips(queued)[2].level_db, 2.0);
+        assert!(panel.rows(panel.current_status().as_ref())[0].mixer, "the list shows the symbol");
+        // back to the rehearsal mix
+        panel.leave_song_mix();
+        assert!(!panel.song_mode && panel.song_edit.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn song_mode_ends_when_nothing_is_loaded() {
+        let mut panel = RehearsalPanel::default();
+        panel.edit_song_mix();
+        panel.follow_song(None);
+        assert!(!panel.song_mode);
+    }
+
     fn rows(n: usize) -> Vec<SongRow> {
         (1..=n)
             .map(|i| SongRow {
@@ -1169,6 +1433,7 @@ mod tests {
                 name: format!("Song {}", i),
                 length: "3:00".into(),
                 midi: false,
+                mixer: false,
                 error: None,
                 current: false,
                 marked: i == 1,
@@ -1177,29 +1442,23 @@ mod tests {
             .collect()
     }
 
-    /// The height the list's scroll area shows for `n` songs when the child
-    /// gets `room` pixels, laid out like in `RehearsalPanel::ui`; and the
-    /// height its content needs.
-    fn shown_height(n: usize, room: f32) -> (f32, f32) {
+    /// The height the list's scroll area shows for `n` songs in the left
+    /// panel of a window `height` high, laid out like `RehearsalPanel::ui`;
+    /// and the height its content needs.
+    fn shown_height(n: usize, height: f32) -> (f32, f32) {
         let ctx = egui::Context::default();
         let mut result = (0.0, 0.0);
         let input = egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(1000.0, 700.0))),
+            screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(1400.0, height))),
             ..Default::default()
         };
         let _ = ctx.run(input, |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
-                ui.horizontal_top(|ui| {
-                    ui.allocate_ui_with_layout(vec2(LIST_WIDTH, room), Layout::top_down(Align::LEFT), |ui| {
-                        ui.set_width(LIST_WIDTH);
-                        let out = egui::ScrollArea::vertical()
-                            .max_height(room)
-                            .auto_shrink([false, true])
-                            .show(ui, |ui| {
-                                gui_playlist::ui(ui, &[], None, false, &rows(n));
-                            });
-                        result = (out.inner_rect.height(), out.content_size.y);
+                egui::SidePanel::left("list").default_width(LIST_WIDTH).show_inside(ui, |ui| {
+                    let out = egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        gui_playlist::ui(ui, &[], None, false, &rows(n));
                     });
+                    result = (out.inner_rect.height(), out.content_size.y);
                 });
             });
         });
@@ -1207,20 +1466,41 @@ mod tests {
     }
 
     #[test]
-    fn the_song_list_shows_all_songs_when_it_has_the_room() {
-        // the old layout gave the child 10 px: one row at most was visible
-        let (shown, needed) = shown_height(12, 10.0);
-        assert!(shown < needed / 2.0, "documents the old failure: {} of {}", shown, needed);
-        let room = list_room(700.0, 300.0);
-        let (shown, needed) = shown_height(12, room);
+    fn the_song_list_uses_the_height_of_the_window() {
+        let (shown, needed) = shown_height(12, 900.0);
         assert!(needed > 12.0 * 26.0, "{}", needed);
         assert!(shown + 0.5 >= needed, "all 12 songs are visible: {} of {}", shown, needed);
+        // a low window: the list scrolls, but fills the panel
+        let (shown, needed) = shown_height(40, 500.0);
+        assert!(shown < needed && shown > 400.0, "{} of {}", shown, needed);
     }
 
     #[test]
-    fn the_list_room_is_the_window_height_but_at_least_the_minimum() {
-        assert_eq!(list_room(900.0, 300.0), 600.0);
-        assert_eq!(list_room(900.0, 800.0), LIST_MAX_HEIGHT);
-        assert_eq!(list_room(900.0, 1200.0), LIST_MAX_HEIGHT);
+    fn the_panels_can_be_dragged_within_limits() {
+        assert_eq!(list_width_range(1000.0), MIN_LIST_WIDTH..=600.0);
+        assert_eq!(mixer_height_range(900.0), MIN_MIXER_HEIGHT..=780.0);
+        // a tiny window never gives an empty range
+        assert_eq!(list_width_range(10.0), MIN_LIST_WIDTH..=MIN_LIST_WIDTH);
+        assert_eq!(mixer_height_range(10.0), MIN_MIXER_HEIGHT..=MIN_MIXER_HEIGHT);
+    }
+
+    #[test]
+    fn the_tab_draws_in_small_and_large_windows() {
+        for (w, h) in [(300.0, 200.0), (1200.0, 800.0), (2600.0, 1400.0)] {
+            let ctx = egui::Context::default();
+            let mut panel = RehearsalPanel::default();
+            let mut mixes = MixLibrary::default();
+            for _ in 0..2 {
+                let input = egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), vec2(w, h))),
+                    ..Default::default()
+                };
+                let _ = ctx.run(input, |ctx| {
+                    egui::CentralPanel::default().show(ctx, |ui| {
+                        panel.ui(ui, &mut mixes);
+                    });
+                });
+            }
+        }
     }
 }

@@ -38,6 +38,8 @@ interface modelled on uTool2 and a command line.
 - **Edit Target:** the contents of the stick as a tree, with details on songs and playlists.
 - **Rehearsal player:** plays songs and playlists of the library on an audio output of your
   choice, with a 16-channel rehearsal mix, see [Rehearsal player](#rehearsal-player).
+- **Backup MP3s:** writes a stereo MP3 per song of a playlist (backings left, click right) as an
+  emergency backup, see [Export Stereo-MP3](#export-stereo-mp3-a-backup-for-emergencies).
 
 ## Requirements
 
@@ -165,8 +167,8 @@ Settings tab (WASAPI or ASIO), for rehearsing at home. It also sends the MIDI fi
   | Up / Down | move the mark to the previous / next song (like a click) |
 
   The same functions are on the buttons next to Play.
-- **Playlists:** the song list at the left shows number, name, length and a note symbol if the song
-  has a MIDI file. A song that cannot be read (e.g. its `.songprj` is missing) is red, with the reason
+- **Playlists:** the song list at the left shows number, name, length, a note symbol if the song
+  has a MIDI file and a mixer symbol if it has its own [song mix](#song-mix). A song that cannot be read (e.g. its `.songprj` is missing) is red, with the reason
   as tooltip, and is skipped. **Exactly one song is always marked** (coloured background); after a
   playlist is loaded it is the first playable one. **Play starts the marked song** (a loaded, paused
   song goes on at its position).
@@ -179,14 +181,12 @@ Settings tab (WASAPI or ASIO), for rehearsing at home. It also sends the MIDI fi
   - The keys Up and Down move the mark and click, and Space is Play.
   - When a song ends, the mark moves to the next song (the clicked one, if there is one). At the end of
     the playlist it stays on the last song and the state is "ended"; Play then plays that song again.
-  - The song combo in the Mixer tab is the same as a click.
   - The buttons ⏮ and ⏭ go to the previous and next song:
     - Next: while a song plays the next one starts at once; otherwise it is loaded at position 0 and
       stopped. At the last song nothing happens.
     - Previous: further than 3 s into the song it jumps to its start, otherwise the song before is
       loaded (it starts at once if the player was playing).
-- **Autoplay after 5 seconds** (checkbox above the song list, also in the Mixer tab; the same setting,
-  saved as `rehearsal_autoplay` in `lp16-tool.toml`, off by default). Off: when a song ends, the next
+- **Autoplay after 5 seconds** (checkbox above the song list, saved as `rehearsal_autoplay` in `lp16-tool.toml`, off by default). Off: when a song ends, the next
   one is marked and loaded, and the player waits (the tab says "Next: <song> – press Play").
   On: the next song starts by itself after 5 seconds of silence (the tab says "Next: <song> in <n> s").
   Play during the countdown starts it at once, Pause cancels it, switching autoplay off ends it.
@@ -215,19 +215,31 @@ Settings tab (WASAPI or ASIO), for rehearsing at home. It also sends the MIDI fi
 
 ### Rehearsal mix
 
-At the top of the Rehearsal tab (above the song list and the player) is the **rehearsal mix**: 16 channel strips (LP-16 output
-1 to 16) and a master. It applies to all songs. Each track of the loaded song plays on the strip
-of its LP-16 output (the channel in the `.songprj`); several tracks on one output are summed in
-that strip. A track with an output beyond 16 stays silent and adds a warning. The strip shows
-the output number and the track name; a strip without a track is greyed out ("—") but can still
-be used.
+Below the player in the Rehearsal tab is the **mixer**: 16 channel strips (LP-16 output 1 to 16)
+and a master, in the style of the uTool2 mixer. The song list, the player and the mixer are
+panels: drag the line between the list and the player, or between the player and the mixer, to
+make them wider or taller. The strips fill the width and height of the mixer (they get wider and
+the faders taller with it); below a minimum size the mixer scrolls.
 
-- Per strip: fader (−60 to +6 dB, the very bottom is "off", double-click = 0 dB), pan
-  (−127 to +127 like uTool2, constant power law, double-click = centre), **M**ute and **S**olo
-  (a muted strip stays silent even with Solo) and a level meter with the value in dB.
+The mixer edits the **rehearsal mix** (it applies to all songs) or, in song mode, the
+[song mix](#song-mix) of the loaded song. Each track of the loaded song plays on the strip of its
+LP-16 output (the channel in the `.songprj`); several tracks on one output are summed in that
+strip. A track with an output beyond 16 stays silent and adds a warning. The strip shows the
+output number and the track name; a strip without a track is greyed out ("—") but can still be
+used.
+
+- Per strip: **S**olo and **M**ute (a muted strip stays silent even with Solo), a pan knob
+  (−127 to +127 like uTool2, constant power law; drag up or down, double-click = centre), the
+  level in dB, a fader with a dB scale (−60 to +6 dB, the very bottom is "off", double-click =
+  0 dB) and a level meter.
+- **Typing a level:** double-click the dB value above the fader and type it, e.g. `-0.5`, `-0,5`,
+  `+3`, `-12 dB`, or `-inf` / `off`. Enter or a click elsewhere takes it, Esc cancels.
+- The fader is finer in the range that matters: −10 dB to +6 dB take 60 % of its travel
+  (0 dB is at 80 %), −60 to −10 dB the rest.
 - Master: fader, meter for left and right and a **CLIP** LED. It lights when the master had to
   limit the signal to full scale and stays on until you click it.
-- The meters show the peak after fader and mute, before pan; they fall by 20 dB per second.
+- The meters show the peak after fader and mute (song mix included), before pan; they fall by
+  20 dB per second.
 - Changes act at once during playback without clicks (the gains move over 10 ms).
 - **Presets** are named mixes: choose one in the list, **New** (neutral, "Mix N"), **Copy**,
   **Rename**, **Delete** (the last one cannot be deleted) and **Reset** (back to neutral: all
@@ -237,21 +249,37 @@ be used.
   change, and always when the program ends) as `mix.<n>.name`, `mix.<n>.master`,
   `mix.<n>.ch<k> = "<level> <pan> <mute> <solo>"` (level with one decimal or `off`) and
   `mix_active`.
-- **Mixer tab:** the tab after Rehearsal shows the same rehearsal mix in the style of the uTool2
-  mixer: narrow, tall channel strips (S and M buttons, a pan knob you drag up or down, the level in
-  dB, a tall fader with a dB scale and a meter, the output number and track name) and the master
-  with L/R meters and the CLIP LED. All 16 strips and the master stand side by side; a wider
-  window shows more of them, a narrow one gets a scroll bar. The preset bar is on top. It edits the
-  same mix, preset and config as the small mixer in the Rehearsal tab, and it never writes into
-  songs (so there is no "Save to Song"). At the bottom is the player bar: playlist and song
-  choice, previous/next song, −10 s, Play/Pause, Stop, +10 s, the progress bar with the time, and
-  the "Next: ..." line with warnings. It is the same player as in the Rehearsal tab (MIDI
-  included), and the keyboard shortcuts work in both tabs. In the Home tab, the **Mixer** button of
-  a song loads it into the player (without starting) and opens the Mixer tab.
 - **The rehearsal mix is not exported.** It never goes into a `.songprj`, a playlist, a
-  `song.set` or a `.play`, and not onto the stick. The mixer values of the songs
-  (`monitor_level`, `monitor_pan`, `monitor_mute`, the headphone mix of the LP-16) stay untouched
-  and are ignored by the player.
+  `song.set` or a `.play`, and not onto the stick.
+
+### Song mix
+
+The **song mix** is the uTool2 mixer of a song: level and mute per track (`monitor_level`,
+`monitor_mute` in the `.songprj`). It is saved in the song and exported to the stick with it
+(`output_level`, `channel_mute` in the `song.set`). Use it to correct a single song quickly, e.g. a
+backing track that is a little too loud.
+
+- **Open it:** in the Home tab, the **Mixer** button of a song (also in the song editor) loads the
+  song into the player (without starting) and shows its song mix in the mixer of the Rehearsal tab.
+  Or click **Song mix** next to the preset bar: it edits the song that is loaded. In song mode the
+  strips are brown and the header shows "Song mix" and the song; the mode follows the loaded song
+  (another song in the list, the next song of the playlist).
+- In song mode the fader and the dB value are the song's level (0 dB = no change, shown as
+  `+2.0 dB` etc.; −60 to +6 dB, there is no "off": use Mute) and **M** is the song's mute. Solo and
+  pan stay those of the rehearsal mix (the knob is greyed out): the LP-16 only pans its headphone
+  output. Strips without a track in the song cannot be changed. **Reset** sets all to 0 dB and
+  unmuted; **Back to the rehearsal mix** ends song mode.
+- **In the rehearsal** the song mix adds to the rehearsal mix, for this song only: level =
+  rehearsal level + song level (e.g. rehearsal bass −3 dB, song bass +2 dB: −1 dB), and a track
+  muted in the song is silent. It applies from the first sample of the song, also when autoplay
+  goes to the next song. Changes act at once while the song plays.
+- In the rehearsal mix, a strip on which the loaded song has its own value shows it in orange
+  below the track name ("song +2.0", "song: mute").
+- Changes are written into the `.songprj` a moment after the last change (and when the song
+  changes, song mode ends or the program closes). All tracks on one output get the same values;
+  the pan of the song is kept as it is. Saving the song editor keeps the song mix in the file.
+- A song whose mixer values differ from uTool2's defaults (0 dB, centre, not muted) has a **mixer
+  symbol** (three small faders) in the song list of the Home tab and of the Rehearsal tab.
 
 ### Audio output (Settings tab)
 
@@ -327,6 +355,45 @@ pause, jump, change the song or close the program. Files without notes send noth
 
 **Behringer XR18:** connect the XR18 over USB and choose its MIDI port here. The XR18 passes the
 messages on from its MIDI out to the modeler.
+
+## Export Stereo-MP3: a backup for emergencies
+
+If the LP-16 fails on stage, the show goes on from a phone or an MP3 player: the **Export
+Stereo-MP3** tab writes one stereo MP3 per song of a playlist whose two sides are two separate
+mono mixes of the 16 LP-16 outputs – typically **the backing tracks on the left** (synths,
+samples, ...) and **the click and cues on the right**. The audience gets the backings over the PA,
+the drummer gets the click in the headphones.
+
+- **Two mixers:** "Left side" and "Right side" each have 16 strips (level, mute) and a master.
+  Everything starts *off*; whatever should go to a side is turned up. A channel can be on both
+  sides. Strips that reach a side are coloured, and the line above the mixers shows which
+  outputs end up left, right, on both or nowhere. The strip names come from the songs of the
+  chosen playlist and wrap, so they can be read in full; a double-click on a name renames the
+  channel (for both sides, saved; empty = the name from the songs again). The mix is global (for all songs).
+- **Preview:** the "Preview" bar at the top is the rehearsal player: choose a song, Play/Pause,
+  Stop, ±10 s, previous/next song, and click or drag in the timeline to jump. While the tab is
+  shown the player plays the backup mix – exactly what goes into the MP3. "L + R", "Left only"
+  and "Right only" play both sides as in the MP3, or one side on both speakers. The strips show
+  levels, the CLIP light comes on when a side would clip. In the Rehearsal tab the rehearsal mix
+  applies again.
+- **Song mix:** the uTool2 mixer values of a song (see [Song mix](#song-mix)) work as in the
+  rehearsal player: level of the backup mixer + level of the song, a muted track stays silent.
+- **Format:** MP3, 192 kbit/s CBR, LAME quality 0 (the best), plain stereo (not joint stereo, so
+  nothing of the click can leak into the backing side), sample rate as the song (44.1 or 48 kHz).
+  The MIDI file of a song is not part of the MP3.
+- **File names:** the pattern knows `{nr}` (position in the playlist, at least two digits: 01,
+  02, ...), `{song}` and `{playlist}`; the default is `{nr} {song}`. Characters Windows does not
+  allow become `_`, duplicate names get ` (2)`. A preview shows the first file name. Existing
+  files of the same name are overwritten.
+- **ID3 tags:** title = song name, album = playlist name, track = position/count.
+- **Overload:** if a side goes above 0 dBFS it is clipped; the report names the peak level and
+  the number of clipped samples. Lower the master of that side and export again.
+- **Report:** per song the duration, errors and notes (tracks left out, MIDI, clipping). Cancel
+  works at any time; no half-written MP3 is left behind.
+
+Mixers, target folder and pattern are stored in `lp16-tool.toml` (`backup_dir`,
+`backup_pattern`, `backup.left.*`, `backup.right.*`). A 5-minute song with 16 tracks takes about
+2 seconds.
 
 ## Command line
 
@@ -407,6 +474,8 @@ damaged. Nothing is deleted on the stick.
 | `src/project_lib.rs` | Project Library: list, create, rename, copy and delete songs and playlists. Renaming a song keeps the playlists pointing at it; a song that a playlist uses cannot be deleted. |
 | `src/sync.rs` | Stick Sync: `plan` (what an export would do), `run` (export and verify). Command line and user interface use the same process. |
 | `src/mix.rs` | The rehearsal mix: strips, presets, config lines, saving timer |
+| `src/backup_mix.rs` | The backup mix of the stereo MP3s: left and right side, config lines, file name pattern |
+| `src/backup.rs` | Renders a song into the backup MP3 (mixing, clipping, LAME, ID3 tag) (feature `mp3`) |
 | `src/rehearsal.rs` | Playback engine of the rehearsal player (reading, mixing, meters, transport, playlist queue with marking, autoplay and preloading), independent of any audio device (feature `player`) |
 | `src/rehearsal_queue.rs` | The queue of the player: entries, the mailbox that opens songs for the engine, rows of the song list (feature `player`) |
 | `src/rehearsal_midi.rs` | MIDI of the engine: events as frames, the messages of a block, chasing (feature `player`) |
@@ -416,14 +485,16 @@ damaged. Nothing is deleted on the stick.
 | `src/gui_app.rs` | User interface (egui 0.27) |
 | `src/gui_rehearsal.rs` | The Rehearsal tab |
 | `src/gui_playlist.rs` | Playlist combo and song list in the Rehearsal tab |
-| `src/gui_mixer.rs` | The rehearsal mix in the Rehearsal tab, and the preset bar and meter helpers the Mixer tab shares |
-| `src/gui_mixer_tab.rs` | The Mixer tab (uTool2 style strips, transport bar) |
+| `src/gui_mixer.rs` | Preset bar, meters, S/M buttons and the mixer symbol of the mixer |
+| `src/gui_mixer_tab.rs` | The mixer of the Rehearsal tab: uTool2 style strips that scale with the panel, rehearsal mix and song mode |
 | `src/gui_audio.rs` | The "Audio output" area of the Settings tab |
 | `src/gui_midi.rs` | The "MIDI output" area of the Settings tab |
+| `src/gui_backup.rs` | The Export Stereo-MP3 tab |
 
 There are no dependencies apart from `eframe` and `rfd` for the user interface and `cpal` and
-`rtrb` and `midir` for the rehearsal player (feature `player`, switched on by `gui`); XML, MD5, WAV and MIDI
-handling are written from scratch.
+`rtrb` and `midir` for the rehearsal player (feature `player`, switched on by `gui`) and `mp3lame-encoder`
+(LAME, LGPL) for the MP3 export (feature `mp3`, switched on by `gui`; it builds LAME from C sources, so it
+needs the MSVC compiler); XML, MD5, WAV, MIDI and ID3 handling are written from scratch.
 
 ## Tests
 
@@ -460,9 +531,8 @@ particular songs and playlists from the reference library (see `src/lib.rs`).
 **Not implemented yet:**
 
 - Stereo songs and playlists (multitrack only)
-- Mixer, i.e. level and pan per track in the song (existing values from the `.songprj` are kept,
-  though). The rehearsal player has its own rehearsal mix (see above); the song mixer stays
-  unimplemented.
+- Pan per track in the song (the [song mix](#song-mix) edits level and mute; the pan stored in the
+  `.songprj` is kept).
 - Song editor: changing the name, sampling rate and resolution of an existing song
 - Playlist editor: setting start mode and delay per song (existing values are kept)
 - Undo/redo, folders in the library ("New folder")

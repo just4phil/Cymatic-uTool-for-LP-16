@@ -18,7 +18,7 @@
 //! (device unplugged) ends up in `Player::error`.
 
 use crate::midi_out::{MidiLink, MidiSink};
-use crate::mix::MixParams;
+use crate::mix::{MixParams, STRIPS};
 use crate::rehearsal::{Engine, Levels, LoadedSong, PlayState, Status};
 use crate::rehearsal_queue::{Opener, OpenerThread, QueueEntry};
 use crate::{Config, SongProject};
@@ -46,6 +46,11 @@ pub enum Command {
     Seek(f64),
     /// a new rehearsal mix (plain numbers, so the callback frees nothing)
     SetMix(MixParams),
+    /// left/right gains per strip instead of the rehearsal mix, None =
+    /// the rehearsal mix again (`Engine::set_stereo`)
+    SetStereo(Option<crate::rehearsal::StereoGains>),
+    /// the song mix of queue entry n was edited (`Engine::set_song_gains`)
+    SetSongGains(usize, [f32; STRIPS]),
     /// clear the clip flag of the master
     ResetClip,
     /// a new queue (`Engine::set_queue_arc`); the state is `Empty` until a
@@ -515,6 +520,14 @@ impl Callback {
             }
             Command::SetMix(mix) => {
                 self.engine.set_mix(&mix);
+                None
+            }
+            Command::SetStereo(g) => {
+                self.engine.set_stereo(g);
+                None
+            }
+            Command::SetSongGains(index, gains) => {
+                self.engine.set_song_gains(index, gains);
                 None
             }
             Command::ResetClip => {

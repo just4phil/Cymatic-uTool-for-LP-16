@@ -6,8 +6,10 @@ license = "GPL-3.0-or-later"
 
 [features]
 default = ["gui"]
-gui = ["dep:eframe", "dep:rfd", "player"]
+gui = ["dep:eframe", "dep:rfd", "player", "mp3"]
 player = ["dep:cpal", "dep:rtrb", "dep:midir"]
+# stereo MP3 backup export (LAME, built from C sources)
+mp3 = ["dep:mp3lame-encoder"]
 # ASIO output; needs the ASIO SDK (CPAL_ASIO_DIR) and LLVM (LIBCLANG_PATH) to build
 asio = ["player", "cpal/asio"]
 
@@ -17,6 +19,7 @@ rfd = { version = "0.14", default-features = false, optional = true }
 cpal = { version = "0.15", optional = true }
 rtrb = { version = "0.3", optional = true }
 midir = { version = "0.10", optional = true }
+mp3lame-encoder = { version = "0.3", optional = true }
 
 [profile.release]
 lto = true

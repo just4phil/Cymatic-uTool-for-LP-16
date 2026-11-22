@@ -21,7 +21,11 @@
 //! strip of its LP-16 output (`ProjectTrack.channel`), each strip has level,
 //! pan, mute and solo, then comes the master and a limiter at +-1.0. The
 //! target gains of a new mix are reached with a linear 10 ms ramp, so
-//! changes while playing do not click. The meters (peak per strip after
+//! changes while playing do not click. The song mix of the current song
+//! (`crate::mix::SongStrip`, the uTool2 mixer values in the .songprj) is a
+//! gain per strip on top of that: it comes with the song (`LoadedSong`), so
+//! it is right from the first sample of a song, and changes while the song
+//! plays ramp like the rehearsal mix. The meters (peak per strip after
 //! fader and mute, master peak after the limiter, clip flag) are collected
 //! in `render` and handed out with `take_status`.
 //!
@@ -46,7 +50,7 @@
 use crate::mix::{MixParams, StripGains, STRIPS};
 use crate::rehearsal_midi::{ChaseState, MidiList, MidiMsg, MidiStatus, MidiTrack};
 use crate::rehearsal_queue::{find_path, Opener, QueueEntry, Request};
-use crate::{read_midi_events, SongProject, WavReader};
+use crate::{open_song_tracks, read_midi_events, SongProject, SongTracks, WavReader};
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -337,6 +341,8 @@ pub struct LoadedSong {
     thread: Option<JoinHandle<()>>,
     /// bit n: a track plays on strip n
     strip_mask: u16,
+    /// the song mix: gain per strip (`crate::mix::song_gains`)
+    song_gains: [f32; STRIPS],
     /// the events of the MIDI file; None without a (readable) file
     midi: Option<MidiTrack>,
     // transport
@@ -354,40 +360,7 @@ impl LoadedSong {
     /// missing, unreadable, unsupported, not mono or of another sample rate
     /// than the first readable track stay silent and add a warning.
     pub fn open(project: &SongProject) -> LoadedSong {
-        let mut warnings = Vec::new();
-        let mut readers: Vec<(String, usize, WavReader)> = Vec::new();
-        for (i, t) in project.tracks.iter().enumerate() {
-            let name = if t.name.is_empty() { format!("channel {}", i + 1) } else { t.name.clone() };
-            if t.channel < 0 || t.channel as usize >= STRIPS {
-                warnings.push(format!(
-                    "Track \"{}\": output channel {} is not in 1-{}, left silent",
-                    name,
-                    t.channel as i64 + 1,
-                    STRIPS
-                ));
-                continue;
-            }
-            match WavReader::open(&project.wav(t)) {
-                Ok(r) => readers.push((name, t.channel as usize, r)),
-                Err(e) => warnings.push(format!("Track \"{}\": {}", name, e)),
-            }
-        }
-        let song_rate = readers.first().map(|(_, _, r)| r.rate()).unwrap_or(project.sampling_rate);
-        let mut used = Vec::new();
-        for (name, channel, r) in readers {
-            if r.channels() != 1 {
-                warnings.push(format!("Track \"{}\": not mono ({} channels), left silent", name, r.channels()));
-            } else if r.rate() != song_rate {
-                warnings.push(format!(
-                    "Track \"{}\": sample rate {} Hz differs from the song rate {} Hz, left silent",
-                    name,
-                    r.rate(),
-                    song_rate
-                ));
-            } else {
-                used.push((channel, r));
-            }
-        }
+        let SongTracks { rate: song_rate, tracks: used, mut warnings } = open_song_tracks(project);
         // 2 s, rounded up to whole read blocks so that the ring can really be full
         let capacity = (2 * song_rate as usize).div_ceil(READ_BLOCK).max(1) * READ_BLOCK;
         let midi = match project.midi_path() {
@@ -451,6 +424,7 @@ impl LoadedSong {
             shared,
             thread,
             strip_mask,
+            song_gains: crate::mix::song_gains(project),
             midi,
             generation: 1,
             pos: 0,
@@ -559,6 +533,9 @@ impl Drop for LoadedSong {
 // engine
 // ---------------------------------------------------------------------------
 
+/// Left and right gain per strip (`Engine::set_stereo`).
+pub type StereoGains = ([f32; STRIPS], [f32; STRIPS]);
+
 /// The gains the mixer applies: per strip and the master.
 #[derive(Clone, Copy)]
 struct Gains {
@@ -612,6 +589,14 @@ pub struct Engine {
     ramp_target: Gains,
     /// gains of the last frame
     gains: Gains,
+    /// the rehearsal mix as set, and the song mix of the current song;
+    /// the target gains are the product
+    mix_gains: Gains,
+    /// the gains of the rehearsal mix, kept while a stereo override is on
+    rehearsal_gains: Gains,
+    /// `set_stereo`: left and right gain per strip instead of the mix
+    stereo: Option<StereoGains>,
+    song_gains: [f32; STRIPS],
     peaks: Levels,
     clip: bool,
     no_name: Arc<str>,
@@ -674,6 +659,10 @@ impl Engine {
             ramp_start: Gains::neutral(),
             ramp_target: Gains::neutral(),
             gains: Gains::neutral(),
+            mix_gains: Gains::neutral(),
+            rehearsal_gains: Gains::neutral(),
+            stereo: None,
+            song_gains: [1.0; STRIPS],
             peaks: Levels::default(),
             clip: false,
             no_name: Arc::from(""),
@@ -763,6 +752,7 @@ impl Engine {
         if let Some(o) = &old {
             self.ano_mask |= o.notes_mask();
         }
+        self.take_song_gains();
         old
     }
 
@@ -774,6 +764,7 @@ impl Engine {
         if let Some(o) = &old {
             self.ano_mask |= o.notes_mask();
         }
+        self.take_song_gains();
         old
     }
 
@@ -1059,6 +1050,7 @@ impl Engine {
         if let Some(old) = self.song.replace(song) {
             self.discard(old);
         }
+        self.take_song_gains();
         self.cur = Some(idx);
         self.pending = None;
         if let Some(seconds) = self.pending_seek.take() {
@@ -1281,8 +1273,68 @@ impl Engine {
     /// nothing is audible and they jump at once. No allocation.
     pub fn set_mix(&mut self, mix: &MixParams) {
         let (strips, master) = mix.gains();
-        self.ramp_target = Gains { strips, master };
-        if self.state == PlayState::Playing && self.song.is_some() {
+        self.rehearsal_gains = Gains { strips, master };
+        if self.stereo.is_none() {
+            self.mix_gains = self.rehearsal_gains;
+            self.apply_gains(true);
+        }
+    }
+
+    /// Mix with these left and right gains per strip (master 1.0) instead
+    /// of the rehearsal mix, as the MP3 backup does; None goes back to the
+    /// rehearsal mix. The song mix still applies, changes ramp like a new
+    /// mix. No allocation.
+    pub fn set_stereo(&mut self, stereo: Option<StereoGains>) {
+        self.stereo = stereo;
+        self.mix_gains = match stereo {
+            None => self.rehearsal_gains,
+            Some((l, r)) => {
+                let mut strips = [StripGains::default(); STRIPS];
+                for (k, g) in strips.iter_mut().enumerate() {
+                    *g = StripGains { level: l[k].max(r[k]), left: l[k], right: r[k] };
+                }
+                Gains { strips, master: 1.0 }
+            }
+        };
+        self.apply_gains(true);
+    }
+
+    /// The song mix of queue entry `index` changed (the user edits it):
+    /// the song uses `gains` from now on if it is the current one (with the
+    /// ramp, like a new mix) or the one opened early. Other songs get it
+    /// from their project the next time they are opened.
+    pub fn set_song_gains(&mut self, index: usize, gains: [f32; STRIPS]) {
+        if let Some((i, s)) = self.slot.as_mut() {
+            if *i == index {
+                s.song_gains = gains;
+            }
+        }
+        if self.pending.is_none() && self.cur == Some(index) {
+            if let Some(song) = self.song.as_mut() {
+                song.song_gains = gains;
+                self.song_gains = gains;
+                self.apply_gains(true);
+            }
+        }
+    }
+
+    /// The song mix of the song that just became the current one (or none:
+    /// neutral). It applies at once: the song starts with it.
+    fn take_song_gains(&mut self) {
+        self.song_gains = self.song.as_ref().map(|s| s.song_gains).unwrap_or([1.0; STRIPS]);
+        self.apply_gains(false);
+    }
+
+    /// New target gains (rehearsal mix x song mix). While a song plays with
+    /// `ramp`, they are reached over `ramp_len` frames from where they are
+    /// now; otherwise nothing is audible and they jump at once.
+    fn apply_gains(&mut self, ramp: bool) {
+        let mut target = self.mix_gains;
+        for (g, k) in target.strips.iter_mut().zip(self.song_gains.iter()) {
+            *g = StripGains { level: g.level * k, left: g.left * k, right: g.right * k };
+        }
+        self.ramp_target = target;
+        if ramp && self.state == PlayState::Playing && self.song.is_some() {
             self.ramp_start = self.gains;
             self.ramp_done = 0;
         } else {
@@ -1727,6 +1779,39 @@ pub(crate) mod tests {
         let mut e = ready_engine(&song(&dir, &[&a, &b]));
         e.play();
         assert!(render(&mut e, 50).iter().all(|&s| s == 1.0));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stereo_override_replaces_the_mix_and_goes_back() {
+        let dir = temp_dir("rh-stereo-gains");
+        let a = wav24(&dir, "a", RATE, 1, &constant(20000, 0.5));
+        let b = wav24(&dir, "b", RATE, 1, &constant(20000, 0.25));
+        let mut e = ready_engine(&song(&dir, &[&a, &b]));
+        let mut mix = MixParams::default();
+        mix.master_db = -6.0;
+        e.set_mix(&mix);
+        // output 1 only left, output 2 left at 0.5 and right at full
+        let (mut l, mut r) = ([0.0; STRIPS], [0.0; STRIPS]);
+        l[0] = 1.0;
+        l[1] = 0.5;
+        r[1] = 1.0;
+        e.set_stereo(Some((l, r)));
+        e.play();
+        let out = render(&mut e, 2000);
+        let last = &out[out.len() - 2..];
+        assert!((last[0] - (0.5 + 0.125)).abs() < 1e-5, "{:?}", last);
+        assert!((last[1] - 0.25).abs() < 1e-5, "{:?}", last);
+        // a new rehearsal mix waits while the override is on
+        e.set_mix(&MixParams::default());
+        let out = render(&mut e, 2000);
+        assert!((out[out.len() - 1] - 0.25).abs() < 1e-5);
+        // back to the rehearsal mix (the last one set), after the ramp
+        e.set_stereo(None);
+        render(&mut e, 2000);
+        let out = render(&mut e, 100);
+        let last = &out[out.len() - 2..];
+        assert!((last[0] - 0.75 * G).abs() < 1e-5 && (last[1] - 0.75 * G).abs() < 1e-5, "{:?}", last);
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -2380,25 +2465,82 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn monitor_values_of_the_song_are_ignored() {
-        let dir = temp_dir("mx-monitor");
-        let a = wav24(&dir, "a", RATE, 1, &constant(2000, 0.25));
-        let b = wav24(&dir, "b", RATE, 1, &ramp(2000));
-        let plain = song(&dir, &[&a, &b]);
-        let mut loud = plain.clone();
-        for t in loud.tracks.iter_mut() {
-            t.monitor_level = "-20.0".into();
-            t.monitor_pan = "50.0".into();
-            t.monitor_mute = "1".into();
+    fn the_song_mix_adds_to_the_rehearsal_mix() {
+        let dir = temp_dir("mx-songmix");
+        let a = wav24(&dir, "a", RATE, 1, &constant(2000, 0.5));
+        let b = wav24(&dir, "b", RATE, 1, &constant(2000, 0.25));
+        let mut prj = song(&dir, &[&a, &b]);
+        prj.tracks[0].monitor_level = "-6.0".into();
+        prj.tracks[0].monitor_pan = "50.0".into(); // the pan of the song is not used
+        prj.tracks[1].monitor_mute = "1".into();
+        let mut mix = MixParams::default();
+        mix.strips[0].level_db = -3.0;
+        let mut e = ready_engine(&prj);
+        e.set_mix(&mix);
+        e.play();
+        let (l, r) = first(&render(&mut e, 10));
+        let want = 0.5 * crate::mix::level_gain(-9.0) * G;
+        assert!(near(l, want) && near(r, want), "{} {} vs {}", l, r, want);
+        // without the song values only the rehearsal mix counts
+        let mut plain = prj.clone();
+        for t in plain.tracks.iter_mut() {
+            t.monitor_level = "0.0".into();
+            t.monitor_mute = "0".into();
         }
-        let play = |prj: &SongProject| {
-            let mut e = ready_engine(prj);
-            e.play();
-            render(&mut e, 1000).iter().map(|s| s.to_bits()).collect::<Vec<_>>()
+        let mut e = ready_engine(&plain);
+        e.set_mix(&mix);
+        e.play();
+        let (l, _) = first(&render(&mut e, 10));
+        assert!(near(l, (0.5 * crate::mix::level_gain(-3.0) + 0.25) * G), "{}", l);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_song_mix_change_while_playing_ramps_and_only_for_its_song() {
+        let n = 480; // round(0.01 x 48000)
+        let dir = temp_dir("q-songramp");
+        let mut e = queue_engine(three(&dir, RATE, WAIT_MODES));
+        e.goto(0, false);
+        assert!(e.wait_ready(WAIT));
+        e.play();
+        let mut gains = [1.0; STRIPS];
+        gains[0] = 0.0;
+        e.set_song_gains(2, gains); // another song: nothing changes now
+        let out = render(&mut e, 20);
+        assert!((out[2 * 19] - lv(0.1)).abs() < 1e-6);
+        e.set_song_gains(0, gains);
+        let out = render(&mut e, n + 10);
+        assert!(out[0] > 0.0 && out[0] < lv(0.1), "it ramps: {}", out[0]);
+        assert_eq!(out[2 * (n - 1)], 0.0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn every_song_of_a_playlist_plays_with_its_own_song_mix() {
+        let dir = temp_dir("q-songmix");
+        let entries = {
+            let _ = three(&dir, RATE, WAIT_MODES);
+            let path = dir.join("s2.songprj");
+            let mut prj = SongProject::load(path.to_str().unwrap(), dir.to_str().unwrap()).unwrap();
+            prj.tracks[0].monitor_level = "-6.0".into();
+            prj.save().unwrap();
+            queue_of(&dir, &[("s1", WAIT_MODES[0].0, "0"), ("s2", WAIT_MODES[1].0, "0"), ("s3", WAIT_MODES[2].0, "0")])
         };
-        let reference = play(&plain);
-        assert!(reference.iter().any(|&b| f32::from_bits(b) != 0.0));
-        assert_eq!(play(&loud), reference);
+        let mut e = queue_engine(entries);
+        e.goto(0, false);
+        assert!(e.wait_ready(WAIT));
+        e.play();
+        let out = render(&mut e, 100);
+        assert!((out[0] - lv(0.1)).abs() < 1e-6, "song 1 is neutral");
+        e.goto(1, true);
+        assert!(e.wait_ready(WAIT));
+        let out = render(&mut e, 100);
+        let want = lv(0.2) * crate::mix::level_gain(-6.0);
+        assert!((out[0] - want).abs() < 1e-6, "song 2 from its first sample: {} vs {}", out[0], want);
+        e.goto(2, true);
+        assert!(e.wait_ready(WAIT));
+        let out = render(&mut e, 100);
+        assert!((out[0] - lv(0.3)).abs() < 1e-6, "song 3 is neutral again: {}", out[0]);
         let _ = fs::remove_dir_all(&dir);
     }
 

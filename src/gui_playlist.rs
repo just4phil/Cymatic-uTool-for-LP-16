@@ -74,34 +74,6 @@ pub fn playlist_combo(
     chosen
 }
 
-/// The text of a song combo entry: "3  Name".
-pub fn song_label(row: &SongRow) -> String {
-    format!("{}  {}", row.number, row.name)
-}
-
-/// A compact song list as a combo: choosing a song returns its index
-/// (0-based), like a single click in the list. Unreadable songs are shown
-/// grey and cannot be chosen.
-pub fn song_combo(ui: &mut Ui, id: &str, width: f32, rows: &[SongRow]) -> Option<usize> {
-    let mut chosen = None;
-    let current = rows.iter().find(|r| r.marked).map(song_label).unwrap_or_else(|| "(no song)".to_string());
-    egui::ComboBox::from_id_source(id).width(width).selected_text(current).show_ui(ui, |ui| {
-        for row in rows {
-            let text = song_label(row);
-            let resp = match &row.error {
-                Some(e) => ui
-                    .add_enabled(false, egui::SelectableLabel::new(false, text))
-                    .on_disabled_hover_text(format!("Cannot be played, skipped: {}", e)),
-                None => ui.selectable_label(row.marked, text),
-            };
-            if resp.clicked() {
-                chosen = Some(row.number - 1);
-            }
-        }
-    });
-    chosen
-}
-
 /// One row; returns its index (0-based) when clicked, and when
 /// double-clicked (then not as a click).
 fn song_row(ui: &mut Ui, row: &SongRow) -> (Option<usize>, Option<usize>) {
@@ -128,6 +100,11 @@ fn song_row(ui: &mut Ui, row: &SongRow) -> (Option<usize>, Option<usize>) {
     }
     if row.midi {
         p.text(pos2(right, mid), Align2::RIGHT_CENTER, "\u{266a}", FontId::proportional(14.0), if row.marked { TEXT } else { ORANGE });
+        right -= 18.0;
+    }
+    if row.mixer {
+        let color = if row.marked { TEXT } else { ORANGE };
+        crate::gui_mixer::paint_mixer_icon(p, pos2(right - 6.0, mid), 12.0, color);
         right -= 18.0;
     }
     // the name, cut to the space that is left

@@ -122,6 +122,8 @@ pub struct SongRow {
     pub length: String,
     /// the song has a MIDI file
     pub midi: bool,
+    /// the song has its own mixer values (`crate::mix::has_song_mix`)
+    pub mixer: bool,
     /// why the song cannot be played
     pub error: Option<String>,
     /// the song that plays right now
@@ -157,6 +159,7 @@ pub fn song_rows(
                 Err(_) => String::new(),
             },
             midi: e.project.as_ref().map(|p| !p.midi_file.is_empty()).unwrap_or(false),
+            mixer: e.project.as_ref().map(crate::mix::has_song_mix).unwrap_or(false),
             error: e.project.as_ref().err().cloned(),
             current: current == Some(i),
             marked: marked == Some(i),

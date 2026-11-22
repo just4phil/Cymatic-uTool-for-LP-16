@@ -10,6 +10,9 @@ use std::fs;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
+pub mod backup_mix;
+#[cfg(feature = "mp3")]
+pub mod backup;
 pub mod mix;
 pub mod project_lib;
 #[cfg(feature = "player")]
@@ -683,6 +686,60 @@ impl WavReader {
         }
         done
     }
+}
+
+/// The playable tracks of a song, as the rehearsal player and the MP3
+/// backup use them.
+pub struct SongTracks {
+    /// sample rate of the song: that of the first readable track, or the
+    /// .songprj value without any
+    pub rate: u32,
+    /// (0-based LP-16 output, reader) of every usable track
+    pub tracks: Vec<(usize, WavReader)>,
+    /// why tracks were left out
+    pub warnings: Vec<String>,
+}
+
+/// Open the WAVs of `project`. Tracks that are missing, unreadable,
+/// unsupported, not mono, not on output 1-16 or of another sample rate
+/// than the first readable track are left out with a warning.
+pub fn open_song_tracks(project: &SongProject) -> SongTracks {
+    const OUTPUTS: usize = mix::STRIPS;
+    let mut warnings = Vec::new();
+    let mut readers: Vec<(String, usize, WavReader)> = Vec::new();
+    for (i, t) in project.tracks.iter().enumerate() {
+        let name = if t.name.is_empty() { format!("channel {}", i + 1) } else { t.name.clone() };
+        if t.channel < 0 || t.channel as usize >= OUTPUTS {
+            warnings.push(format!(
+                "Track \"{}\": output channel {} is not in 1-{}, left silent",
+                name,
+                t.channel as i64 + 1,
+                OUTPUTS
+            ));
+            continue;
+        }
+        match WavReader::open(&project.wav(t)) {
+            Ok(r) => readers.push((name, t.channel as usize, r)),
+            Err(e) => warnings.push(format!("Track \"{}\": {}", name, e)),
+        }
+    }
+    let rate = readers.first().map(|(_, _, r)| r.rate()).unwrap_or(project.sampling_rate);
+    let mut tracks = Vec::new();
+    for (name, channel, r) in readers {
+        if r.channels() != 1 {
+            warnings.push(format!("Track \"{}\": not mono ({} channels), left silent", name, r.channels()));
+        } else if r.rate() != rate {
+            warnings.push(format!(
+                "Track \"{}\": sample rate {} Hz differs from the song rate {} Hz, left silent",
+                name,
+                r.rate(),
+                rate
+            ));
+        } else {
+            tracks.push((channel, r));
+        }
+    }
+    SongTracks { rate, tracks, warnings }
 }
 
 // ---------------------------------------------------------------------------
@@ -2048,6 +2105,8 @@ pub struct Config {
     pub rehearsal_autoplay: bool,
     /// the rehearsal mix presets (`mix.*` and `mix_active` in the file)
     pub mixes: mix::MixLibrary,
+    /// the stereo MP3 backup export (`backup*` in the file)
+    pub backup: backup_mix::BackupSettings,
 }
 
 /// The buffer sizes (frames) the settings offer; 0 = driver default.
@@ -2071,6 +2130,7 @@ impl Default for Config {
             midi_port: String::new(),
             rehearsal_autoplay: false,
             mixes: mix::MixLibrary::default(),
+            backup: backup_mix::BackupSettings::default(),
         }
     }
 }
@@ -2098,6 +2158,7 @@ impl Config {
 pub fn load_config(path: &std::path::Path) -> Config {
     let mut config = Config::default();
     let mut mixes = mix::MixParser::default();
+    let mut backup = backup_mix::BackupParser::default();
     if let Ok(text) = fs::read_to_string(path) {
         for line in text.lines() {
             let line = line.trim();
@@ -2135,12 +2196,14 @@ pub fn load_config(path: &std::path::Path) -> Config {
                         }
                     }
                     k if k == "mix_active" || k.starts_with("mix.") => mixes.feed(k, &value),
+                    k if backup_mix::is_backup_key(k) => backup.feed(k, &value),
                     _ => {}
                 }
             }
         }
     }
     config.mixes = mixes.finish();
+    config.backup = backup.finish();
     config.apply_library();
     config
 }
@@ -2169,7 +2232,7 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
     let text = format!(
         "{}stick_root = \"{}\"\r\n\
          audio_host = \"{}\"\r\naudio_device = \"{}\"\r\n\
-         audio_out_left = \"{}\"\r\naudio_out_right = \"{}\"\r\naudio_buffer = \"{}\"\r\nmidi_port = \"{}\"\r\nrehearsal_autoplay = \"{}\"\r\n{}",
+         audio_out_left = \"{}\"\r\naudio_out_right = \"{}\"\r\naudio_buffer = \"{}\"\r\nmidi_port = \"{}\"\r\nrehearsal_autoplay = \"{}\"\r\n{}{}",
         paths,
         config.stick_root,
         config.audio_host,
@@ -2179,9 +2242,18 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
         config.audio_buffer,
         config.midi_port,
         config.rehearsal_autoplay,
-        config.mixes.to_config_text()
+        config.mixes.to_config_text(),
+        config.backup.to_config_text()
     );
     fs::write(path, text.as_bytes())
+}
+
+/// Write only the backup export settings into the config file: the file
+/// is read again and everything else in it stays as it is on disk.
+pub fn save_backup(path: &std::path::Path, backup: &backup_mix::BackupSettings) -> std::io::Result<()> {
+    let mut config = load_config(path);
+    config.backup = backup.clone();
+    save_config(path, &config)
 }
 
 /// Write only the rehearsal mix presets into the config file: the file is
@@ -3069,6 +3141,17 @@ mod tests {
         let s = load_config(&path);
         assert_eq!((s.library.as_str(), s.stick_root.as_str()), ("E:\\y", "G:\\"));
         assert_eq!(s.mixes, c.mixes);
+
+        // the backup settings: saved with the rest, save_backup only replaces them
+        let mut backup = backup_mix::BackupSettings { dir: "D:\\MP3".into(), pattern: "{nr}_{song}".into(), ..Default::default() };
+        backup.mix.right.set_level(15, -2.0);
+        save_backup(&path, &backup).unwrap();
+        let s = load_config(&path);
+        assert_eq!(s.backup, backup);
+        assert_eq!((s.library.as_str(), s.stick_root.as_str()), ("E:\\y", "G:\\"));
+        assert_eq!(s.mixes, c.mixes, "the rehearsal mix stays");
+        save_mixes(&path, &c.mixes).unwrap();
+        assert_eq!(load_config(&path).backup, backup, "and the other way round");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -3102,6 +3185,7 @@ mod tests {
                 midi_port: "MIDI \u{fc}ber USB 2".into(),
                 rehearsal_autoplay: true,
                 mixes: mix::MixLibrary::default(),
+                backup: backup_mix::BackupSettings::default(),
             };
             save_config(&path, &c).unwrap();
             let text = fs::read_to_string(&path).unwrap();

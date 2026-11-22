@@ -39,6 +39,8 @@ Dazu gibt es eine Oberfläche, die der von uTool2 nachgebaut ist, und eine Komma
 - **Edit Target:** Inhalt des Sticks als Baum, mit Details zu Songs und Playlists.
 - **Probe-Player:** spielt Songs und Playlists der Bibliothek über einen wählbaren
   Audioausgang ab, mit einem 16-Kanal-Proben-Mix, siehe [Probe-Player](#probe-player).
+- **Backup-MP3s:** schreibt für jeden Song einer Playlist eine Stereo-MP3 (links Backings,
+  rechts Klick) als Notfall-Backup, siehe [Export Stereo-MP3](#export-stereo-mp3-backup-für-den-notfall).
 
 ## Voraussetzungen
 
@@ -167,8 +169,8 @@ Settings wählt (WASAPI oder ASIO), zum Proben zu Hause. Er schickt außerdem di
   | Hoch / Runter | Markierung auf den vorigen / nächsten Song (wie ein Klick) |
 
   Dieselben Funktionen liegen auf den Knöpfen neben Play.
-- **Playlists:** Die Songliste links zeigt Nummer, Name, Länge und ein Notensymbol, wenn der Song
-  eine MIDI-Datei hat. Ein Song, der nicht gelesen werden kann (z. B. fehlende `.songprj`), ist rot,
+- **Playlists:** Die Songliste links zeigt Nummer, Name, Länge, ein Notensymbol, wenn der Song
+  eine MIDI-Datei hat, und ein Mixer-Symbol, wenn er einen eigenen [Song-Mix](#song-mix) hat. Ein Song, der nicht gelesen werden kann (z. B. fehlende `.songprj`), ist rot,
   mit dem Grund als Tooltip, und wird übersprungen. **Genau ein Song ist immer markiert** (farbig
   hinterlegt); nach dem Laden einer Playlist ist es der erste spielbare. **Play startet den
   markierten Song** (ein geladener, pausierter Song läuft an seiner Position weiter).
@@ -183,14 +185,12 @@ Settings wählt (WASAPI oder ASIO), zum Proben zu Hause. Er schickt außerdem di
   - Endet ein Song, springt die Markierung auf den nächsten Song (den angeklickten, falls es einen
     gibt). Am Ende der Playlist bleibt sie auf dem letzten Song, der Zustand ist „beendet“; Play spielt
     diesen Song dann noch einmal.
-  - Die Song-Auswahl im Mixer-Reiter ist dasselbe wie ein Klick.
   - Die Knöpfe ⏮ und ⏭ springen zum vorigen und nächsten Song:
     - Nächster: Läuft gerade ein Song, startet der nächste sofort; sonst wird er auf Position 0
       geladen und bleibt gestoppt. Beim letzten Song passiert nichts.
     - Voriger: Weiter als 3 s im Song springt er an seinen Anfang, sonst wird der Song davor geladen
       (und startet sofort, wenn der Player gespielt hat).
-- **Autoplay after 5 seconds** (Kontrollkästchen über der Songliste, auch im Mixer-Reiter; dieselbe
-  Einstellung, gespeichert als `rehearsal_autoplay` in `lp16-tool.toml`, standardmäßig aus). Aus: Endet
+- **Autoplay after 5 seconds** (Kontrollkästchen über der Songliste, gespeichert als `rehearsal_autoplay` in `lp16-tool.toml`, standardmäßig aus). Aus: Endet
   ein Song, ist der nächste markiert und geladen, und der Player wartet (der Reiter zeigt „Next: <Song>
   – press Play“). An: Der nächste Song startet von selbst nach 5 Sekunden Stille (der Reiter zeigt
   „Next: <Song> in <n> s“). Play während des Countdowns startet sofort, Pause bricht ihn ab, Autoplay
@@ -222,20 +222,31 @@ Settings wählt (WASAPI oder ASIO), zum Proben zu Hause. Er schickt außerdem di
 
 ### Proben-Mix
 
-Ganz oben im Reiter Rehearsal (über Songliste und Player) steht der **Proben-Mix**: 16 Kanalzüge (LP-16-Ausgang 1 bis
-16) und einen Master. Er gilt für alle Songs. Jede Spur des geladenen Songs spielt auf dem Kanalzug
+Unter dem Player im Reiter Rehearsal liegt der **Mixer**: 16 Kanalzüge (LP-16-Ausgang 1 bis 16)
+und ein Master im Stil des uTool2-Mixers. Songliste, Player und Mixer sind Bereiche, deren Größe
+man ändern kann: Die Linie zwischen Liste und Player bzw. zwischen Player und Mixer lässt sich
+ziehen. Die Kanalzüge füllen Breite und Höhe des Mixers (sie werden mit ihm breiter und die Fader
+höher); unter einer Mindestgröße scrollt der Mixer.
+
+Der Mixer bearbeitet den **Proben-Mix** (er gilt für alle Songs) oder im Song-Modus den
+[Song-Mix](#song-mix) des geladenen Songs. Jede Spur des geladenen Songs spielt auf dem Kanalzug
 ihres LP-16-Ausgangs (der Kanal in der `.songprj`); mehrere Spuren auf einem Ausgang werden in
 diesem Kanalzug summiert. Eine Spur mit einem Ausgang jenseits von 16 bleibt still und erzeugt eine
 Warnung. Der Kanalzug zeigt die Ausgangsnummer und den Spurnamen; ein Kanalzug ohne Spur ist
 ausgegraut („—“), lässt sich aber trotzdem bedienen.
 
-- Pro Kanalzug: Fader (−60 bis +6 dB, ganz unten „off“, Doppelklick = 0 dB), Panorama (−127 bis
-  +127 wie in uTool2, Constant-Power-Gesetz, Doppelklick = Mitte), **M**ute und **S**olo (ein
-  stummer Kanalzug bleibt auch mit Solo stumm) und eine Pegelanzeige mit dem Wert in dB.
+- Pro Kanalzug: **S**olo und **M**ute (ein stummer Kanalzug bleibt auch mit Solo stumm), ein
+  Pan-Drehregler (−127 bis +127 wie in uTool2, Constant-Power-Gesetz; nach oben oder unten ziehen,
+  Doppelklick = Mitte), der Pegel in dB, ein Fader mit dB-Skala (−60 bis +6 dB, ganz unten „off“,
+  Doppelklick = 0 dB) und eine Pegelanzeige.
+- **Pegel eintippen:** Doppelklick auf den dB-Wert über dem Fader, dann z. B. `-0.5`, `-0,5`, `+3`,
+  `-12 dB` oder `-inf` / `off` eingeben. Enter oder ein Klick daneben übernimmt, Esc bricht ab.
+- Der Fader ist im wichtigen Bereich feiner: −10 dB bis +6 dB nehmen 60 % des Wegs ein (0 dB liegt
+  bei 80 %), −60 bis −10 dB den Rest.
 - Master: Fader, Pegelanzeige links und rechts und eine **CLIP**-LED. Sie leuchtet, wenn der Master
   auf Vollaussteuerung begrenzen musste, und bleibt an, bis man sie anklickt.
-- Die Pegelanzeigen zeigen den Spitzenwert nach Fader und Mute, vor dem Panorama; sie fallen mit
-  20 dB pro Sekunde ab.
+- Die Pegelanzeigen zeigen den Spitzenwert nach Fader und Mute (Song-Mix eingeschlossen), vor dem
+  Panorama; sie fallen mit 20 dB pro Sekunde ab.
 - Änderungen wirken sofort während der Wiedergabe und ohne Knacken (die Pegel laufen über 10 ms).
 - **Presets** sind benannte Mixe: in der Liste wählen, **New** (neutral, „Mix N“), **Copy**,
   **Rename**, **Delete** (das letzte lässt sich nicht löschen) und **Reset** (zurück auf neutral:
@@ -245,22 +256,40 @@ ausgegraut („—“), lässt sich aber trotzdem bedienen.
   einmal pro Sekunde und immer beim Beenden) als `mix.<n>.name`, `mix.<n>.master`,
   `mix.<n>.ch<k> = "<Pegel> <Pan> <Mute> <Solo>"` (Pegel mit einer Nachkommastelle oder `off`) und
   `mix_active`.
-- **Reiter Mixer:** Der Reiter nach Rehearsal zeigt denselben Proben-Mix im Stil des uTool2-Mixers:
-  schmale, hohe Kanalzüge (S- und M-Taste, ein Pan-Drehregler, den man nach oben oder unten zieht,
-  der Pegel in dB, ein hoher Fader mit dB-Skala und Pegelanzeige, Ausgangsnummer und Spurname) und
-  der Master mit L/R-Pegel und CLIP-LED. Alle 16 Kanalzüge und der Master stehen nebeneinander; ein
-  breiteres Fenster zeigt mehr davon, bei einem schmalen erscheint eine Scrollleiste. Oben ist die
-  Preset-Leiste. Der Reiter bearbeitet denselben Mix, dasselbe Preset und dieselbe Config wie der
-  kleine Mixer im Reiter Rehearsal und schreibt nie in Songs (es gibt also kein „Save to Song“).
-  Unten liegt die Player-Leiste: Playlist- und Songauswahl, voriger/nächster Song, −10 s,
-  Play/Pause, Stop, +10 s, der Fortschrittsbalken mit der Zeit und die Zeile „Next: ...“ mit
-  Warnungen. Es ist derselbe Player wie im Reiter Rehearsal (einschließlich MIDI), und die
-  Tastenkürzel gelten in beiden Reitern. Im Home-Reiter lädt die Taste **Mixer** eines Songs ihn in
-  den Player (ohne zu starten) und öffnet den Reiter Mixer.
 - **Der Proben-Mix wird nicht exportiert.** Er landet nie in einer `.songprj`, einer Playlist,
-  einer `song.set` oder einer `.play` und nicht auf dem Stick. Die Mixer-Werte der Songs
-  (`monitor_level`, `monitor_pan`, `monitor_mute`, der Kopfhörer-Mix des LP-16) bleiben
-  unberührt und werden vom Player ignoriert.
+  einer `song.set` oder einer `.play` und nicht auf dem Stick.
+
+### Song-Mix
+
+Der **Song-Mix** ist der uTool2-Mixer eines Songs: Pegel und Mute pro Spur (`monitor_level`,
+`monitor_mute` in der `.songprj`). Er wird im Song gespeichert und mit ihm auf den Stick exportiert
+(`output_level`, `channel_mute` in der `song.set`). Damit lässt sich ein einzelner Song schnell
+korrigieren, z. B. eine Backing-Track-Spur, die etwas zu laut ist.
+
+- **Öffnen:** Im Home-Reiter lädt die Taste **Mixer** eines Songs (auch im Song-Editor) den Song in
+  den Player (ohne zu starten) und zeigt seinen Song-Mix im Mixer des Reiters Rehearsal. Oder
+  **Song mix** neben der Preset-Leiste anklicken: Das bearbeitet den geladenen Song. Im Song-Modus
+  sind die Kanalzüge braun, und die Kopfzeile zeigt „Song mix“ und den Song; der Modus folgt dem
+  geladenen Song (ein anderer Song der Liste, der nächste Song der Playlist).
+- Im Song-Modus sind Fader und dB-Wert der Pegel des Songs (0 dB = keine Änderung, angezeigt als
+  `+2.0 dB` usw.; −60 bis +6 dB, ein „off“ gibt es nicht: dafür Mute) und **M** ist das Mute des
+  Songs. Solo und Panorama bleiben die des Proben-Mixes (der Drehregler ist ausgegraut): Der LP-16
+  setzt das Panorama nur am Kopfhörerausgang um. Kanalzüge ohne Spur im Song lassen sich nicht
+  ändern. **Reset** setzt alles auf 0 dB und nicht stumm; **Back to the rehearsal mix** beendet den
+  Song-Modus.
+- **Bei der Probe** kommt der Song-Mix zum Proben-Mix hinzu, nur für diesen Song: Pegel =
+  Proben-Pegel + Song-Pegel (z. B. Bass im Proben-Mix −3 dB, im Song +2 dB: −1 dB), und eine im Song
+  stummgeschaltete Spur bleibt still. Er gilt ab dem ersten Sample des Songs, auch wenn Autoplay zum
+  nächsten Song geht. Änderungen wirken sofort, während der Song läuft.
+- Im Proben-Mix zeigt ein Kanalzug, auf dem der geladene Song einen eigenen Wert hat, diesen in
+  Orange unter dem Spurnamen („song +2.0“, „song: mute“).
+- Änderungen werden kurz nach der letzten Änderung in die `.songprj` geschrieben (und wenn der Song
+  wechselt, der Song-Modus endet oder das Programm schließt). Alle Spuren eines Ausgangs bekommen
+  dieselben Werte; das Panorama des Songs bleibt, wie es ist. Speichern im Song-Editor behält den
+  Song-Mix in der Datei.
+- Ein Song, dessen Mixer-Werte von den uTool2-Standardwerten abweichen (0 dB, Mitte, nicht stumm),
+  hat ein **Mixer-Symbol** (drei kleine Fader) in der Songliste des Home-Reiters und des Reiters
+  Rehearsal.
 
 ### Audio output (Reiter Settings)
 
@@ -336,6 +365,47 @@ Sprung, Songwechsel und beim Beenden des Programms. Dateien ohne Noten senden ni
 
 **Behringer XR18:** den XR18 über USB anschließen und hier seinen MIDI-Port wählen. Der XR18 gibt die
 Nachrichten von seinem MIDI-Out an den Modeler weiter.
+
+## Export Stereo-MP3: Backup für den Notfall
+
+Fällt der LP-16 beim Konzert aus, läuft die Show vom Handy oder MP3-Player weiter: Der Reiter
+**Export Stereo-MP3** schreibt für jeden Song einer Playlist eine Stereo-MP3, deren beiden
+Seiten zwei getrennte Mono-Mischungen der 16 LP-16-Ausgänge sind – typischerweise **links die
+Backings** (Synths, Samples …) und **rechts Klick und Cues**. So bekommt das Publikum die
+Backings über die PA und der Drummer den Klick auf den Kopfhörer.
+
+- **Zwei Mixer:** „Left side“ und „Right side“ haben je 16 Kanalzüge (Pegel, Mute) und einen
+  Master. Am Anfang ist alles *off*; was auf eine Seite soll, wird hochgezogen. Ein Kanal kann auf
+  beiden Seiten liegen. Züge, die auf einer Seite ankommen, sind farbig, und die Zeile über den
+  Mixern zeigt, welche Ausgänge links, rechts, auf beiden oder gar nicht landen. Die Namen der
+  Züge stammen aus den Songs der gewählten Playlist und werden umgebrochen, damit sie ganz lesbar
+  sind; ein Doppelklick auf einen Namen benennt den Kanal um (für beide Seiten, gespeichert;
+  leer = wieder der Name aus den Songs). Die Mischung ist global (für alle Songs).
+- **Vorhören:** Die Leiste „Preview“ oben ist der Probe-Player: Song wählen, Play/Pause, Stop,
+  ±10 s, vorheriger/nächster Song, und in der Zeitleiste klicken oder ziehen, um zu springen.
+  Solange der Reiter offen ist, spielt der Player mit dem Backup-Mix – also genau das, was in die
+  MP3 kommt. Mit „L + R“, „Left only“ und „Right only“ hört man beide Seiten wie in der MP3 oder
+  nur eine Seite auf beiden Lautsprechern. Die Kanalzüge zeigen Pegel, die CLIP-Anzeige leuchtet,
+  wenn eine Seite übersteuern würde. Im Reiter Rehearsal gilt wieder der Proben-Mix.
+- **Song-Mix:** Die uTool2-Mixerwerte eines Songs (siehe [Song-Mix](#song-mix)) wirken wie im
+  Probe-Player: Pegel des Backup-Mixers + Pegel des Songs, eine gemutete Spur bleibt stumm.
+- **Format:** MP3, 192 kbit/s CBR, LAME-Qualität 0 (die beste), echtes Stereo (kein
+  Joint-Stereo, damit nichts vom Klick in die Backing-Seite übersprechen kann), Samplerate wie der
+  Song (44,1 oder 48 kHz). Die MIDI-Datei eines Songs ist nicht Teil der MP3.
+- **Dateinamen:** Das Namensschema kennt `{nr}` (Position in der Playlist, mindestens
+  zweistellig: 01, 02 …), `{song}` und `{playlist}`; Standard ist `{nr} {song}`. Zeichen, die
+  Windows nicht erlaubt, werden zu `_`, doppelte Namen bekommen ` (2)`. Eine Vorschau zeigt den
+  ersten Dateinamen. Vorhandene Dateien gleichen Namens werden überschrieben.
+- **ID3-Tags:** Titel = Songname, Album = Playlistname, Track = Position/Anzahl.
+- **Übersteuerung:** Geht eine Seite über 0 dBFS, wird hart begrenzt; der Bericht nennt den
+  Spitzenpegel und die Anzahl begrenzter Samples. Dann den Master der Seite absenken und neu
+  exportieren.
+- **Bericht:** pro Song Dauer, Fehler und Hinweise (ausgelassene Spuren, MIDI, Übersteuerung).
+  Abbrechen ist jederzeit möglich; eine angefangene MP3 bleibt nicht liegen.
+
+Mixer, Zielordner und Namensschema werden in `lp16-tool.toml` gespeichert (`backup_dir`,
+`backup_pattern`, `backup.left.*`, `backup.right.*`). Ein Song von 5 Minuten mit 16 Spuren
+braucht etwa 2 Sekunden.
 
 ## Kommandozeile
 
@@ -417,6 +487,8 @@ Dateien auf dem Stick beschädigt sein könnten. Gelöscht wird auf dem Stick ni
 | `src/project_lib.rs` | Projektbibliothek: Songs und Playlists auflisten, anlegen, umbenennen, kopieren und löschen. Beim Umbenennen eines Songs zeigen die Playlists weiter auf ihn; ein Song, den eine Playlist nutzt, lässt sich nicht löschen. |
 | `src/sync.rs` | Stick Sync: `plan` (was ein Export tun würde), `run` (exportieren und prüfen). Kommandozeile und Oberfläche nutzen denselben Ablauf. |
 | `src/mix.rs` | Der Proben-Mix: Kanalzüge, Presets, Config-Zeilen, Speicher-Timer |
+| `src/backup_mix.rs` | Der Backup-Mix für die Stereo-MP3s: linke und rechte Seite, Config-Zeilen, Namensschema |
+| `src/backup.rs` | Rendert einen Song in die Backup-MP3 (Mischen, Begrenzen, LAME, ID3-Tag) (Feature `mp3`) |
 | `src/rehearsal.rs` | Abspiel-Engine des Probe-Players (Lesen, Mischen, Pegelanzeigen, Transport, Playlist-Warteschlange mit Markierung, Autoplay und Vorladen), unabhängig von jedem Audiogerät (Feature `player`) |
 | `src/rehearsal_queue.rs` | Die Warteschlange des Players: Einträge, der Briefkasten, der Songs für die Engine öffnet, Zeilen der Songliste (Feature `player`) |
 | `src/rehearsal_midi.rs` | MIDI der Engine: Events als Frames, die Nachrichten eines Blocks, Chasing (Feature `player`) |
@@ -426,14 +498,16 @@ Dateien auf dem Stick beschädigt sein könnten. Gelöscht wird auf dem Stick ni
 | `src/gui_app.rs` | Oberfläche (egui 0.27) |
 | `src/gui_rehearsal.rs` | Der Reiter Rehearsal |
 | `src/gui_playlist.rs` | Playlist-Combo und Songliste im Reiter Rehearsal |
-| `src/gui_mixer.rs` | Der Proben-Mix im Reiter Rehearsal, dazu Preset-Leiste und Pegel-Helfer, die der Reiter Mixer mitnutzt |
-| `src/gui_mixer_tab.rs` | Der Reiter Mixer (Kanalzüge im uTool2-Stil, Transportleiste) |
+| `src/gui_mixer.rs` | Preset-Leiste, Pegelanzeigen, S/M-Tasten und das Mixer-Symbol des Mixers |
+| `src/gui_mixer_tab.rs` | Der Mixer im Reiter Rehearsal: Kanalzüge im uTool2-Stil, die mit dem Bereich skalieren, Proben-Mix und Song-Modus |
 | `src/gui_audio.rs` | Der Bereich „Audio output“ im Reiter Settings |
 | `src/gui_midi.rs` | Der Bereich „MIDI output“ im Reiter Settings |
+| `src/gui_backup.rs` | Der Reiter Export Stereo-MP3 |
 
 Es gibt keine Abhängigkeiten außer `eframe` und `rfd` für die Oberfläche sowie `cpal`, `rtrb` und `midir`
-für den Probe-Player (Feature `player`, wird von `gui` eingeschaltet); XML, MD5, WAV und MIDI sind
-selbst geschrieben.
+für den Probe-Player (Feature `player`, wird von `gui` eingeschaltet) und `mp3lame-encoder` (LAME, LGPL)
+für den MP3-Export (Feature `mp3`, wird von `gui` eingeschaltet; baut LAME aus C-Quellen, braucht also
+den MSVC-Compiler); XML, MD5, WAV, MIDI und ID3 sind selbst geschrieben.
 
 ## Tests
 
@@ -471,9 +545,8 @@ gibt es nur „LP-16“.
 **Noch nicht umgesetzt:**
 
 - Stereo-Songs und -Playlists (nur Multitrack)
-- Mixer bzw. Pegel und Panorama pro Spur im Song (vorhandene Werte aus der `.songprj` werden
-  aber übernommen). Der Probe-Player hat seinen eigenen Proben-Mix (siehe oben); der Song-Mixer bleibt
-  nicht umgesetzt.
+- Panorama pro Spur im Song (der [Song-Mix](#song-mix) bearbeitet Pegel und Mute; das in der
+  `.songprj` gespeicherte Panorama bleibt erhalten).
 - Song-Editor: Name, Sampling Rate und Resolution eines bestehenden Songs ändern
 - Playlist-Editor: Start Mode und Delay pro Song einstellen (vorhandene Werte bleiben erhalten)
 - Undo/Redo, Ordner in der Bibliothek („New folder“)

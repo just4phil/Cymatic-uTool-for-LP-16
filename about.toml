@@ -16,6 +16,7 @@ accepted = [
     "0BSD",
     "OFL-1.1",
     "LicenseRef-UFL-1.0",
+    "LGPL-3.0",  # LAME (mp3lame-encoder, mp3lame-sys): MP3 export
     "GPL-3.0-or-later",  # lp16-tool itself
 ]
 ignore-build-dependencies = true

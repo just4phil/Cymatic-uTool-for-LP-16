@@ -4,9 +4,16 @@
 //! This is only the data and the maths; the engine (`rehearsal.rs`) applies
 //! it, the Rehearsal tab edits it and `lp16-tool.toml` stores it. The
 //! rehearsal mix is never written into a .songprj, a playlist, a song.set or
-//! a .play, and the `monitor_*` values of a song (the LP-16 headphone mix)
-//! play no part in it.
+//! a .play.
+//!
+//! The song mix (`SongStrip`) is the other way round: the uTool2 mixer
+//! values of a song (`monitor_level`, `monitor_mute` of its tracks), stored
+//! in the .songprj and exported to the stick. In the rehearsal they are
+//! offsets on top of the rehearsal mix, for that song only: level = rehearsal
+//! level + song level, a muted track is silent. The song's pan is not used
+//! (the LP-16 only pans its headphone output).
 
+use crate::SongProject;
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
@@ -32,6 +39,22 @@ pub fn clamp_db(db: f32) -> f32 {
     } else {
         db.clamp(LEVEL_MIN_DB, LEVEL_MAX_DB)
     }
+}
+
+/// A level typed by the user: "-0.5", "-0,5", "+3", "-12 dB"; "-inf",
+/// "inf", "off" or "-\u{221e}" for off. Rounded to 0.1 dB and limited to the
+/// range. None if it is not a number.
+pub fn parse_level(text: &str) -> Option<f32> {
+    let t = text.trim().to_lowercase();
+    let t = t.strip_suffix("db").unwrap_or(&t).trim().replace(',', ".");
+    if matches!(t.as_str(), "-inf" | "inf" | "off" | "-\u{221e}" | "\u{221e}") {
+        return Some(f32::NEG_INFINITY);
+    }
+    let v: f32 = t.strip_prefix('+').unwrap_or(&t).parse().ok()?;
+    if !v.is_finite() {
+        return None;
+    }
+    Some(clamp_db((v * 10.0).round() / 10.0))
 }
 
 /// 10^(dB/20); -infinity gives 0.
@@ -113,6 +136,95 @@ impl MixParams {
         }
         (out, level_gain(self.master_db))
     }
+}
+
+/// The song mix of one LP-16 output: the uTool2 mixer values of the tracks
+/// on it. Off is not a level here (uTool2 has mute for that), so the level
+/// stays within `LEVEL_MIN_DB ..= LEVEL_MAX_DB`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SongStrip {
+    pub level_db: f32,
+    pub mute: bool,
+}
+
+impl Default for SongStrip {
+    fn default() -> SongStrip {
+        SongStrip { level_db: 0.0, mute: false }
+    }
+}
+
+impl SongStrip {
+    /// The gain the rehearsal applies on top of the rehearsal mix.
+    pub fn gain(&self) -> f32 {
+        if self.mute {
+            0.0
+        } else {
+            level_gain(self.level_db)
+        }
+    }
+}
+
+/// `monitor_level` of a track in dB (empty or unreadable: 0 dB).
+fn track_level(text: &str) -> f32 {
+    match text.trim().parse::<f32>() {
+        Ok(v) if v.is_finite() => v.clamp(LEVEL_MIN_DB, LEVEL_MAX_DB),
+        _ => 0.0,
+    }
+}
+
+/// `monitor_mute` of a track ("1" or "true").
+fn track_muted(text: &str) -> bool {
+    matches!(text.trim().to_lowercase().as_str(), "1" | "true")
+}
+
+/// The song mix per output. Several tracks on one output share the values;
+/// the first track on it gives them. Outputs without a track are neutral.
+pub fn song_strips(project: &SongProject) -> [SongStrip; STRIPS] {
+    let mut out = [SongStrip::default(); STRIPS];
+    let mut seen = [false; STRIPS];
+    for t in &project.tracks {
+        if t.channel < 0 || t.channel as usize >= STRIPS || seen[t.channel as usize] {
+            continue;
+        }
+        seen[t.channel as usize] = true;
+        out[t.channel as usize] = SongStrip { level_db: track_level(&t.monitor_level), mute: track_muted(&t.monitor_mute) };
+    }
+    out
+}
+
+/// The gains of `song_strips`, as the engine applies them.
+pub fn song_gains(project: &SongProject) -> [f32; STRIPS] {
+    song_strips(project).map(|s| s.gain())
+}
+
+/// Set the song mix of output `k` in all its tracks (uTool2's format:
+/// level with one decimal, mute "1"/"0"). The pan is left as it is. True
+/// if a track changed.
+pub fn set_song_strip(project: &mut SongProject, k: usize, strip: SongStrip) -> bool {
+    let level = format!("{:.1}", clamp_db(strip.level_db).max(LEVEL_MIN_DB));
+    let mute = if strip.mute { "1" } else { "0" };
+    let mut changed = false;
+    for t in project.tracks.iter_mut().filter(|t| t.channel == k as i32) {
+        if track_level(&t.monitor_level) != track_level(&level) || t.monitor_level.trim().is_empty() {
+            t.monitor_level = level.clone();
+            changed = true;
+        }
+        if track_muted(&t.monitor_mute) != strip.mute {
+            t.monitor_mute = mute.to_string();
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// The song's mixer values differ from uTool2's defaults (0 dB, centre, not
+/// muted) in some track: the lists show a symbol for it.
+pub fn has_song_mix(project: &SongProject) -> bool {
+    project.tracks.iter().any(|t| {
+        track_level(&t.monitor_level) != 0.0
+            || track_muted(&t.monitor_mute)
+            || t.monitor_pan.trim().parse::<f32>().map(|p| p != 0.0).unwrap_or(false)
+    })
 }
 
 /// A named preset.
@@ -315,7 +427,7 @@ impl MixLibrary {
 }
 
 /// One decimal, or "off".
-fn fmt_db(db: f32) -> String {
+pub(crate) fn fmt_db(db: f32) -> String {
     if db == f32::NEG_INFINITY {
         "off".to_string()
     } else {
@@ -323,14 +435,14 @@ fn fmt_db(db: f32) -> String {
     }
 }
 
-fn parse_db(s: &str) -> Option<f32> {
+pub(crate) fn parse_db(s: &str) -> Option<f32> {
     if s == "off" {
         return Some(f32::NEG_INFINITY);
     }
     s.parse::<f32>().ok().filter(|v| v.is_finite()).map(clamp_db)
 }
 
-fn parse_flag(s: &str) -> Option<bool> {
+pub(crate) fn parse_flag(s: &str) -> Option<bool> {
     match s {
         "0" => Some(false),
         "1" => Some(true),
@@ -452,6 +564,92 @@ mod tests {
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-5
+    }
+
+    /// a song with tracks on `channels` (no WAVs needed)
+    fn song_on(channels: &[i32]) -> SongProject {
+        let mut p = SongProject::parse("", "");
+        p.tracks = channels.iter().map(|c| crate::ProjectTrack::new(*c, "x.wav", "")).collect();
+        p
+    }
+
+    #[test]
+    fn the_song_mix_is_read_per_output() {
+        let mut p = song_on(&[0, 3, 3]);
+        assert!(!has_song_mix(&p), "uTool2's defaults");
+        assert_eq!(song_strips(&p), [SongStrip::default(); STRIPS]);
+        p.tracks[0].monitor_level = "2.5".into();
+        p.tracks[1].monitor_mute = "1".into();
+        p.tracks[2].monitor_level = "-9.0".into(); // second track on output 4: the first one counts
+        let s = song_strips(&p);
+        assert_eq!(s[0], SongStrip { level_db: 2.5, mute: false });
+        assert_eq!(s[3], SongStrip { level_db: 0.0, mute: true });
+        assert_eq!(s[1], SongStrip::default());
+        assert!(has_song_mix(&p));
+        let g = song_gains(&p);
+        assert!((g[0] - level_gain(2.5)).abs() < 1e-6);
+        assert_eq!(g[3], 0.0);
+        assert_eq!(g[1], 1.0);
+        // odd values: empty, unreadable, out of range
+        p.tracks[0].monitor_level = "".into();
+        assert_eq!(song_strips(&p)[0].level_db, 0.0);
+        p.tracks[0].monitor_level = "99".into();
+        assert_eq!(song_strips(&p)[0].level_db, LEVEL_MAX_DB);
+        p.tracks[1].monitor_mute = "true".into();
+        assert!(song_strips(&p)[3].mute);
+    }
+
+    #[test]
+    fn a_pan_alone_counts_as_a_song_mix() {
+        let mut p = song_on(&[0]);
+        p.tracks[0].monitor_pan = "-20.0".into();
+        assert!(has_song_mix(&p));
+        assert_eq!(song_gains(&p), [1.0; STRIPS], "but the rehearsal does not use it");
+    }
+
+    #[test]
+    fn setting_the_song_mix_writes_all_tracks_of_the_output() {
+        let mut p = song_on(&[0, 2, 2]);
+        p.tracks[1].monitor_pan = "30.0".into();
+        assert!(set_song_strip(&mut p, 2, SongStrip { level_db: -1.25, mute: true }));
+        for t in &p.tracks[1..] {
+            assert_eq!(t.monitor_mute, "1");
+            assert!(t.monitor_level == "-1.2" || t.monitor_level == "-1.3", "{}", t.monitor_level);
+        }
+        assert_eq!(p.tracks[1].monitor_pan, "30.0", "the pan stays");
+        assert_eq!(p.tracks[0].monitor_level, "0.0");
+        // the same values again: nothing changes
+        let s = song_strips(&p)[2];
+        assert!(!set_song_strip(&mut p, 2, s));
+        // off is not a song level: it becomes the lowest level
+        set_song_strip(&mut p, 0, SongStrip { level_db: f32::NEG_INFINITY, mute: false });
+        assert_eq!(p.tracks[0].monitor_level, "-60.0");
+        // back to neutral
+        set_song_strip(&mut p, 0, SongStrip::default());
+        set_song_strip(&mut p, 2, SongStrip::default());
+        assert_eq!(p.tracks[2].monitor_level, "0.0");
+        assert_eq!(p.tracks[2].monitor_mute, "0");
+        // an output without a track: nothing to write
+        assert!(!set_song_strip(&mut p, 7, SongStrip { level_db: 3.0, mute: false }));
+    }
+
+    #[test]
+    fn typed_levels() {
+        assert_eq!(parse_level("-0.5"), Some(-0.5));
+        assert_eq!(parse_level(" -0,5 "), Some(-0.5));
+        assert_eq!(parse_level("+3"), Some(3.0));
+        assert_eq!(parse_level("0"), Some(0.0));
+        assert_eq!(parse_level("-12 dB"), Some(-12.0));
+        assert_eq!(parse_level("-7.04"), Some(-7.0));
+        // limited to the range
+        assert_eq!(parse_level("20"), Some(LEVEL_MAX_DB));
+        assert_eq!(parse_level("-100"), Some(LEVEL_MIN_DB));
+        for off in ["-inf", "inf", "OFF", "-\u{221e}"] {
+            assert_eq!(parse_level(off), Some(f32::NEG_INFINITY), "{}", off);
+        }
+        for bad in ["", "abc", "1.2.3", "NaN", "--1"] {
+            assert_eq!(parse_level(bad), None, "{}", bad);
+        }
     }
 
     #[test]

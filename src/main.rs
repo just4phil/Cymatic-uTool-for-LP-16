@@ -18,6 +18,8 @@ mod gui_app;
 #[cfg(feature = "gui")]
 mod gui_audio;
 #[cfg(feature = "gui")]
+mod gui_backup;
+#[cfg(feature = "gui")]
 mod gui_midi;
 #[cfg(feature = "gui")]
 mod gui_mixer;
