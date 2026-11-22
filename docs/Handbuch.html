@@ -1,0 +1,675 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lp16-tool Handbuch</title>
+<meta name="description" content="Handbuch zu lp16-tool 0.2.0: Songs und Playlists für den Cymatic Audio LP-16 verwalten, auf den Stick exportieren, proben und Backup-MP3s erzeugen.">
+<style>
+:root {
+  --bg: #fbfaf8;
+  --panel: #ffffff;
+  --text: #1f1f1f;
+  --dim: #5f5f5f;
+  --line: #e4e0da;
+  --accent: #d4570d;
+  --accent-soft: #fbe6d8;
+  --code-bg: #f2efea;
+  --left: #2f6f9a;
+  --right: #b0561f;
+  --ok: #2c7a3f;
+  --warn-bg: #fff4e5;
+  --warn-line: #f0b36b;
+  --note-bg: #eef4f8;
+  --note-line: #8db4cf;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #262626;
+    --panel: #303030;
+    --text: #ececec;
+    --dim: #a6a6a6;
+    --line: #444444;
+    --accent: #f07a2f;
+    --accent-soft: #4a3326;
+    --code-bg: #3a3a3a;
+    --left: #6fb0dd;
+    --right: #f0995e;
+    --ok: #6cd86c;
+    --warn-bg: #3d3326;
+    --warn-line: #a7743a;
+    --note-bg: #29343c;
+    --note-line: #4f7690;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #262626;
+  --panel: #303030;
+  --text: #ececec;
+  --dim: #a6a6a6;
+  --line: #444444;
+  --accent: #f07a2f;
+  --accent-soft: #4a3326;
+  --code-bg: #3a3a3a;
+  --left: #6fb0dd;
+  --right: #f0995e;
+  --ok: #6cd86c;
+  --warn-bg: #3d3326;
+  --warn-line: #a7743a;
+  --note-bg: #29343c;
+  --note-line: #4f7690;
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; scroll-padding-top: 16px; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.6 "Segoe UI", system-ui, -apple-system, Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+a { color: var(--accent); }
+a:hover { text-decoration-thickness: 2px; }
+.layout {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  max-width: 1240px;
+  margin: 0 auto;
+}
+nav.toc {
+  position: sticky;
+  top: 0;
+  align-self: start;
+  height: 100vh;
+  overflow-y: auto;
+  padding: 28px 18px 28px 24px;
+  border-right: 1px solid var(--line);
+  font-size: 14.5px;
+}
+nav.toc .brand { font-weight: 700; font-size: 20px; color: var(--accent); margin: 0 0 2px; }
+nav.toc .version { color: var(--dim); font-size: 13px; margin-bottom: 18px; }
+nav.toc ol { list-style: none; padding: 0; margin: 0; }
+nav.toc li { margin: 2px 0; }
+nav.toc ol ol { padding-left: 14px; font-size: 13.5px; }
+nav.toc a { color: var(--text); text-decoration: none; display: block; padding: 2px 8px; border-radius: 4px; }
+nav.toc a:hover { background: var(--accent-soft); }
+main { padding: 32px 48px 80px; min-width: 0; }
+header.hero { border-bottom: 3px solid var(--accent); padding-bottom: 18px; margin-bottom: 28px; }
+header.hero h1 { font-size: 34px; margin: 0 0 6px; line-height: 1.2; }
+header.hero p { margin: 4px 0; color: var(--dim); font-size: 17px; }
+h2 {
+  font-size: 25px;
+  margin: 52px 0 14px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+h3 { font-size: 19px; margin: 30px 0 10px; }
+h4 { font-size: 16px; margin: 22px 0 6px; }
+p, ul, ol { margin: 10px 0; }
+li { margin: 4px 0; }
+code, kbd, pre { font-family: Consolas, "Cascadia Mono", "SFMono-Regular", Menlo, monospace; font-size: 0.9em; }
+code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+pre {
+  background: var(--code-bg);
+  padding: 12px 14px;
+  border-radius: 6px;
+  overflow-x: auto;
+  line-height: 1.45;
+}
+pre code { background: none; padding: 0; }
+kbd {
+  display: inline-block;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--panel);
+  font-size: 0.85em;
+}
+.table-wrap { overflow-x: auto; margin: 12px 0; }
+table { border-collapse: collapse; width: 100%; font-size: 15px; }
+th, td { text-align: left; vertical-align: top; padding: 7px 10px; border-bottom: 1px solid var(--line); }
+th { background: var(--code-bg); font-weight: 600; }
+.callout {
+  border-left: 4px solid var(--note-line);
+  background: var(--note-bg);
+  padding: 10px 14px;
+  border-radius: 0 6px 6px 0;
+  margin: 14px 0;
+}
+.callout.warn { border-left-color: var(--warn-line); background: var(--warn-bg); }
+.callout p { margin: 4px 0; }
+.tabs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+  margin: 14px 0;
+}
+.tabs-grid a.card {
+  display: block;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--accent);
+  border-radius: 6px;
+  padding: 10px 12px;
+  color: var(--text);
+  text-decoration: none;
+}
+.tabs-grid a.card:hover { border-color: var(--accent); }
+.tabs-grid .card b { display: block; color: var(--accent); margin-bottom: 2px; }
+.tabs-grid .card span { font-size: 14px; color: var(--dim); }
+figure { margin: 18px 0; }
+figure svg { width: 100%; height: auto; display: block; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+figcaption { font-size: 14px; color: var(--dim); margin-top: 6px; }
+.svg-text { fill: var(--text); font: 13px "Segoe UI", system-ui, sans-serif; }
+.svg-dim { fill: var(--dim); font: 12px "Segoe UI", system-ui, sans-serif; }
+.svg-box { fill: var(--code-bg); stroke: var(--line); }
+.svg-left { fill: none; stroke: var(--left); stroke-width: 2; }
+.svg-right { fill: none; stroke: var(--right); stroke-width: 2; }
+.svg-left-fill { fill: var(--left); }
+.svg-right-fill { fill: var(--right); }
+.svg-accent { fill: var(--accent); }
+.theme-toggle {
+  margin-top: 20px;
+  font: inherit;
+  font-size: 13px;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+footer { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--dim); font-size: 14px; }
+@media (max-width: 900px) {
+  .layout { display: block; }
+  nav.toc {
+    position: static;
+    height: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    padding: 20px 16px;
+  }
+  nav.toc ol ol { display: none; }
+  main { padding: 20px 16px 60px; }
+  header.hero h1 { font-size: 28px; }
+}
+@media print {
+  nav.toc, .theme-toggle { display: none; }
+  .layout { display: block; }
+  main { padding: 0; }
+  h2 { break-after: avoid; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="toc" aria-label="Inhalt">
+  <p class="brand">lp16-tool</p>
+  <p class="version">Handbuch · Version 0.2.0</p>
+  <ol>
+    <li><a href="#ueberblick">Überblick</a></li>
+    <li><a href="#installation">Installation und Einrichtung</a>
+      <ol>
+        <li><a href="#config">Die Datei lp16-tool.toml</a></li>
+        <li><a href="#ordner">Ordner der Bibliothek</a></li>
+      </ol>
+    </li>
+    <li><a href="#oberflaeche">Die Oberfläche</a></li>
+    <li><a href="#home">Home: die Bibliothek</a></li>
+    <li><a href="#export">Export auf den Stick</a>
+      <ol>
+        <li><a href="#neu-exportiert">Wann ein Song neu exportiert wird</a></li>
+      </ol>
+    </li>
+    <li><a href="#import">Import: Batch-Import</a></li>
+    <li><a href="#edit-target">Edit Target</a></li>
+    <li><a href="#rehearsal">Rehearsal: der Probe-Player</a>
+      <ol>
+        <li><a href="#songliste">Songliste und Playlists</a></li>
+        <li><a href="#tasten">Tastenkürzel</a></li>
+        <li><a href="#proben-mix">Proben-Mix</a></li>
+        <li><a href="#song-mix">Song-Mix</a></li>
+      </ol>
+    </li>
+    <li><a href="#mp3">Export Stereo-MP3</a>
+      <ol>
+        <li><a href="#mp3-mixer">Die beiden Mixer</a></li>
+        <li><a href="#mp3-preview">Vorhören</a></li>
+        <li><a href="#mp3-export">Exportieren</a></li>
+      </ol>
+    </li>
+    <li><a href="#settings">Settings</a>
+      <ol>
+        <li><a href="#audio">Audio output</a></li>
+        <li><a href="#midi">MIDI output</a></li>
+      </ol>
+    </li>
+    <li><a href="#cli">Kommandozeile</a></li>
+    <li><a href="#config-ref">Alle Einstellungen</a></li>
+    <li><a href="#grenzen">Was fehlt und was anders ist</a></li>
+    <li><a href="#lizenz">Lizenz</a></li>
+  </ol>
+  <button class="theme-toggle" type="button" id="theme-toggle">Hell / Dunkel</button>
+</nav>
+
+<main>
+<header class="hero">
+  <h1>lp16-tool – Handbuch</h1>
+  <p>Ersatz für uTool2: Songs und Playlists für den Cymatic Audio LP-16 verwalten, auf den Stick exportieren, zu Hause proben und Notfall-MP3s für die Bühne erzeugen.</p>
+  <p>Stand: Version 0.2.0 · Windows 10/11, 64 Bit</p>
+</header>
+
+<!-- ===================================================================== -->
+<section id="ueberblick">
+<h2>Überblick</h2>
+<p>Der Hersteller Cymatic Audio existiert nicht mehr, und mit ihm fehlt die Pflege für uTool2. lp16-tool liest die uTool2-Projektbibliothek (<code>.songprj</code>, <code>.playlistprj</code>) und schreibt den Stick (<code>Recording\&lt;Song&gt;\…</code>, <code>Recording\#PLAYLISTS\*.play</code>) <strong>byte-gleich</strong> so, wie uTool2 es tut. Die Oberfläche ist der von uTool2 nachgebaut; dazu kommt eine Kommandozeile.</p>
+<ul>
+  <li><strong>Stick-Export wie uTool2:</strong> <code>song.set</code> (mit <code>validationcode</code>), <code>.play</code> und die WAVs sind byte-gleich mit dem, was uTool2 schreibt.</li>
+  <li><strong>Quick Export und Force Overwrite:</strong> nur Neues und Geändertes schreiben, oder alles neu.</li>
+  <li><strong>Sicher schreiben:</strong> Ein abgebrochener Export hinterlässt nie eine halbe Datei; nach jedem Song wird geprüft.</li>
+  <li><strong>Bibliothek bearbeiten:</strong> Playlists und Songs anlegen, ändern, kopieren, löschen; WAVs per Drag &amp; Drop auf die 16 Spuren.</li>
+  <li><strong>Batch-Import:</strong> viele neue Song-Versionen auf einmal anlegen.</li>
+  <li><strong>Probe-Player:</strong> Songs und Playlists über WASAPI oder ASIO abspielen, mit 16-Kanal-Mixer, Song-Mix und MIDI-Ausgang für Modeler.</li>
+  <li><strong>Backup-MP3s:</strong> pro Song eine Stereo-MP3 (links Backings, rechts Klick) für den Fall, dass der LP-16 auf der Bühne ausfällt.</li>
+</ul>
+<div class="callout warn">
+  <p><strong>Nur der LP-16.</strong> lp16-tool ist kein vollständiger Nachbau von uTool2. Was fehlt, steht unter <a href="#grenzen">Was fehlt und was anders ist</a>. Vor dem ersten Export auf einen echten Stick den Ordner <code>Recording\</code> sichern.</p>
+</div>
+<p>lp16-tool ist ein unabhängiges Projekt ohne Verbindung zu Cymatic Audio, neu in Rust geschrieben und ohne Code aus uTool2. Die Dateiformate wurden aus dem Verhalten von uTool2 und den Dateien auf einem echten Stick abgeleitet.</p>
+</section>
+
+<!-- ===================================================================== -->
+<section id="installation">
+<h2>Installation und Einrichtung</h2>
+<ol>
+  <li>Von der Releases-Seite auf GitHub das ZIP <code>lp16-tool-v0.2.0-windows-x64.zip</code> laden und entpacken. Eine Installation ist nicht nötig.</li>
+  <li><code>lp16-tool.exe</code> starten. Windows zeigt eventuell eine SmartScreen-Warnung, weil die exe nicht signiert ist: „Weitere Informationen“ → „Trotzdem ausführen“.</li>
+  <li>Im Reiter <strong>Settings</strong> den <strong>Library Folder</strong> wählen. <strong>Initialize Folders</strong> legt fehlende Ordner an. Die Einstellungen landen in <code>lp16-tool.toml</code> neben der exe.</li>
+</ol>
+<p>Die exe der Releases enthält die ASIO-Ausgabe. Selbst bauen beschreibt die README im Repository (<code>cargo build --release --features asio</code>).</p>
+
+<h3 id="config">Die Datei lp16-tool.toml</h3>
+<p>Die Datei wird im aktuellen Ordner gesucht, sonst neben der exe und in den Ordnern darüber. Als Vorlage dient <code>lp16-tool.example.toml</code>. Fehlt die Datei, legt die Oberfläche sie beim ersten Ändern einer Einstellung an. Fast alle Werte werden über die Oberfläche gesetzt und automatisch gespeichert; eine vollständige Liste steht unter <a href="#config-ref">Alle Einstellungen</a>.</p>
+<pre><code># Basisordner: &lt;library&gt;\CymaticProjectLib = Projektbibliothek,
+#              &lt;library&gt;\AudioLibrary      = Audiodateien und Import
+library = "E:\LP16_LIBRARY"
+# Export-Ziel (wird im Export-Reiter gewählt und gemerkt)
+stick_root = "F:\"</code></pre>
+
+<h3 id="ordner">Ordner der Bibliothek</h3>
+<pre><code>&lt;library&gt;\
+├── CymaticProjectLib\
+│   └── LP16\
+│       ├── Multitrack Songs\       *.songprj
+│       └── Multitrack Playlists\   *.playlistprj
+└── AudioLibrary\
+    └── &lt;Song&gt;\&lt;YYYY-MM-DD…&gt;\       *.wav, eine .mid</code></pre>
+<p>Ältere Konfigurationen mit getrennten Pfaden (<code>audio_lib</code>, <code>project_lib</code>, <code>import_lib</code>) werden weiter gelesen.</p>
+</section>
+
+<!-- ===================================================================== -->
+<section id="oberflaeche">
+<h2>Die Oberfläche</h2>
+<p>Ohne Argumente (auch per Doppelklick) startet die Oberfläche. Oben liegen die Reiter:</p>
+<div class="tabs-grid">
+  <a class="card" href="#home"><b>Home</b><span>Songs und Playlists der Bibliothek, Song- und Playlist-Editor</span></a>
+  <a class="card" href="#rehearsal"><b>Rehearsal</b><span>Probe-Player mit Songliste, Transport und Mixer</span></a>
+  <a class="card" href="#export"><b>Export</b><span>Songs und Playlists auf den Stick bringen</span></a>
+  <a class="card" href="#mp3"><b>Export Stereo-MP3</b><span>Notfall-MP3s mit eigenem Links-/Rechts-Mixer</span></a>
+  <a class="card" href="#import"><b>Import</b><span>Batch-Import neuer Song-Versionen</span></a>
+  <a class="card" href="#edit-target"><b>Edit Target</b><span>Inhalt des Sticks ansehen</span></a>
+  <a class="card" href="#settings"><b>Settings</b><span>Bibliothek, Audioausgang, MIDI-Ausgang</span></a>
+  <a class="card" href="#config"><b>Support</b><span>Version und Pfad der Einstellungsdatei</span></a>
+</div>
+</section>
+
+<!-- ===================================================================== -->
+<section id="home">
+<h2>Home: die Bibliothek</h2>
+<p>Der Reiter Home zeigt die Projektbibliothek: links der <strong>Project Explorer</strong> mit den Ordnern Songs und Playlists, rechts die <strong>Details</strong> des gewählten Eintrags (Format, Spuren, Länge, MIDI-Datei). Fehlende WAVs oder MIDI-Dateien werden markiert.</p>
+<ul>
+  <li><strong>Playlists:</strong> anlegen, umsortieren, umbenennen, kopieren und löschen. Beim Umbenennen eines Songs zeigen die Playlists weiter auf ihn; ein Song, den eine Playlist nutzt, lässt sich nicht löschen.</li>
+  <li><strong>Song-Editor:</strong> neue Songs anlegen, WAVs per Drag &amp; Drop auf die 16 Spuren ziehen, die MIDI-Datei wählen.</li>
+  <li><strong>Rechtsklick → Play in Rehearsal</strong> lädt einen Song (startet ihn) oder eine Playlist (ohne zu starten) in den <a href="#rehearsal">Probe-Player</a>.</li>
+  <li>Die Taste <strong>Mixer</strong> eines Songs lädt ihn in den Player und öffnet seinen <a href="#song-mix">Song-Mix</a>.</li>
+  <li>Ein <strong>Mixer-Symbol</strong> (drei kleine Fader) kennzeichnet Songs mit eigenem Song-Mix, ein Notensymbol Songs mit MIDI-Datei.</li>
+</ul>
+</section>
+
+<!-- ===================================================================== -->
+<section id="export">
+<h2>Export auf den Stick</h2>
+<p>Im Reiter Export wählt man Songs und Playlists und das Ziel (den Stick). Die Vorschau zeigt pro Song <em>New Export</em>, <em>Overwrite</em>, <em>Skip</em> oder <em>Force Overwrite</em> und die Datenmenge („To Copy“).</p>
+<ul>
+  <li><strong>Quick Export</strong> schreibt nur neue und geänderte Songs. <strong>Force Overwrite</strong> schreibt alle ausgewählten Songs neu – hilfreich, wenn Dateien auf dem Stick beschädigt sein könnten.</li>
+  <li>Die WAVs bekommen einen neu aufgebauten Header (Audiodaten unverändert) und die Namen <code>_&lt;quelle&gt;_&lt;NN&gt;.wav</code>, genau wie bei uTool2.</li>
+  <li>Jede Datei wird erst als <code>.lp16tmp</code> geschrieben, auf das Gerät geschrieben und dann umbenannt. Nach jedem Song wird das Ergebnis auf dem Ziel geprüft. Ein Abbruch (Cancel, Stick gezogen, Stromausfall) hinterlässt die alte Datei oder einen <code>.lp16tmp</code>-Rest, nie einen halben Song.</li>
+  <li>Die <code>.play</code> einer ausgewählten Playlist wird bei jedem Export geschrieben. Auf dem Stick wird nichts gelöscht.</li>
+  <li>Ein Bericht zeigt am Ende jede Zeile mit Ergebnis und die Gesamtdauer.</li>
+</ul>
+
+<h3 id="neu-exportiert">Wann ein Song neu exportiert wird</h3>
+<p>Quick Export schreibt einen Song, wenn</p>
+<ul>
+  <li>sein Ordner auf dem Stick fehlt (<em>New Export</em>),</li>
+  <li>eine WAV fehlt oder nicht mehr die Größe hat, die die aktuelle Quelle ergibt,</li>
+  <li>die MIDI-Datei fehlt, oder</li>
+  <li>die <code>song.set</code> abweicht. Der <code>validationcode</code> darin enthält Pfade und Änderungszeiten der Quelldateien; so fallen auch neu gerenderte WAVs gleicher Länge und geänderte MIDI-Dateien auf.</li>
+</ul>
+<p>Sonst wird er übersprungen (<em>Skip</em>).</p>
+<div class="callout">
+  <p><strong>Vor dem Gig prüfen:</strong> <code>lp16-tool verify …</code> vergleicht den Stick nur lesend mit der Bibliothek und endet mit Exit-Code 0, wenn alles aktuell ist (siehe <a href="#cli">Kommandozeile</a>).</p>
+</div>
+</section>
+
+<!-- ===================================================================== -->
+<section id="import">
+<h2>Import: Batch-Import von Songs</h2>
+<p>Der Reiter Import hat mit dem Import von uTool2 nur den Namen gemeinsam: lp16-tool legt Songs im <strong>Stapel</strong> an. Erwartet wird eine AudioLibrary mit einem Ordner pro Song und darin einem Ordner pro Version, benannt mit Datum:</p>
+<pre><code>AudioLibrary\&lt;Song&gt;\&lt;YYYY-MM-DD…&gt;\   bis zu 16 Mono-WAVs, höchstens eine .mid</code></pre>
+<ul>
+  <li><strong>Import Songs</strong> durchsucht die AudioLibrary und schlägt alle Versionsordner vor, für die es noch keinen Song gibt und die neuer sind als die neueste Version in der Bibliothek.</li>
+  <li>Nach der Bestätigung entsteht pro Ordner eine <code>.songprj</code> mit den WAVs auf den Spuren 1…n (natürlich sortiert) und der MIDI-Datei.</li>
+  <li>Fehlerhafte Ordner (nicht mono, gemischte Formate, mehr als 16 WAVs, mehrere MIDI-Dateien) werden angezeigt, aber nicht importiert. Vorhandene Dateien werden nie überschrieben.</li>
+  <li><strong>Update Playlist</strong> baut aus einer bestehenden Playlist eine neue, in der jeder Song durch seine neueste Version ersetzt ist. Nach einem Import wird das passend vorgeschlagen.</li>
+</ul>
+</section>
+
+<!-- ===================================================================== -->
+<section id="edit-target">
+<h2>Edit Target</h2>
+<p>Zeigt den Inhalt des Sticks als Baum, mit Details zu Songs und Playlists. Bearbeiten oder Löschen auf dem Stick ist (noch) nicht möglich.</p>
+</section>
+
+<!-- ===================================================================== -->
+<section id="rehearsal">
+<h2>Rehearsal: der Probe-Player</h2>
+<p>Der Probe-Player spielt Songs und Playlists der Bibliothek über den in <a href="#audio">Settings → Audio output</a> gewählten Ausgang (WASAPI oder ASIO) und schickt die MIDI-Datei des Songs an einen <a href="#midi">MIDI-Ausgang</a>. Der Reiter hat drei Bereiche, deren Größe man durch Ziehen der Trennlinien ändern kann: links die Songliste, rechts der Player, darunter der Mixer.</p>
+<ul>
+  <li>Der Player zeigt Songname, Position und Länge, einen Fortschrittsbalken (Klicken oder Ziehen springt; beim Ziehen zeigt die Zeit das Ziel, gesprungen wird beim Loslassen), Play/Pause, Stop, −10 s / +10 s und vorigen/nächsten Song.</li>
+  <li>Springen während der Wiedergabe blendet über 5 ms aus und wieder ein, damit nichts knackt.</li>
+  <li>Alle Spuren werden synchron von der Platte gestreamt. Der Stream läuft mit der <strong>Samplerate des Songs</strong>; hat der nächste Song eine andere Rate, wird der Ausgang neu geöffnet. Es gibt kein Resampling.</li>
+  <li>WAVs müssen mono sein (8, 16, 24, 32 Bit Integer oder 32 Bit Float). Fehlende oder ungeeignete Spuren bleiben still, eine Warnung nennt Spur und Grund; der Song spielt mit den übrigen Spuren.</li>
+  <li>Ein Zähler erscheint, wenn der Audiopuffer leer lief (Aussetzer).</li>
+  <li>Verschwindet das Audiogerät, stoppt die Wiedergabe mit „Audio device lost“; nach dem Wiederanschließen genügt Play.</li>
+  <li>Export, Import und Bibliotheksbearbeitung bleiben während der Wiedergabe benutzbar.</li>
+</ul>
+
+<h3 id="songliste">Songliste und Playlists</h3>
+<ul>
+  <li>Die Playlist wählt man im Combo <strong>Playlist</strong> über der Liste. Sie wird geladen, startet aber nicht von selbst (live wartet der erste Song auch auf die Taste).</li>
+  <li><strong>Genau ein Song ist immer markiert.</strong> Play startet den markierten Song.</li>
+  <li><strong>Einfacher Klick:</strong> Spielt nichts, wird der Song geladen und bleibt gestoppt. Spielt gerade ein Song, läuft er weiter, und der angeklickte wird der <em>nächste</em> Song (Pfeil →). Ein Klick auf den spielenden Song nimmt das zurück.</li>
+  <li><strong>Doppelklick</strong> startet den Song sofort.</li>
+  <li><strong>Autoplay after 5 seconds:</strong> Aus – nach einem Song wartet der Player auf Play („Next: &lt;Song&gt; – press Play“). An – der nächste Song startet nach 5 Sekunden Stille. Die Einstellung ersetzt den Startmodus der Playlist (die <code>.playlistprj</code> wird nicht verändert).</li>
+  <li>Der nächste Song wird in den letzten 10 Sekunden vorgeladen, damit er ohne Verzögerung startet.</li>
+  <li>Songs, die nicht gelesen werden können, sind rot (Grund als Tooltip) und werden übersprungen.</li>
+</ul>
+
+<h3 id="tasten">Tastenkürzel</h3>
+<p>Gelten, solange der Reiter angezeigt wird und kein Textfeld den Fokus hat (auch in der Preview-Leiste von <a href="#mp3-preview">Export Stereo-MP3</a>).</p>
+<div class="table-wrap"><table>
+  <tr><th>Taste</th><th>Funktion</th></tr>
+  <tr><td><kbd>Leertaste</kbd></td><td>Play / Pause</td></tr>
+  <tr><td><kbd>←</kbd> / <kbd>→</kbd></td><td>−10 s / +10 s</td></tr>
+  <tr><td><kbd>Umschalt</kbd> + <kbd>←</kbd> / <kbd>→</kbd></td><td>−30 s / +30 s</td></tr>
+  <tr><td><kbd>Pos1</kbd></td><td>auf 0 springen, der Zustand bleibt</td></tr>
+  <tr><td><kbd>Esc</kbd></td><td>Stop</td></tr>
+  <tr><td><kbd>↑</kbd> / <kbd>↓</kbd></td><td>Markierung auf den vorigen / nächsten Song (wie ein Klick)</td></tr>
+</table></div>
+
+<h3 id="proben-mix">Proben-Mix</h3>
+<p>Der Mixer unter dem Player hat 16 Kanalzüge (LP-16-Ausgang 1–16) und einen Master im Stil des uTool2-Mixers. Jede Spur des Songs spielt auf dem Kanalzug ihres LP-16-Ausgangs; mehrere Spuren auf einem Ausgang werden summiert. Die Kanalzüge füllen den Mixer-Bereich, die Spurnamen werden vollständig angezeigt (umgebrochen).</p>
+<ul>
+  <li>Pro Kanalzug: <strong>S</strong>olo, <strong>M</strong>ute, Pan-Regler (−127…+127, Constant Power; ziehen, Doppelklick = Mitte), Pegel, Fader (−60…+6 dB, unten „off“; Doppelklick = 0 dB) und Pegelanzeige.</li>
+  <li><strong>Pegel eintippen:</strong> Doppelklick auf den dB-Wert, dann z. B. <code>-0.5</code>, <code>-0,5</code>, <code>+3</code>, <code>-12 dB</code> oder <code>-inf</code>/<code>off</code>. Enter übernimmt, Esc bricht ab.</li>
+  <li>Der Fader ist im wichtigen Bereich feiner: −10 bis +6 dB nehmen 60 % des Wegs ein.</li>
+  <li>Master mit Pegelanzeige L/R und <strong>CLIP</strong>-LED (leuchtet bis zum Anklicken, wenn begrenzt werden musste).</li>
+  <li><strong>Presets:</strong> benannte Mixe – New, Copy, Rename, Delete, Reset. Sie werden automatisch in <code>lp16-tool.toml</code> gespeichert.</li>
+  <li>Änderungen wirken sofort und ohne Knacken.</li>
+</ul>
+<div class="callout">
+  <p><strong>Der Proben-Mix wird nie exportiert</strong> – weder in eine <code>.songprj</code> noch auf den Stick. Er gilt nur zum Proben.</p>
+</div>
+
+<h3 id="song-mix">Song-Mix</h3>
+<p>Der Song-Mix ist der uTool2-Mixer eines Songs: Pegel und Mute pro Spur (<code>monitor_level</code>, <code>monitor_mute</code> in der <code>.songprj</code>). Er wird mit dem Song auf den Stick exportiert und eignet sich für schnelle Korrekturen, etwa eine zu laute Backing-Spur.</p>
+<ul>
+  <li><strong>Öffnen:</strong> Taste <strong>Mixer</strong> eines Songs im Home-Reiter oder <strong>Song mix</strong> neben der Preset-Leiste. Im Song-Modus sind die Kanalzüge braun; <strong>Back to the rehearsal mix</strong> beendet ihn.</li>
+  <li>Pegel sind Abweichungen (0 dB = keine Änderung, −60…+6 dB); stumm schalten mit <strong>M</strong>. Solo und Panorama bleiben die des Proben-Mix.</li>
+  <li><strong>Beim Proben</strong> addiert sich der Song-Mix zum Proben-Mix (Bass −3 dB im Proben-Mix, +2 dB im Song → −1 dB); eine im Song stumme Spur bleibt still.</li>
+  <li>Im Proben-Mix zeigt ein Kanalzug den Song-Wert in Orange unter dem Namen („song +2.0“, „song: mute“).</li>
+  <li>Änderungen werden kurz nach der letzten Änderung in die <code>.songprj</code> geschrieben.</li>
+</ul>
+</section>
+
+<!-- ===================================================================== -->
+<section id="mp3">
+<h2>Export Stereo-MP3: Backup für den Notfall</h2>
+<p>Fällt der LP-16 beim Konzert aus, läuft die Show vom Handy oder MP3-Player weiter. Der Reiter <strong>Export Stereo-MP3</strong> schreibt für jeden Song einer Playlist eine Stereo-MP3, deren Seiten zwei getrennte Mono-Mischungen der 16 LP-16-Ausgänge sind – typischerweise <strong>links die Backings</strong> (Synths, Samples …) und <strong>rechts Klick und Cues</strong>. Das Publikum bekommt die Backings über die PA, der Drummer den Klick auf den Kopfhörer.</p>
+
+<figure>
+<svg viewBox="0 0 760 300" role="img" aria-labelledby="flow-title flow-desc">
+  <title id="flow-title">Signalfluss des Backup-Mix</title>
+  <desc id="flow-desc">Jeder der 16 LP-16-Ausgänge wird mit dem Song-Mix multipliziert und geht über einen eigenen Fader in den linken und in den rechten Mono-Mix. Jede Seite hat einen Master und wird bei 0 dBFS begrenzt, dann codiert LAME beide Seiten als echtes Stereo.</desc>
+  <!-- outputs -->
+  <rect class="svg-box" x="20" y="40" width="120" height="220" rx="6"/>
+  <text class="svg-text" x="80" y="30" text-anchor="middle">LP-16-Ausgänge</text>
+  <text class="svg-text" x="80" y="80" text-anchor="middle">1 Synth</text>
+  <text class="svg-text" x="80" y="110" text-anchor="middle">2 Pad</text>
+  <text class="svg-dim" x="80" y="140" text-anchor="middle">…</text>
+  <text class="svg-text" x="80" y="170" text-anchor="middle">15 Cues</text>
+  <text class="svg-text" x="80" y="200" text-anchor="middle">16 Click</text>
+  <text class="svg-dim" x="80" y="245" text-anchor="middle">× Song-Mix</text>
+  <!-- left bank -->
+  <rect class="svg-box" x="230" y="40" width="150" height="95" rx="6"/>
+  <text class="svg-text" x="305" y="62" text-anchor="middle">Left side</text>
+  <text class="svg-dim" x="305" y="82" text-anchor="middle">16 Fader + Mute</text>
+  <text class="svg-dim" x="305" y="100" text-anchor="middle">Master</text>
+  <text class="svg-dim" x="305" y="120" text-anchor="middle">Begrenzer ±1.0</text>
+  <!-- right bank -->
+  <rect class="svg-box" x="230" y="165" width="150" height="95" rx="6"/>
+  <text class="svg-text" x="305" y="187" text-anchor="middle">Right side</text>
+  <text class="svg-dim" x="305" y="207" text-anchor="middle">16 Fader + Mute</text>
+  <text class="svg-dim" x="305" y="225" text-anchor="middle">Master</text>
+  <text class="svg-dim" x="305" y="245" text-anchor="middle">Begrenzer ±1.0</text>
+  <!-- routing -->
+  <path class="svg-left" d="M140 76 C 185 76, 190 80, 230 80"/>
+  <path class="svg-left" d="M140 106 C 185 106, 190 92, 230 92"/>
+  <path class="svg-right" d="M140 196 C 185 196, 190 205, 230 205"/>
+  <path class="svg-right" d="M140 166 C 185 166, 190 195, 230 195"/>
+  <path class="svg-left" d="M140 166 C 185 166, 195 110, 230 110" stroke-dasharray="5 4"/>
+  <text class="svg-dim" x="185" y="150" text-anchor="middle">auch beide</text>
+  <!-- encoder -->
+  <rect class="svg-box" x="470" y="105" width="130" height="90" rx="6"/>
+  <text class="svg-text" x="535" y="135" text-anchor="middle">LAME</text>
+  <text class="svg-dim" x="535" y="155" text-anchor="middle">192 kbit/s CBR</text>
+  <text class="svg-dim" x="535" y="173" text-anchor="middle">echtes Stereo</text>
+  <path class="svg-left" d="M380 88 C 430 88, 430 135, 470 135"/>
+  <path class="svg-right" d="M380 212 C 430 212, 430 165, 470 165"/>
+  <text class="svg-dim" x="425" y="100" text-anchor="middle">L</text>
+  <text class="svg-dim" x="425" y="208" text-anchor="middle">R</text>
+  <!-- file -->
+  <rect x="650" y="120" width="90" height="60" rx="6" class="svg-accent"/>
+  <text x="695" y="147" text-anchor="middle" style="fill:#fff;font:600 13px 'Segoe UI',system-ui,sans-serif">01 Song</text>
+  <text x="695" y="165" text-anchor="middle" style="fill:#fff;font:13px 'Segoe UI',system-ui,sans-serif">.mp3</text>
+  <path class="svg-left" d="M600 150 L 650 150" style="stroke:var(--dim)"/>
+  <!-- legend -->
+  <rect class="svg-left-fill" x="470" y="245" width="14" height="4"/>
+  <text class="svg-dim" x="490" y="251">linke Seite</text>
+  <rect class="svg-right-fill" x="570" y="245" width="14" height="4"/>
+  <text class="svg-dim" x="590" y="251">rechte Seite</text>
+</svg>
+<figcaption>Jeder Ausgang kann auf die linke, die rechte oder beide Seiten gehen, mit eigenem Pegel pro Seite. Der Song-Mix wirkt wie im Probe-Player.</figcaption>
+</figure>
+
+<h3 id="mp3-mixer">Die beiden Mixer</h3>
+<ul>
+  <li><strong>Left side</strong> und <strong>Right side</strong> haben je 16 Kanalzüge (Pegel, Mute, Pegelanzeige) und einen Master. Am Anfang ist alles <em>off</em>; was auf eine Seite soll, wird hochgezogen. Ein Kanal kann auf beiden Seiten liegen.</li>
+  <li>Kanalzüge, die auf einer Seite ankommen, sind farbig. Die Zeile über den Mixern fasst zusammen, welche Ausgänge links, rechts, auf beiden oder gar nicht landen.</li>
+  <li>Die Mischung ist <strong>global</strong> – sie gilt für alle Songs und wird gespeichert.</li>
+  <li><strong>Kanalnamen:</strong> stammen aus den Songs der gewählten Playlist und werden vollständig angezeigt. Ein <strong>Doppelklick auf den Namen</strong> benennt den Kanal um (Enter übernimmt, Esc bricht ab). Der Name gilt für beide Seiten; ein leeres Feld stellt den Namen aus den Songs wieder her.</li>
+  <li>Pegel lassen sich wie im Proben-Mix per Doppelklick auf den dB-Wert eintippen.</li>
+  <li>Der <a href="#song-mix">Song-Mix</a> eines Songs wird eingerechnet: Pegel des Backup-Mixers + Pegel des Songs; eine im Song stumme Spur bleibt stumm.</li>
+</ul>
+
+<h3 id="mp3-preview">Vorhören</h3>
+<p>Die Leiste <strong>Preview</strong> oben ist der Probe-Player – dasselbe Audiogerät, dieselbe Wiedergabe. Solange der Reiter offen ist, spielt er mit dem Backup-Mix, also genau das, was in die MP3 kommt. Fader-Änderungen hört man sofort.</p>
+<ul>
+  <li>Song wählen, Play/Pause, Stop, ±10 s, voriger/nächster Song; in der Zeitleiste klicken oder ziehen, um zu springen.</li>
+  <li><strong>Listen to:</strong> <em>L + R</em> wie in der MP3, <em>Left only</em> bzw. <em>Right only</em> spielt nur eine Seite auf beiden Lautsprechern – praktisch, um jede Seite mit Kopfhörern einzeln abzuhören.</li>
+  <li>Die Pegelanzeigen zeigen pro Seite nur, was dort ankommt. Die <strong>CLIP</strong>-Anzeige leuchtet, wenn eine Seite übersteuern würde.</li>
+  <li>Im Reiter Rehearsal gilt wieder der Proben-Mix. Ist dort eine andere Playlist geladen, lädt <strong>Play</strong> in der Preview die Playlist dieses Reiters.</li>
+</ul>
+
+<h3 id="mp3-export">Exportieren</h3>
+<ol>
+  <li><strong>Playlist</strong>, <strong>Target folder</strong> und das Namensschema <strong>File names</strong> wählen.</li>
+  <li><strong>Export MP3s</strong> klicken. Ein Fortschrittsbalken zeigt Song und Anteil; <strong>Cancel</strong> bricht jederzeit ab, ohne eine halbe Datei zu hinterlassen.</li>
+  <li>Der Bericht zeigt pro Datei Dauer, Fehler und Hinweise (ausgelassene Spuren, MIDI nicht enthalten, Übersteuerung).</li>
+</ol>
+<div class="table-wrap"><table>
+  <tr><th>Eigenschaft</th><th>Wert</th></tr>
+  <tr><td>Format</td><td>MP3, 192 kbit/s CBR, LAME-Qualität 0 (die beste)</td></tr>
+  <tr><td>Kanäle</td><td>echtes Stereo, <em>kein</em> Joint-Stereo – damit nichts vom Klick in die Backing-Seite übersprechen kann</td></tr>
+  <tr><td>Samplerate</td><td>wie der Song (44,1 oder 48 kHz)</td></tr>
+  <tr><td>Dateiname</td><td>Platzhalter <code>{nr}</code> (Position, mindestens zweistellig), <code>{song}</code>, <code>{playlist}</code>; Standard <code>{nr} {song}</code>. Unerlaubte Zeichen werden zu <code>_</code>, doppelte Namen bekommen <code>(2)</code>. Gleichnamige Dateien werden überschrieben.</td></tr>
+  <tr><td>ID3-Tags</td><td>Titel = Songname, Album = Playlistname, Track = Position/Anzahl</td></tr>
+  <tr><td>Übersteuerung</td><td>hart auf 0 dBFS begrenzt; der Bericht nennt Spitzenpegel und Anzahl begrenzter Samples. Dann den Master der Seite senken und neu exportieren.</td></tr>
+  <tr><td>MIDI</td><td>nicht enthalten</td></tr>
+  <tr><td>Tempo</td><td>ein 5-Minuten-Song mit 16 Spuren dauert etwa 2 Sekunden</td></tr>
+</table></div>
+</section>
+
+<!-- ===================================================================== -->
+<section id="settings">
+<h2>Settings</h2>
+<p><strong>Library Folder</strong> ist der Basisordner der Bibliothek; <strong>Initialize Folders</strong> legt fehlende Ordner an. Das Export-Ziel wird im Reiter Export gewählt.</p>
+
+<h3 id="audio">Audio output</h3>
+<p>Legt fest, wohin der Stereo-Mix des Probe-Players geht. Änderungen werden sofort gespeichert und beim nächsten Öffnen des Streams verwendet.</p>
+<div class="table-wrap"><table>
+  <tr><th>Einstellung</th><th>Bedeutung</th><th>Standard</th></tr>
+  <tr><td>Host</td><td><code>WASAPI</code> oder <code>ASIO</code></td><td>Standard-Host</td></tr>
+  <tr><td>Device</td><td>Ausgabegerät bzw. ASIO-Treiber</td><td>Standardgerät</td></tr>
+  <tr><td>Left / Right</td><td>Ausgangskanäle (ab 1) für die linke und rechte Seite; derselbe Kanal zweimal bekommt (L+R)/2</td><td>1 / 2</td></tr>
+  <tr><td>Buffer</td><td>Frames: Treiber-Standard, 64 … 2048</td><td>Treiber-Standard</td></tr>
+</table></div>
+<ul>
+  <li><strong>Refresh</strong> liest die Geräteliste neu; <strong>Test tone</strong> spielt 1 kHz mit −20 dBFS, 1 s links, dann 1 s rechts.</li>
+  <li>Bei <strong>ASIO</strong> wird die Samplerate des Songs beim Treiber angefordert. Viele ASIO-Treiber bedienen nur eine Anwendung: Nutzt die DAW den Treiber, schlägt das Öffnen mit einer Meldung fehl.</li>
+  <li><strong>Behringer XR18:</strong> den Stereo-Mix auf zwei USB-Kanäle legen (z. B. 17 und 18) und in X Air Edit einen Kanal oder Aux-Return mit Quelle USB darauf routen.</li>
+</ul>
+
+<h3 id="midi">MIDI output</h3>
+<p>Wählt den MIDI-Port, an den die MIDI-Datei des Songs synchron zum Audio geschickt wird (Tempowechsel eingerechnet). <strong>(none)</strong> = kein MIDI (Standard).</p>
+<ul>
+  <li><strong>Send test</strong> schickt den Zustand vom Songanfang des geladenen Songs: Bank Select, Program Change und die Controller ganz am Anfang.</li>
+  <li><strong>Chasing:</strong> Beim Start mitten im Song und bei jedem Sprung wird zuerst der MIDI-Zustand an dieser Stelle gesendet (Bank Select, letztes Program Change, letzter Wert jedes Controllers). So stimmt z. B. der Snapshot eines Line-6-Modelers (CC69) auch nach dem Springen.</li>
+  <li><strong>All Notes Off</strong> geht bei Stop, Pause, Sprung, Songwechsel und Programmende auf jeden Kanal, auf dem die Datei Noten hat.</li>
+  <li>Der Reiter Rehearsal zeigt „MIDI: &lt;Port&gt; · &lt;n&gt; events“ mit einem Punkt, der bei jeder Nachricht aufleuchtet. Fehlt der Port, spielt das Audio trotzdem.</li>
+</ul>
+</section>
+
+<!-- ===================================================================== -->
+<section id="cli">
+<h2>Kommandozeile</h2>
+<pre><code>lp16-tool song     &lt;songprj&gt;     &lt;audio-lib&gt; &lt;ausgabe-ordner&gt;
+lp16-tool playlist &lt;playlistprj&gt; &lt;project-lib&gt; &lt;audio-lib&gt; &lt;ausgabe-ordner&gt;
+lp16-tool export   &lt;playlistprj&gt; &lt;project-lib&gt; &lt;audio-lib&gt; &lt;stick-ordner&gt; [--dry-run] [--force]
+lp16-tool verify   &lt;playlistprj&gt; &lt;project-lib&gt; &lt;audio-lib&gt; &lt;stick-ordner&gt;
+lp16-tool gui</code></pre>
+<div class="table-wrap"><table>
+  <tr><th>Befehl</th><th>Was er tut</th></tr>
+  <tr><td><code>song</code></td><td>schreibt <code>&lt;ausgabe&gt;\&lt;Song&gt;\song.set</code> und zeigt den <code>validationcode</code></td></tr>
+  <tr><td><code>playlist</code></td><td>schreibt <code>&lt;ausgabe&gt;\#PLAYLISTS\&lt;Playlist&gt;.play</code></td></tr>
+  <tr><td><code>export</code></td><td>bringt eine Playlist mit allen Songs auf den Stick; <code>--dry-run</code> zeigt nur an, <code>--force</code> = Force Overwrite</td></tr>
+  <tr><td><code>verify</code></td><td>prüft den Stick nur lesend; Exit-Code 0 = aktuell</td></tr>
+  <tr><td><code>gui</code></td><td>startet die Oberfläche (wie ohne Argumente)</td></tr>
+</table></div>
+<p><code>audio-lib</code> ersetzt <code>{$AudioLib}</code> in der <code>.songprj</code>, <code>project-lib</code> ersetzt <code>{$ProjectLib}</code> in der <code>.playlistprj</code>. Beispiel:</p>
+<pre><code>lp16-tool verify ^
+  "E:\LP16_LIBRARY\CymaticProjectLib\LP16\Multitrack Playlists\Set 2026.playlistprj" ^
+  "E:\LP16_LIBRARY\CymaticProjectLib" ^
+  "E:\LP16_LIBRARY\AudioLibrary" ^
+  "F:\"</code></pre>
+</section>
+
+<!-- ===================================================================== -->
+<section id="config-ref">
+<h2>Alle Einstellungen in lp16-tool.toml</h2>
+<p>Alle Werte stehen in Anführungszeichen. Ungültige Werte werden durch den Standard ersetzt, unbekannte Zeilen ignoriert.</p>
+<div class="table-wrap"><table>
+  <tr><th>Schlüssel</th><th>Inhalt</th><th>Gesetzt in</th></tr>
+  <tr><td><code>library</code></td><td>Basisordner der Bibliothek</td><td>Settings</td></tr>
+  <tr><td><code>audio_lib</code>, <code>project_lib</code>, <code>import_lib</code></td><td>getrennte Pfade älterer Dateien (ohne <code>library</code>)</td><td>–</td></tr>
+  <tr><td><code>stick_root</code></td><td>Export-Ziel</td><td>Export</td></tr>
+  <tr><td><code>audio_host</code>, <code>audio_device</code></td><td>Audioausgang des Probe-Players</td><td>Settings</td></tr>
+  <tr><td><code>audio_out_left</code>, <code>audio_out_right</code></td><td>Ausgangskanäle (ab 1)</td><td>Settings</td></tr>
+  <tr><td><code>audio_buffer</code></td><td>Puffer in Frames, 0 = Treiber-Standard</td><td>Settings</td></tr>
+  <tr><td><code>midi_port</code></td><td>MIDI-Port, leer = aus</td><td>Settings</td></tr>
+  <tr><td><code>rehearsal_autoplay</code></td><td><code>true</code>/<code>false</code></td><td>Rehearsal</td></tr>
+  <tr><td><code>mix.&lt;n&gt;.name</code>, <code>mix.&lt;n&gt;.master</code>, <code>mix.&lt;n&gt;.ch&lt;k&gt;</code>, <code>mix_active</code></td><td>Presets des Proben-Mix; Kanal: <code>"&lt;Pegel&gt; &lt;Pan&gt; &lt;Mute&gt; &lt;Solo&gt;"</code></td><td>Rehearsal</td></tr>
+  <tr><td><code>backup_dir</code>, <code>backup_pattern</code></td><td>Zielordner und Namensschema der MP3s</td><td>Export Stereo-MP3</td></tr>
+  <tr><td><code>backup.left.master</code>, <code>backup.left.ch&lt;k&gt;</code>, <code>backup.right.…</code></td><td>Backup-Mixer; Kanal: <code>"&lt;Pegel&gt; &lt;Mute&gt;"</code>, Pegel mit einer Nachkommastelle oder <code>off</code></td><td>Export Stereo-MP3</td></tr>
+  <tr><td><code>backup.name.ch&lt;k&gt;</code></td><td>eigene Kanalnamen der Backup-Mixer</td><td>Export Stereo-MP3</td></tr>
+</table></div>
+</section>
+
+<!-- ===================================================================== -->
+<section id="grenzen">
+<h2>Was fehlt und was anders ist</h2>
+<h4>Noch nicht umgesetzt</h4>
+<ul>
+  <li>Andere Geräte als der LP-16 (Target Type ist immer „LP-16“)</li>
+  <li>Stereo-Songs und -Playlists (nur Multitrack)</li>
+  <li>Panorama pro Spur im Song (das gespeicherte Panorama bleibt erhalten)</li>
+  <li>Song-Editor: Name, Sampling Rate und Resolution eines bestehenden Songs ändern</li>
+  <li>Playlist-Editor: Start Mode und Delay pro Song (vorhandene Werte bleiben erhalten)</li>
+  <li>Undo/Redo, Ordner in der Bibliothek</li>
+  <li>Löschen und Bearbeiten auf dem Stick (Edit Target zeigt nur an)</li>
+  <li>Export Batch und der Import von uTool2 („Split at Markers“)</li>
+</ul>
+<h4>Anders als im Original</h4>
+<ul>
+  <li><strong>Import</strong> ist ein Batch-Import von Songs aus der AudioLibrary.</li>
+  <li><strong>Quick Export</strong> schreibt nur, was sich geändert hat; uTool2 schreibt jede <code>song.set</code> neu.</li>
+  <li><strong>Settings</strong> kennt nur den Library Folder (plus Audio und MIDI); das Export-Ziel wird im Export-Reiter gewählt.</li>
+</ul>
+<p>Ob der LP-16 den <code>validationcode</code> prüft, ist nicht bekannt; lp16-tool erzeugt ihn wie uTool2.</p>
+</section>
+
+<!-- ===================================================================== -->
+<section id="lizenz">
+<h2>Lizenz</h2>
+<p>lp16-tool steht seit Version 0.2.0 unter der <strong>GPL-3.0-or-later</strong> (Datei <code>LICENSE</code>); Versionen bis 0.1.2 bleiben unter der MIT-Lizenz. Der Wechsel ermöglicht die ASIO-Ausgabe in öffentlichen Releases: Sie nutzt das ASIO-SDK, das Steinberg unter der GPLv3 anbietet. ASIO is a trademark and software of Steinberg Media Technologies GmbH.</p>
+<p>Der MP3-Export nutzt <strong>LAME</strong> (LGPL). Die Lizenzen aller Abhängigkeiten stehen in <code>THIRD_PARTY_LICENSES.html</code>, die jedem Release-Archiv beiliegt.</p>
+</section>
+
+<footer>
+  lp16-tool 0.2.0 · unabhängiges Projekt, keine Verbindung zu Cymatic Audio · Quellcode und Releases: <a href="https://github.com/just4phil/Cymatic-uTool-for-LP-16">github.com/just4phil/Cymatic-uTool-for-LP-16</a>
+</footer>
+</main>
+</div>
+<script>
+(function () {
+  var root = document.documentElement;
+  var key = "lp16-doc-theme";
+  try {
+    var saved = localStorage.getItem(key);
+    if (saved === "light" || saved === "dark") root.setAttribute("data-theme", saved);
+  } catch (e) {}
+  document.getElementById("theme-toggle").addEventListener("click", function () {
+    var current = root.getAttribute("data-theme");
+    if (!current) {
+      current = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    }
+    var next = current === "dark" ? "light" : "dark";
+    root.setAttribute("data-theme", next);
+    try { localStorage.setItem(key, next); } catch (e) {}
+  });
+})();
+</script>
+</body>
+</html>

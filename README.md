@@ -21,6 +21,9 @@ interface modelled on uTool2 and a command line.
 
 ## Features
 
+The **manual** (German) covering all features is a single HTML file,
+[`docs/Handbuch.html`](docs/Handbuch.html); it is also part of every release archive.
+
 - **Stick export like uTool2:** `song.set` (including the `validationcode`), `.play` and the WAVs
   (header rebuilt, audio data unchanged, names `_<source>_<NN>.wav`) are byte-identical to what
   uTool2 writes.
@@ -47,7 +50,8 @@ interface modelled on uTool2 and a command line.
 - [Rust](https://www.rust-lang.org/tools/install) (stable), only for building
 - A uTool2 project library, or an empty folder that lp16-tool sets up
 
-A ready-built exe is available under [Releases](../../releases). It includes ASIO output.
+A ready-built exe is available under [Releases](../../releases). It includes ASIO output; the
+ZIP also contains the manual and the license notices.
 
 ## Build and run
 
@@ -69,12 +73,12 @@ The standard build outputs through WASAPI and needs neither the ASIO SDK nor LLV
 1. Install LLVM (its libclang is needed to compile the ASIO bindings):
    `winget install --id LLVM.LLVM -e`
 2. Download the ASIO SDK from [steinberg.net/asiosdk](https://www.steinberg.net/asiosdk) (the
-   version with the GPLv3 option) and unpack it, e.g. to `C:\SDKssiosdk`, so that the folders
+   version with the GPLv3 option) and unpack it, e.g. to `C:\SDKs\asiosdk`, so that the folders
    `common`, `host` etc. are directly in it.
 3. Set the environment variables (for new shells; `setx` saves them for the user):
    ```
-   setx LIBCLANG_PATH "C:\Program Files\LLVMin"
-   setx CPAL_ASIO_DIR "C:\SDKssiosdk"
+   setx LIBCLANG_PATH "C:\Program Files\LLVM\bin"
+   setx CPAL_ASIO_DIR "C:\SDKs\asiosdk"
    ```
 4. Build:
    ```
