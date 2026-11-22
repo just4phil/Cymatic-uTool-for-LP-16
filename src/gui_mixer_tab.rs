@@ -200,6 +200,8 @@ pub struct StripDims {
     pub meter_w: f32,
     pub knob: f32,
     pub fader_h: f32,
+    /// height of the strip names (they wrap, see `fit_names`)
+    pub name_h: f32,
 }
 
 impl StripDims {
@@ -220,7 +222,17 @@ impl StripDims {
             meter_w: METER_W * k,
             knob,
             fader_h: fader_height(height - (knob - KNOB)),
+            name_h: OLD_NAME_H,
         }
+    }
+
+    /// Make room for `names` in full: every strip gets the lines of the
+    /// longest one, the faders get shorter by the extra lines.
+    fn fit_names(&mut self, ui: &Ui, names: &[String; STRIPS]) {
+        let inner = self.strip_w - 2.0 * MARGIN;
+        let rows = names.iter().map(|n| name_galley(ui, n, inner, TEXT).rows.len()).max().unwrap_or(1).max(1);
+        self.name_h = (rows as f32 * NAME_ROW_H + 2.0).max(OLD_NAME_H);
+        self.fader_h = (self.fader_h - (self.name_h - OLD_NAME_H)).max(MIN_FADER_H);
     }
 
     /// Height of the top part of a strip (S/M buttons and knob).
@@ -307,7 +319,8 @@ impl MixerConsole {
         }
         ui.add_space(6.0);
         let shown = update_shown(ui, &mut self.shown, levels);
-        let dims = StripDims::fit(ui.available_width(), ui.available_height());
+        let mut dims = StripDims::fit(ui.available_width(), ui.available_height());
+        dims.fit_names(ui, names);
         egui::ScrollArea::both().id_source(id).auto_shrink([false, false]).show(ui, |ui| {
             ui.horizontal_top(|ui| {
                 ui.spacing_mut().item_spacing.x = GAP;
@@ -493,8 +506,10 @@ fn strip(ui: &mut Ui, k: usize, track: &str, shown_db: f32, d: &StripDims, v: &S
         });
         ui.label(RichText::new(format!("{}", k + 1)).size(15.0).strong().color(color));
         let name = if has_track { track } else { "\u{2014}" };
-        ui.add_sized([inner, 14.0], egui::Label::new(RichText::new(name).size(11.0).color(color)).truncate(true))
-            .on_hover_text(if has_track { track.to_string() } else { "No track on this output in the song".to_string() });
+        let (rect, resp) = ui.allocate_exact_size(vec2(inner, d.name_h), Sense::hover());
+        resp.on_hover_text(if has_track { track.to_string() } else { "No track on this output in the song".to_string() });
+        let galley = name_galley(ui, name, inner, color);
+        ui.painter().galley(pos2(rect.center().x, rect.top()), galley, color);
         let hint = v.hint.as_deref().unwrap_or("");
         ui.add_sized([inner, HINT_H], egui::Label::new(RichText::new(hint).size(10.5).color(ORANGE)).truncate(true))
             .on_hover_text("The song has its own mixer value on this output (\"Song mix\"); it adds to this strip.");
@@ -542,7 +557,7 @@ fn master(ui: &mut Ui, shown: [f32; 2], clip: bool, d: &StripDims, lib: &mut Mix
             meter_sized(ui, shown[1], d.meter_w, fader_h, HANDLE_H / 2.0, meter_frac);
         });
         ui.label(RichText::new("L    R").size(11.0).color(DIM));
-        ui.add_sized([inner, 14.0], egui::Label::new(RichText::new("Master").size(11.0).color(TEXT)));
+        ui.add_sized([inner, d.name_h], egui::Label::new(RichText::new("Master").size(NAME_FONT).color(TEXT)));
     });
     (changed, reset)
 }
@@ -716,6 +731,8 @@ const BACKUP_MIN_FADER_H: f32 = 70.0;
 /// Font of the strip names; they wrap, so the whole name is shown.
 const NAME_FONT: f32 = 12.0;
 const NAME_ROW_H: f32 = 15.0;
+/// Height of a one-line name, as `OVERHEAD` counts it.
+const OLD_NAME_H: f32 = 14.0;
 
 /// The name centred and wrapped to `width`.
 fn name_galley(ui: &Ui, text: &str, width: f32, color: Color32) -> std::sync::Arc<egui::Galley> {
