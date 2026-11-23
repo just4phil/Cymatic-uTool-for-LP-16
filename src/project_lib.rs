@@ -53,6 +53,14 @@ impl ProjectLibrary {
         ProjectLibrary { root: project_lib.to_string(), audio_lib: audio_lib.to_string() }
     }
 
+    pub fn root(&self) -> &str {
+        &self.root
+    }
+
+    pub fn audio_lib(&self) -> &str {
+        &self.audio_lib
+    }
+
     pub fn songs_dir(&self) -> PathBuf {
         Path::new(&self.root).join(SONGS_SUBDIR)
     }
@@ -340,7 +348,7 @@ pub fn save_song_mix(mixed: &SongProject) -> Result<SongProject, String> {
 
 /// The Song Mix of `from` onto the same tracks (same WAV and WAV track) of
 /// `to`; tracks without a partner keep their values.
-fn copy_song_mix(from: &[ProjectTrack], to: &mut [ProjectTrack]) {
+pub(crate) fn copy_song_mix(from: &[ProjectTrack], to: &mut [ProjectTrack]) {
     for t in to.iter_mut() {
         if let Some(f) = from.iter().find(|f| f.audiofile == t.audiofile && f.ati == t.ati) {
             t.monitor_level = f.monitor_level.clone();

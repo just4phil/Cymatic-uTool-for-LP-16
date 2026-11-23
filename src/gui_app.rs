@@ -13,6 +13,7 @@
 use crate::config_path;
 use crate::gui_audio::AudioPanel;
 use crate::gui_backup::BackupPanel;
+use crate::gui_bandpack::BandPack;
 use crate::gui_midi::MidiPanel;
 use crate::gui_rehearsal::RehearsalPanel;
 use crate::gui_tail::{TailCheck, TailCheckKind};
@@ -452,6 +453,8 @@ pub struct Lp16App {
     // the "Export Stereo-MP3" tab and when its settings are saved
     backup: BackupPanel,
     backup_saver: MixSaver,
+    /// band package export / import (`.lp16pack`)
+    bandpack: BandPack,
     // settings: the "Audio output" area
     audio: AudioPanel,
     // settings: the "MIDI output" area
@@ -512,7 +515,7 @@ fn fmt_clock(sec: f64) -> String {
     format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
 }
 
-fn fmt_size(b: u64) -> String {
+pub(crate) fn fmt_size(b: u64) -> String {
     let f = b as f64;
     if f < 1024.0 {
         format!("{} B", b)
@@ -533,7 +536,7 @@ fn fmt_sr(sr: u32) -> String {
     }
 }
 
-fn fmt_date(ms: i64) -> String {
+pub(crate) fn fmt_date(ms: i64) -> String {
     if ms <= 0 {
         return "-".into();
     }
@@ -715,7 +718,7 @@ fn list_drives() -> Vec<(String, String)> {
 }
 
 #[cfg(windows)]
-fn disk_free(path: &str) -> Option<u64> {
+pub(crate) fn disk_free(path: &str) -> Option<u64> {
     let w = win::wide(path);
     let mut avail = 0u64;
     let ok = unsafe {
@@ -734,7 +737,7 @@ fn disk_free(path: &str) -> Option<u64> {
 }
 
 #[cfg(not(windows))]
-fn disk_free(_path: &str) -> Option<u64> {
+pub(crate) fn disk_free(_path: &str) -> Option<u64> {
     None
 }
 
@@ -1101,7 +1104,7 @@ fn list_box(ui: &mut Ui, body: impl FnOnce(&mut Ui)) {
 
 /// uTool2 overlay: black backdrop, orange title, dark rounded box and a row
 /// of evenly spaced orange-framed buttons below. Returns the clicked button.
-fn overlay(
+pub(crate) fn overlay(
     ctx: &egui::Context,
     id: &str,
     order: egui::Order,
@@ -1232,6 +1235,7 @@ impl Lp16App {
             mix_saver: MixSaver::default(),
             backup: BackupPanel::default(),
             backup_saver: MixSaver::default(),
+            bandpack: BandPack::default(),
             audio: AudioPanel::default(),
             midi: MidiPanel::default(),
             tail_check: None,
@@ -1874,6 +1878,14 @@ impl eframe::App for Lp16App {
         self.playlist_update(ctx);
         self.song_editor(ctx, frame);
         self.export_overlay(ctx);
+        let lib = self.lib();
+        if let Some(playlist) = self.bandpack.ui(ctx, &lib) {
+            self.refresh();
+            if !playlist.is_empty() {
+                self.tab = Tab::Home;
+                self.select_playlist_name(&playlist);
+            }
+        }
         self.dialogs(ctx);
         // rehearsal mix: saved at most once a second, bundled
         let now = std::time::Instant::now();
@@ -2297,6 +2309,9 @@ impl Lp16App {
                         if small_btn(ui, tr!("home.update_songs"), true) {
                             act = 6;
                         }
+                        if small_btn(ui, tr!("pack.export_btn"), !pl.songs.is_empty()) {
+                            act = 7;
+                        }
                     });
                     ui.add_space(8.0);
                     field_box(ui, tr!("common.target_disk_location"), &stick_location(sync::PLAYLISTS));
@@ -2396,6 +2411,13 @@ impl Lp16App {
                     5 => self.open_playlist_editor(None),
                     6 => {
                         self.open_playlist_update(Some(i), &[], "");
+                    }
+                    7 => {
+                        let name = self.playlists[i].name.clone();
+                        let lib = self.lib();
+                        if let Err(e) = self.bandpack.export(ui.ctx(), &lib, &name) {
+                            self.message(tr!("pack.export_title"), e);
+                        }
                     }
                     _ => {}
                 }
@@ -3075,6 +3097,12 @@ impl Lp16App {
                     && !self.open_playlist_update(None, &[], "")
                 {
                     self.message(tr!("common.update_playlist"), tr!("import.all_newest"));
+                }
+                if small_btn(ui, tr!("pack.import_btn_open"), true) {
+                    let lib = self.lib();
+                    if let Err(e) = self.bandpack.open(&lib) {
+                        self.message(tr!("pack.import_title"), e);
+                    }
                 }
             });
             ui.label(

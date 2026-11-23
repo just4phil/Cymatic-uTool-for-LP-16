@@ -586,3 +586,41 @@ tail.wav_short = WAV kürzer als erwartet
 # Library: MIDI output
 midi.unavailable = MIDI ist nicht verfügbar: {err}
 midi.port_unavailable = MIDI-Port nicht verfügbar: {name}
+
+# Library: Bandpaket
+pack.no_playlist = Playlist „{name}“ nicht gefunden.
+pack.missing_file = {song}: Datei fehlt: {path}
+pack.incomplete = Das Bandpaket kann nicht erstellt werden, die Playlist ist nicht vollständig:\n{list}
+pack.changed = {path} hat sich beim Packen geändert.
+pack.cannot_read = {path} kann nicht als Bandpaket gelesen werden:\n{err}
+pack.no_manifest = {path} ist kein Bandpaket (manifest.txt fehlt).
+pack.format = {path} wurde mit einem neueren lp16-tool erstellt (Paketformat {v}). Bitte lp16-tool aktualisieren.
+pack.bad_name = ungültiger Name im Paket: {name}
+pack.file_missing = Datei fehlt im Paket: {name}
+pack.no_library = Kein Bibliotheksordner eingestellt (Einstellungen).
+
+# Bandpaket (Oberfläche)
+pack.export_btn = Bandpaket exportieren…
+pack.import_btn_open = Bandpaket importieren…
+pack.export_title = Bandpaket
+pack.import_title = Bandpaket importieren
+pack.filter = Bandpaket
+pack.no_space = Nicht genug Platz: Das Paket braucht {need}, auf {dir} sind {free} frei.
+pack.export_done = Bandpaket geschrieben:\n{file}\n\n{songs} Songs, {files} Dateien, {size}.\n\nDie Bandkollegen importieren es im Tab Import mit „Bandpaket importieren…“.
+pack.canceled = Abgebrochen. Es wurde kein Paket geschrieben.
+pack.import_done = Playlist „{playlist}“ importiert.\n\nNeue Songs: {new}\nAktualisierte Songs (dein Song-Mix bleibt): {updated}\nUnveränderte Songs: {same}\nKopiert: {size}
+pack.import_canceled = Abgebrochen. Bereits kopierte Dateien bleiben in der AudioLibrary; kein Song und keine Playlist wurde geändert.
+pack.progress = {done} von {total}
+pack.progress_eta = {done} von {total}, noch etwa {min} min
+pack.pl_new = neu
+pack.pl_replaced = ersetzt deine gleichnamige Playlist
+pack.preview_playlist = Playlist „{name}“ ({state})
+pack.preview_from = erstellt mit {app} am {date}
+pack.col_copy = Zu kopieren
+pack.st_new = neu
+pack.st_update = wird aktualisiert, dein Song-Mix bleibt
+pack.st_same = unverändert
+pack.preview_copy = Zu kopieren: {n} Dateien, {size}
+pack.preview_free = ; frei: {free}
+pack.preview_note = Deine Einstellungen (Audio, MIDI, Pfade, Probe-Mix) werden nicht verändert. Songs, die du schon hast, behalten deinen Song-Mix.
+pack.import_btn = Importieren

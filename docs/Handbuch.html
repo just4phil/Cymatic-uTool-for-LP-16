@@ -223,6 +223,7 @@ footer { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--line);
       </ol>
     </li>
     <li><a href="#import">Import: Batch-Import</a></li>
+    <li><a href="#bandpaket">Bandpaket</a></li>
     <li><a href="#edit-target">Ziel bearbeiten</a></li>
     <li><a href="#rehearsal">Probe: der Probe-Player</a>
       <ol>
@@ -389,6 +390,20 @@ stick_root = "F:\"</code></pre>
   <li>Nach der Bestätigung entsteht pro Ordner eine <code>.songprj</code> mit den WAVs auf den Spuren 1…n (natürlich sortiert) und der MIDI-Datei.</li>
   <li>Fehlerhafte Ordner (nicht mono, gemischte Formate, mehr als 16 WAVs, mehrere MIDI-Dateien) werden angezeigt, aber nicht importiert. Vorhandene Dateien werden nie überschrieben.</li>
   <li><strong>Playlist aktualisieren</strong> baut aus einer bestehenden Playlist eine neue, in der jeder Song durch seine neueste Version ersetzt ist. Nach einem Import wird das passend vorgeschlagen.</li>
+</ul>
+</section>
+
+<!-- ===================================================================== -->
+<section id="bandpaket">
+<h2>Bandpaket: eine Setlist an die Band weitergeben</h2>
+<p>Ein Bandpaket ist eine Datei (<code>&lt;Playlist&gt;.lp16pack</code>, ein normales ZIP) mit allem, was eine Playlist braucht: die Playlist mit Startmodi und Konzertmarkern, jeden Song (<code>.songprj</code>) und jede WAV- und MIDI-Datei, auf die ein Song verweist. Damit üben die Bandkollegen zu Hause mit ihrem eigenen lp16-tool und dem Probe-Player.</p>
+<ul>
+  <li><strong>Exportieren:</strong> Start → Playlist markieren → <strong>Bandpaket exportieren…</strong> → Speicherort wählen. Fehlt eine Datei, bricht der Export mit einer Liste der fehlenden Dateien ab: Ein Paket ist immer vollständig. Dateien außerhalb der AudioLibrary landen im Paket unter <code>_extern\&lt;Song&gt;\</code>.</li>
+  <li><strong>Importieren:</strong> Import → <strong>Bandpaket importieren…</strong> → Datei wählen. Die Vorschau zeigt pro Song „neu“, „wird aktualisiert“ oder „unverändert“, wie viel kopiert wird und wie viel Platz frei ist. Erst „Importieren“ schreibt etwas.</li>
+  <li><strong>Was nicht überschrieben wird:</strong> Einstellungen (Audio, MIDI, Pfade, Sprache, Proben-Mix, MP3-Export) kommen gar nicht ins Paket. Ein Song, den der Kollege schon hat, behält seinen <strong>Song-Mix</strong> (Pegel, Pan, Mute); alles andere kommt aus dem Paket. Eine gleichnamige Playlist wird ersetzt.</li>
+  <li><strong>Nur was fehlt:</strong> Dateien mit gleicher Größe und gleichem Änderungsdatum werden nicht noch einmal kopiert. Kopierte Dateien bekommen das Änderungsdatum des Absenders, so bleiben die Songprojekte gültig.</li>
+  <li><strong>Größe:</strong> WAVs werden unkomprimiert gespeichert, ein Paket ist so groß wie die Audiodateien (bei 30 Songs schnell über 10 GB). Zum Verschicken eignen sich ein Cloud-Link oder ein USB-Stick.</li>
+  <li>Ein abgebrochener Export hinterlässt keine Datei. Ein abgebrochener Import lässt bereits kopierte Audiodateien liegen, ändert aber keinen Song und keine Playlist.</li>
 </ul>
 </section>
 

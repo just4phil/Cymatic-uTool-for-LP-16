@@ -49,6 +49,9 @@ The **manual** (German) covering all features is a single HTML file,
 - **Edit Target:** the contents of the stick as a tree, with details on songs and playlists.
   Songs and playlists can be deleted on the stick (Del key, context menu or "Delete" button);
   "Delete all songs not in playlists" removes every song folder no playlist on the stick lists.
+- **Band package:** packs a playlist with all its songs, WAVs, MIDI files and concert markers
+  into one file (`.lp16pack`) that band members import with one click. Their settings and their
+  Song Mix stay untouched (manual, section "Bandpaket").
 - **Rehearsal player:** plays songs and playlists of the library on an audio output of your
   choice, with a 16-channel rehearsal mix, see [Rehearsal player](#rehearsal-player).
 - **Backup MP3s:** writes a stereo MP3 per song of a playlist (backings left, click right) as an

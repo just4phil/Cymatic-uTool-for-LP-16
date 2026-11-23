@@ -20,6 +20,9 @@ cpal = { version = "0.15", optional = true }
 rtrb = { version = "0.3", optional = true }
 midir = { version = "0.10", optional = true }
 mp3lame-encoder = { version = "0.3", optional = true }
+# band package (.lp16pack): plain ZIP, WAVs stored, ZIP64 for large sets
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+crc32fast = "1.4"
 
 [profile.release]
 lto = true

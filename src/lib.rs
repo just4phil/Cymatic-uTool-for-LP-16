@@ -18,6 +18,7 @@ pub mod backup_mix;
 pub mod backup;
 pub mod mix;
 pub mod path_key;
+pub mod bandpack;
 pub mod project_lib;
 pub mod setlist;
 #[cfg(feature = "player")]

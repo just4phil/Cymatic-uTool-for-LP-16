@@ -586,3 +586,41 @@ tail.wav_short = WAV shorter than expected
 # Library: MIDI output
 midi.unavailable = MIDI is not available: {err}
 midi.port_unavailable = MIDI port not available: {name}
+
+# Library: band package
+pack.no_playlist = Playlist "{name}" not found.
+pack.missing_file = {song}: file missing: {path}
+pack.incomplete = The band package cannot be created, the playlist is not complete:\n{list}
+pack.changed = {path} changed while it was packed.
+pack.cannot_read = {path} cannot be read as a band package:\n{err}
+pack.no_manifest = {path} is not a band package (no manifest.txt).
+pack.format = {path} was made by a newer lp16-tool (package format {v}). Please update lp16-tool.
+pack.bad_name = invalid name in the package: {name}
+pack.file_missing = file missing in the package: {name}
+pack.no_library = No library folder set (Settings).
+
+# Band package (GUI)
+pack.export_btn = Export band package…
+pack.import_btn_open = Import band package…
+pack.export_title = Band package
+pack.import_title = Import band package
+pack.filter = Band package
+pack.no_space = Not enough space: the package needs {need}, {dir} has {free} free.
+pack.export_done = Band package written:\n{file}\n\n{songs} songs, {files} files, {size}.\n\nThe band members import it in the Import tab with "Import band package…".
+pack.canceled = Canceled. No package was written.
+pack.import_done = Playlist "{playlist}" imported.\n\nNew songs: {new}\nUpdated songs (your Song Mix stays): {updated}\nUnchanged songs: {same}\nCopied: {size}
+pack.import_canceled = Canceled. Files copied so far stay in the audio library; no song and no playlist was changed.
+pack.progress = {done} of {total}
+pack.progress_eta = {done} of {total}, about {min} min left
+pack.pl_new = new
+pack.pl_replaced = replaces your playlist of the same name
+pack.preview_playlist = Playlist "{name}" ({state})
+pack.preview_from = made with {app} on {date}
+pack.col_copy = To copy
+pack.st_new = new
+pack.st_update = update, your Song Mix stays
+pack.st_same = unchanged
+pack.preview_copy = To copy: {n} files, {size}
+pack.preview_free = ; free: {free}
+pack.preview_note = Your settings (audio, MIDI, paths, rehearsal mix) are not changed. Songs you already have keep your Song Mix.
+pack.import_btn = Import
