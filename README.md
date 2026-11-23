@@ -52,6 +52,10 @@ The **manual** (German) covering all features is a single HTML file,
 - **Band package:** packs one or more playlists with all their songs, WAVs, MIDI files and concert markers
   into one file (`.lp16pack`) that band members import with one click. Their settings and their
   Song Mix stay untouched (manual, section "Bandpaket").
+- **Print setlist:** a playlist as a Word file (`.docx`) to print: heading, band logo, the songs
+  of the concert in large letters, a line before the encores. Every song gets a print title such
+  as "I love it (Icona Pop)" in the song editor; new versions of a song take it over (manual,
+  section "Setlist drucken").
 - **Rehearsal player:** plays songs and playlists of the library on an audio output of your
   choice, with a 16-channel rehearsal mix, see [Rehearsal player](#rehearsal-player).
 - **Backup MP3s:** writes a stereo MP3 per song of a playlist (backings left, click right) as an

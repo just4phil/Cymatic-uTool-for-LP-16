@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>lp16-tool Handbuch</title>
-<meta name="description" content="Handbuch zu lp16-tool 0.2.0: Songs und Playlists für den Cymatic Audio LP-16 verwalten, auf den Stick exportieren, proben und Backup-MP3s erzeugen.">
+<meta name="description" content="Handbuch zu lp16-tool 0.3.0: Songs und Playlists für den Cymatic Audio LP-16 verwalten, auf den Stick exportieren, proben und Backup-MP3s erzeugen.">
 <style>
 :root {
   --bg: #fbfaf8;
@@ -206,7 +206,7 @@ footer { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--line);
 
 <nav class="toc" aria-label="Inhalt">
   <p class="brand">lp16-tool</p>
-  <p class="version">Handbuch · Version 0.2.0</p>
+  <p class="version">Handbuch · Version 0.3.0</p>
   <ol>
     <li><a href="#ueberblick">Überblick</a></li>
     <li><a href="#installation">Installation und Einrichtung</a>
@@ -224,6 +224,7 @@ footer { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--line);
     </li>
     <li><a href="#import">Import: Batch-Import</a></li>
     <li><a href="#bandpaket">Bandpaket</a></li>
+    <li><a href="#setlist">Setlist drucken</a></li>
     <li><a href="#edit-target">Ziel bearbeiten</a></li>
     <li><a href="#rehearsal">Probe: der Probe-Player</a>
       <ol>
@@ -258,7 +259,7 @@ footer { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--line);
 <header class="hero">
   <h1>lp16-tool – Handbuch</h1>
   <p>Ersatz für uTool2: Songs und Playlists für den Cymatic Audio LP-16 verwalten, auf den Stick exportieren, zu Hause proben und Notfall-MP3s für die Bühne erzeugen.</p>
-  <p>Stand: Version 0.2.0 · Windows 10/11, 64 Bit</p>
+  <p>Stand: Version 0.3.0 · Windows 10/11, 64 Bit</p>
 </header>
 
 <!-- ===================================================================== -->
@@ -284,7 +285,7 @@ footer { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--line);
 <section id="installation">
 <h2>Installation und Einrichtung</h2>
 <ol>
-  <li>Von der Releases-Seite auf GitHub das ZIP <code>lp16-tool-v0.2.0-windows-x64.zip</code> laden und entpacken. Eine Installation ist nicht nötig.</li>
+  <li>Von der Releases-Seite auf GitHub das ZIP <code>lp16-tool-v0.3.0-windows-x64.zip</code> laden und entpacken. Eine Installation ist nicht nötig.</li>
   <li><code>lp16-tool.exe</code> starten. Windows zeigt eventuell eine SmartScreen-Warnung, weil die exe nicht signiert ist: „Weitere Informationen“ → „Trotzdem ausführen“.</li>
   <li>Im Reiter <strong>Einstellungen</strong> den <strong>Library-Ordner</strong> wählen. <strong>Ordner anlegen</strong> legt fehlende Ordner an. Die Einstellungen landen in <code>lp16-tool.toml</code> neben der exe.</li>
 </ol>
@@ -332,7 +333,7 @@ stick_root = "F:\"</code></pre>
 <ul>
   <li><strong>Playlists:</strong> anlegen, umsortieren, umbenennen, kopieren und löschen. Beim Umbenennen eines Songs zeigen die Playlists weiter auf ihn; ein Song, den eine Playlist nutzt, lässt sich nicht löschen.</li>
   <li><strong>Startmodus pro Song:</strong> im Playlist-Editor die Songs anhaken, unter <em>Startmodus</em> „Auf Tastendruck warten“ (der LP-16 wartet auf Play), „Auf Timer warten“ (startet nach der Wartezeit in Sekunden von selbst) oder „Ohne Warten“ (startet sofort) wählen und „Auf ausgewählte Zeilen anwenden“ klicken. Das Symbol vor dem Songnamen zeigt den Modus (Pause, Uhr mit Sekunden, Play). Der Probe-Player beachtet den Startmodus nicht, dort entscheidet „Autoplay nach 5 Sekunden“.</li>
-  <li><strong>Song-Editor:</strong> neue Songs anlegen, WAVs per Drag &amp; Drop auf die 16 Spuren ziehen, die MIDI-Datei wählen.</li>
+  <li><strong>Song-Editor:</strong> neue Songs anlegen, WAVs per Drag &amp; Drop auf die 16 Spuren ziehen, die MIDI-Datei wählen, den <a href="#setlist">Drucktitel</a> für die Setlist eintragen.</li>
   <li><strong>Rechtsklick → In der Probe abspielen</strong> lädt einen Song (startet ihn) oder eine Playlist (ohne zu starten) in den <a href="#rehearsal">Probe-Player</a>.</li>
   <li>Die Taste <strong>Mixer</strong> eines Songs lädt ihn in den Player und öffnet seinen <a href="#song-mix">Song-Mix</a>.</li>
   <li>Ein <strong>Mixer-Symbol</strong> (drei kleine Fader) kennzeichnet Songs mit eigenem Song-Mix, ein Notensymbol Songs mit MIDI-Datei.</li>
@@ -398,12 +399,26 @@ stick_root = "F:\"</code></pre>
 <h2>Bandpaket: eine Setlist an die Band weitergeben</h2>
 <p>Ein Bandpaket ist eine Datei (<code>.lp16pack</code>, ein normales ZIP) mit allem, was eine oder mehrere Playlists brauchen: die Playlists mit Startmodi und Konzertmarkern, jeden Song (<code>.songprj</code>) und jede WAV- und MIDI-Datei, auf die ein Song verweist. Damit üben die Bandkollegen zu Hause mit ihrem eigenen lp16-tool und dem Probe-Player.</p>
 <ul>
-  <li><strong>Exportieren:</strong> Start → Playlist oder den Ordner „Multitrack Playlists“ markieren → <strong>Bandpaket exportieren…</strong>. Im Dialog die Playlists ankreuzen; darunter stehen live Anzahl Songs, Dateien und Größe. Songs, die in mehreren Playlists stehen, werden nur einmal gepackt. → <strong>Exportieren…</strong> → Speicherort wählen (Vorschlag: Name der Playlist, bei mehreren <code>Bandpaket_Start → Playlist markieren → <strong>Bandpaket exportieren…</strong> → Speicherort wählen.lt;DatumStart → Playlist markieren → <strong>Bandpaket exportieren…</strong> → Speicherort wählen.gt;</code>). Fehlt eine Datei, bricht der Export mit einer Liste der fehlenden Dateien ab: Ein Paket ist immer vollständig. Dateien außerhalb der AudioLibrary landen im Paket unter <code>_extern\&lt;Song&gt;\</code>.</li>
+  <li><strong>Exportieren:</strong> Start → Playlist oder den Ordner „Multitrack Playlists“ markieren → <strong>Bandpaket exportieren…</strong>. Im Dialog die Playlists ankreuzen; darunter stehen live Anzahl Songs, Dateien und Größe. Songs, die in mehreren Playlists stehen, werden nur einmal gepackt. → <strong>Exportieren…</strong> → Speicherort wählen (Vorschlag: Name der Playlist, bei mehreren <code>Bandpaket_&lt;Datum&gt;</code>). Fehlt eine Datei, bricht der Export mit einer Liste der fehlenden Dateien ab: Ein Paket ist immer vollständig. Dateien außerhalb der AudioLibrary landen im Paket unter <code>_extern\&lt;Song&gt;\</code>.</li>
   <li><strong>Importieren:</strong> Import → <strong>Bandpaket importieren…</strong> → Datei wählen. Die Vorschau zeigt die Playlists im Paket (neu oder ersetzt eine gleichnamige) und pro Song „neu“, „wird aktualisiert“ oder „unverändert“, wie viel kopiert wird und wie viel Platz frei ist. Erst „Importieren“ schreibt etwas.</li>
-  <li><strong>Was nicht überschrieben wird:</strong> Einstellungen (Audio, MIDI, Pfade, Sprache, Proben-Mix, MP3-Export) kommen gar nicht ins Paket. Ein Song, den der Kollege schon hat, behält seinen <strong>Song-Mix</strong> (Pegel, Pan, Mute); alles andere kommt aus dem Paket. Gleichnamige Playlists werden ersetzt.</li>
+  <li><strong>Was nicht überschrieben wird:</strong> Einstellungen (Audio, MIDI, Pfade, Sprache, Proben-Mix, MP3-Export) kommen gar nicht ins Paket. Ein Song, den der Kollege schon hat, behält seinen <strong>Song-Mix</strong> (Pegel, Pan, Mute); alles andere kommt aus dem Paket, auch die <a href="#setlist">Drucktitel</a>. Gleichnamige Playlists werden ersetzt.</li>
   <li><strong>Nur was fehlt:</strong> Dateien mit gleicher Größe und gleichem Änderungsdatum werden nicht noch einmal kopiert. Kopierte Dateien bekommen das Änderungsdatum des Absenders, so bleiben die Songprojekte gültig.</li>
   <li><strong>Größe:</strong> WAVs werden unkomprimiert gespeichert, ein Paket ist so groß wie die Audiodateien (bei 30 Songs schnell über 10 GB). Zum Verschicken eignen sich ein Cloud-Link oder ein USB-Stick.</li>
   <li>Ein abgebrochener Export hinterlässt keine Datei. Ein abgebrochener Import lässt bereits kopierte Audiodateien liegen, ändert aber keinen Song und keine Playlist.</li>
+</ul>
+</section>
+
+<!-- ===================================================================== -->
+<section id="setlist">
+<h2>Setlist drucken</h2>
+<p>Aus einer Playlist entsteht eine Setlist zum Ausdrucken: eine A4-Seite als Word-Datei (<code>.docx</code>, öffnet auch LibreOffice) mit Überschrift, Bandlogo und den Songs des Konzerts in großer Schrift.</p>
+<ul>
+  <li><strong>Drucktitel:</strong> Die Songdateien heißen z. B. <code>I-LOVE-IT__INTRO_(2026-05-10_RF)</code>; auf der Setlist soll „I love it (Icona Pop)“ stehen. Diesen Namen trägt man einmal pro Song ein, im Song-Editor im Feld <strong>Drucktitel</strong> unter dem Songnamen. Der Teil in Klammern am Ende wird normal gedruckt, der Rest fett. Ohne Drucktitel steht ein aus dem Songnamen gebildeter Vorschlag im Feld („I Love It Intro“). Die Details eines Songs im Reiter Start zeigen den Drucktitel.</li>
+  <li><strong>Neue Versionen:</strong> Wird ein neuer Datumsordner eines Songs importiert (z. B. <code>AudioLibrary\ABCDEFU\2027-01-15_neu</code>), übernimmt der neue Song den Drucktitel der neuesten anderen Version aus demselben Songordner. Beim Umbenennen und Duplizieren geht der Drucktitel mit.</li>
+  <li><strong>Drucken:</strong> Start → Playlist markieren → <strong>Setlist drucken…</strong>. Die Überschrift wird aus dem Playlist-Namen gebildet (<code>2026-11-07_Rainbow</code> → „Rainbow - 07.11.2026“) und lässt sich ändern. Mit <strong>Logo wählen…</strong> ein PNG oder JPEG wählen; es wird für die nächsten Setlists gemerkt.</li>
+  <li><strong>Welche Songs:</strong> die Songs bis zum Marker <em>Konzertende</em>; vor dem Marker <em>Zugaben</em> zieht die Setlist eine dicke Linie. Einzelne Songs lassen sich mit dem Häkchen weglassen, z. B. ein Intro, das als eigener Song in der Playlist steht. Drucktitel lassen sich auch hier ändern; sie werden beim Song gespeichert.</li>
+  <li><strong>Word-Datei speichern…</strong> → Speicherort wählen → <strong>Öffnen</strong> zeigt die Datei in Word. Die Schriftgröße passt sich der Seite an (höchstens 40 pt); eine zu lange Zeile wird für sich kleiner. Die Datei bleibt bearbeitbar: normale Absätze und eine Word-Nummerierung.</li>
+  <li>Der Drucktitel liegt in einer kleinen Datei <code>&lt;Song&gt;.songinfo</code> neben der <code>.songprj</code>; die Songprojekte selbst bleiben im Format von uTool2.</li>
 </ul>
 </section>
 
@@ -646,6 +661,7 @@ lp16-tool gui</code></pre>
   <tr><td><code>audio_buffer</code></td><td>Puffer in Frames, 0 = Treiber-Standard</td><td>Einstellungen</td></tr>
   <tr><td><code>midi_port</code></td><td>MIDI-Port, leer = aus</td><td>Einstellungen</td></tr>
   <tr><td><code>language</code></td><td>Sprache der Oberfläche: <code>de</code> oder <code>en</code>, leer = Englisch</td><td>Einstellungen</td></tr>
+  <tr><td><code>setlist_logo</code></td><td>Bandlogo der gedruckten Setlist (PNG/JPEG), leer = keins</td><td>Setlist drucken</td></tr>
   <tr><td><code>rehearsal_autoplay</code></td><td><code>true</code>/<code>false</code></td><td>Probe</td></tr>
   <tr><td><code>mix.&lt;n&gt;.name</code>, <code>mix.&lt;n&gt;.master</code>, <code>mix.&lt;n&gt;.ch&lt;k&gt;</code>, <code>mix_active</code></td><td>Presets des Proben-Mix; Kanal: <code>"&lt;Pegel&gt; &lt;Pan&gt; &lt;Mute&gt; &lt;Solo&gt;"</code></td><td>Probe</td></tr>
   <tr><td><code>backup_dir</code>, <code>backup_pattern</code></td><td>Zielordner und Namensschema der MP3s</td><td>Export Stereo-MP3</td></tr>
@@ -684,7 +700,7 @@ lp16-tool gui</code></pre>
 </section>
 
 <footer>
-  lp16-tool 0.2.0 · unabhängiges Projekt, keine Verbindung zu Cymatic Audio · Quellcode und Releases: <a href="https://github.com/just4phil/Cymatic-uTool-for-LP-16">github.com/just4phil/Cymatic-uTool-for-LP-16</a>
+  lp16-tool 0.3.0 · unabhängiges Projekt, keine Verbindung zu Cymatic Audio · Quellcode und Releases: <a href="https://github.com/just4phil/Cymatic-uTool-for-LP-16">github.com/just4phil/Cymatic-uTool-for-LP-16</a>
 </footer>
 </main>
 </div>

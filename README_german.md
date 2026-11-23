@@ -53,6 +53,10 @@ Das **Handbuch** mit dem ganzen Funktionsumfang liegt als einzelne HTML-Datei in
 - **Bandpaket:** packt eine oder mehrere Playlists mit allen Songs, WAVs, MIDI-Dateien und Konzertmarkern in
   eine Datei (`.lp16pack`), die Bandkollegen mit einem Klick importieren. Ihre Einstellungen und
   ihr Song-Mix bleiben dabei unangetastet, siehe Handbuch, Abschnitt „Bandpaket“.
+- **Setlist drucken:** eine Playlist als Word-Datei (`.docx`) zum Ausdrucken: Überschrift,
+  Bandlogo, die Songs des Konzerts in großer Schrift, eine Linie vor den Zugaben. Jeder Song
+  bekommt im Song-Editor einen Drucktitel wie „I love it (Icona Pop)“; neue Versionen eines
+  Songs übernehmen ihn (Handbuch, Abschnitt „Setlist drucken“).
 - **Probe-Player:** spielt Songs und Playlists der Bibliothek über einen wählbaren
   Audioausgang ab, mit einem 16-Kanal-Proben-Mix, siehe [Probe-Player](#probe-player).
 - **Backup-MP3s:** schreibt für jeden Song einer Playlist eine Stereo-MP3 (links Backings,
