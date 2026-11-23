@@ -1,11 +1,12 @@
 //! Band package export and import (`lp16_tool::bandpack`): the file
 //! dialogs, the import preview and the progress of the background thread.
-//! The export starts from a playlist in Home, the import from the Import tab.
+//! The export starts in Home (a playlist or the Playlists folder) with a
+//! dialog to choose the playlists; the import starts in the Import tab.
 
-use crate::gui_app::{disk_free, fmt_date, fmt_size, overlay, DIM, ORANGE, RED, TEXT};
+use crate::gui_app::{disk_free, fmt_date, fmt_size, local_time, overlay, small_btn, DIM, ORANGE, RED, TEXT};
 use crate::gui_mixer::GREEN;
 use eframe::egui::{self, vec2, Align2, Color32, FontId, RichText, Sense, Stroke};
-use lp16_tool::bandpack::{self, ImportPlan, Package, SongAction};
+use lp16_tool::bandpack::{self, ExportPlan, ImportPlan, Package, SongAction};
 use lp16_tool::project_lib::ProjectLibrary;
 use lp16_tool::tr;
 use std::path::PathBuf;
@@ -15,7 +16,7 @@ use std::time::Instant;
 /// The running (or finished) export or import.
 struct Job {
     import: bool,
-    /// the playlist of an import (selected in Home afterwards)
+    /// the first playlist of an import (selected in Home afterwards)
     playlist: String,
     total: u64,
     done: u64,
@@ -33,21 +34,44 @@ struct Preview {
     free: Option<u64>,
 }
 
+/// The export dialog: which playlists go into the package.
+struct Chooser {
+    names: Vec<String>,
+    checked: Vec<bool>,
+    /// the package of the checked playlists; None = to be planned again
+    plan: Option<Result<ExportPlan, String>>,
+}
+
 #[derive(Default)]
 pub struct BandPack {
     job: Option<Arc<Mutex<Job>>>,
     preview: Option<Preview>,
+    chooser: Option<Chooser>,
 }
 
 impl BandPack {
-    /// Pack playlist `name`: check it, ask for the file, start the thread.
+    /// Open the export dialog with all playlists `names`; `checked` is
+    /// ticked (or none).
+    pub fn choose(&mut self, names: Vec<String>, checked: Option<&str>) {
+        let checked = names.iter().map(|n| Some(n.as_str()) == checked).collect();
+        self.chooser = Some(Chooser { names, checked, plan: None });
+    }
+
+    /// Ask for the file and start the export thread.
     /// Err: a message for the user.
-    pub fn export(&mut self, ctx: &egui::Context, lib: &ProjectLibrary, name: &str) -> Result<(), String> {
-        let plan = bandpack::plan_export(lib, name)?;
+    fn export(&mut self, ctx: &egui::Context, plan: ExportPlan) -> Result<(), String> {
+        let names = plan.playlist_names();
+        let file = match names.as_slice() {
+            [one] => one.clone(),
+            _ => {
+                let (y, m, d, _, _) = local_time(lp16_tool::now_ms());
+                format!("{}_{:04}-{:02}-{:02}", tr!("pack.file_prefix"), y, m, d)
+            }
+        };
         let Some(dest) = rfd::FileDialog::new()
             .set_title(tr!("pack.export_title"))
             .add_filter(tr!("pack.filter"), &[bandpack::EXT])
-            .set_file_name(format!("{}.{}", name, bandpack::EXT))
+            .set_file_name(format!("{}.{}", file, bandpack::EXT))
             .save_file()
         else {
             return Ok(());
@@ -58,7 +82,7 @@ impl BandPack {
                 return Err(tr!("pack.no_space", need = fmt_size(plan.bytes()), free = fmt_size(free), dir = dir.display()));
             }
         }
-        let job = self.new_job(false, name, plan.bytes());
+        let job = self.new_job(false, "", plan.bytes());
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let result = bandpack::write_package(&plan, &dest, &mut progress(&job, &ctx));
@@ -66,6 +90,7 @@ impl BandPack {
                 Ok(()) => Ok(tr!(
                     "pack.export_done",
                     file = dest.display(),
+                    playlists = plan.playlist_names().join(", "),
                     songs = plan.song_count(),
                     files = plan.file_count(),
                     size = fmt_size(plan.bytes())
@@ -111,7 +136,8 @@ impl BandPack {
 
     fn start_import(&mut self, ctx: &egui::Context, lib: ProjectLibrary) {
         let Some(p) = self.preview.take() else { return };
-        let job = self.new_job(true, &p.plan.playlist, p.plan.bytes());
+        let first = p.plan.playlists.first().map(|(n, _)| n.clone()).unwrap_or_default();
+        let job = self.new_job(true, &first, p.plan.bytes());
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let result = bandpack::run_import(&p.pkg, &p.plan, &lib, &mut progress(&job, &ctx));
@@ -120,7 +146,7 @@ impl BandPack {
                     let count = |a: SongAction| p.plan.songs.iter().filter(|s| s.action == a).count();
                     Ok(tr!(
                         "pack.import_done",
-                        playlist = p.plan.playlist,
+                        playlists = p.plan.playlists.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>().join(", "),
                         new = count(SongAction::New),
                         updated = count(SongAction::Update),
                         same = count(SongAction::Same),
@@ -134,9 +160,14 @@ impl BandPack {
         });
     }
 
-    /// Draw the preview or the job. Some after an import (the library must be
-    /// read again): the imported playlist, or "" if the import failed.
+    /// Draw the export dialog, the preview or the job. Some after an import
+    /// (the library must be read again): the first imported playlist, or ""
+    /// if the import failed.
     pub fn ui(&mut self, ctx: &egui::Context, lib: &ProjectLibrary) -> Option<String> {
+        if self.chooser.is_some() {
+            self.chooser_ui(ctx, lib);
+            return None;
+        }
         if self.preview.is_some() {
             self.preview_ui(ctx, lib);
             return None;
@@ -193,14 +224,75 @@ impl BandPack {
         }
     }
 
+    fn chooser_ui(&mut self, ctx: &egui::Context, lib: &ProjectLibrary) {
+        let c = self.chooser.as_mut().unwrap();
+        if c.plan.is_none() && c.checked.iter().any(|x| *x) {
+            let names: Vec<String> = c.names.iter().zip(&c.checked).filter(|(_, x)| **x).map(|(n, _)| n.clone()).collect();
+            c.plan = Some(bandpack::plan_export(lib, &names));
+        }
+        let ready = matches!(c.plan, Some(Ok(_)));
+        let mut changed = false;
+        let clicked = overlay(ctx, "bandpack_choose", egui::Order::Foreground, tr!("pack.export_title"), vec2(700.0, 520.0), |ui| {
+            ui.label(RichText::new(tr!("pack.choose")).size(15.0).color(TEXT));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if small_btn(ui, tr!("pack.select_all"), true) {
+                    c.checked.iter_mut().for_each(|x| *x = true);
+                    changed = true;
+                }
+                if small_btn(ui, tr!("import.select_none"), true) {
+                    c.checked.iter_mut().for_each(|x| *x = false);
+                    changed = true;
+                }
+            });
+            ui.add_space(6.0);
+            let list_h = (ui.available_height() - 70.0).max(80.0);
+            egui::ScrollArea::vertical().max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
+                for (name, x) in c.names.iter().zip(c.checked.iter_mut()) {
+                    if ui.checkbox(x, RichText::new(name).color(TEXT)).changed() {
+                        changed = true;
+                    }
+                }
+            });
+            ui.add_space(8.0);
+            let (text, color) = match &c.plan {
+                None => (tr!("pack.choose_none").to_string(), DIM),
+                Some(Ok(p)) => (
+                    tr!("pack.choose_sum", playlists = p.playlist_names().len(), songs = p.song_count(), files = p.file_count(), size = fmt_size(p.bytes())),
+                    TEXT,
+                ),
+                Some(Err(e)) => (e.clone(), RED),
+            };
+            egui::ScrollArea::vertical().id_source("bandpack_sum").max_height(60.0).show(ui, |ui| {
+                ui.label(RichText::new(text).color(color));
+            });
+        }, &[(tr!("pack.export_btn_go"), ready), (tr!("common.cancel"), true)]);
+        if changed {
+            c.plan = None;
+        }
+        match clicked {
+            Some(0) => {
+                let Some(Some(Ok(plan))) = self.chooser.take().map(|c| c.plan) else { return };
+                if let Err(e) = self.export(ctx, plan) {
+                    let job = self.new_job(false, "", 0);
+                    job.lock().unwrap().result = Some(Err(e));
+                }
+            }
+            Some(_) => self.chooser = None,
+            None => {}
+        }
+    }
+
     fn preview_ui(&mut self, ctx: &egui::Context, lib: &ProjectLibrary) {
         let p = self.preview.as_ref().unwrap();
         let plan = &p.plan;
         let need = plan.bytes();
         let enough = p.free.map(|f| f >= need).unwrap_or(true);
         let clicked = overlay(ctx, "bandpack_preview", egui::Order::Foreground, tr!("pack.import_title"), vec2(900.0, 560.0), |ui| {
-            let pl_state = if plan.playlist_exists { tr!("pack.pl_replaced") } else { tr!("pack.pl_new") };
-            ui.label(RichText::new(tr!("pack.preview_playlist", name = plan.playlist, state = pl_state)).size(16.0).color(TEXT));
+            for (name, exists) in &plan.playlists {
+                let state = if *exists { tr!("pack.pl_replaced") } else { tr!("pack.pl_new") };
+                ui.label(RichText::new(tr!("pack.preview_playlist", name = name, state = state)).size(15.0).color(TEXT));
+            }
             ui.label(RichText::new(tr!("pack.preview_from", app = p.pkg.app, date = fmt_date(p.pkg.created))).size(11.5).color(DIM));
             ui.add_space(8.0);
             let list_h = (ui.available_height() - 90.0).max(80.0);

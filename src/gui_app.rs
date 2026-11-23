@@ -633,7 +633,7 @@ mod win {
 }
 
 #[cfg(windows)]
-fn local_time(ms: i64) -> (i64, u32, u32, u32, u32) {
+pub(crate) fn local_time(ms: i64) -> (i64, u32, u32, u32, u32) {
     let ticks = (ms as u64) * 10_000 + 116_444_736_000_000_000;
     let ft = win::FileTime {
         lo: ticks as u32,
@@ -658,7 +658,7 @@ fn local_time(ms: i64) -> (i64, u32, u32, u32, u32) {
 }
 
 #[cfg(not(windows))]
-fn local_time(ms: i64) -> (i64, u32, u32, u32, u32) {
+pub(crate) fn local_time(ms: i64) -> (i64, u32, u32, u32, u32) {
     let secs = ms / 1000;
     let (y, m, d) = civil_from_days(secs.div_euclid(86400));
     let rem = secs.rem_euclid(86400);
@@ -2164,10 +2164,11 @@ impl Lp16App {
             }
             Sel::PlaylistsFolder => {
                 title(ui, tr!("common.multitrack_playlists"));
-                let (mut new, mut refresh) = (false, false);
+                let (mut new, mut refresh, mut pack) = (false, false, false);
                 ui.horizontal(|ui| {
                     new = small_btn(ui, tr!("common.new_ml_playlist"), true);
                     refresh = small_btn(ui, tr!("common.refresh"), true);
+                    pack = small_btn(ui, tr!("pack.export_btn"), !self.playlists.is_empty());
                 });
                 ui.add_space(8.0);
                 field_box(ui, tr!("common.target_disk_location"), &stick_location(sync::PLAYLISTS));
@@ -2178,6 +2179,9 @@ impl Lp16App {
                 }
                 if refresh {
                     self.refresh();
+                }
+                if pack {
+                    self.bandpack.choose(self.playlists.iter().map(|p| p.name.clone()).collect(), None);
                 }
             }
             Sel::Song(i) => {
@@ -2413,11 +2417,8 @@ impl Lp16App {
                         self.open_playlist_update(Some(i), &[], "");
                     }
                     7 => {
-                        let name = self.playlists[i].name.clone();
-                        let lib = self.lib();
-                        if let Err(e) = self.bandpack.export(ui.ctx(), &lib, &name) {
-                            self.message(tr!("pack.export_title"), e);
-                        }
+                        let names = self.playlists.iter().map(|p| p.name.clone()).collect();
+                        self.bandpack.choose(names, Some(&self.playlists[i].name));
                     }
                     _ => {}
                 }

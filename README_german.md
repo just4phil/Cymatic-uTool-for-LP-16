@@ -50,7 +50,7 @@ Das **Handbuch** mit dem ganzen Funktionsumfang liegt als einzelne HTML-Datei in
   Songs und Playlists lassen sich auf dem Stick löschen (Entf-Taste, Kontextmenü oder Button
   „Löschen“); „Alle Songs ohne Playlist löschen“ löscht alle Songordner, die keine Playlist
   auf dem Stick enthält.
-- **Bandpaket:** packt eine Playlist mit allen Songs, WAVs, MIDI-Dateien und Konzertmarkern in
+- **Bandpaket:** packt eine oder mehrere Playlists mit allen Songs, WAVs, MIDI-Dateien und Konzertmarkern in
   eine Datei (`.lp16pack`), die Bandkollegen mit einem Klick importieren. Ihre Einstellungen und
   ihr Song-Mix bleiben dabei unangetastet, siehe Handbuch, Abschnitt „Bandpaket“.
 - **Probe-Player:** spielt Songs und Playlists der Bibliothek über einen wählbaren

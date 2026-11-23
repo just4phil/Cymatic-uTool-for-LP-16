@@ -1,13 +1,14 @@
-//! Band package (`.lp16pack`): one playlist with everything it needs, for
-//! band members who rehearse at home with their own lp16-tool.
+//! Band package (`.lp16pack`): one or more playlists with everything they
+//! need, for band members who rehearse at home with their own lp16-tool.
+//! A song that is in several playlists is packed once.
 //!
 //! A band package is a plain ZIP file:
 //!
 //! ```text
-//! manifest.txt                  format, playlist, songs, files (see below)
-//! Playlists/<name>.playlistprj  the playlist
+//! manifest.txt                  format, playlists, songs, files (see below)
+//! Playlists/<name>.playlistprj  every playlist
 //! Playlists/<name>.setlist      encore / end of concert markers (if any)
-//! Songs/<song>.songprj          every song of the playlist (once)
+//! Songs/<song>.songprj          every song of the playlists (once)
 //! AudioLibrary/<path>           every WAV and MIDI file a song uses
 //! ```
 //!
@@ -22,7 +23,8 @@
 //! own Song Mix (monitor level, pan, mute); everything else comes from the
 //! package. Files that are already there (same size and modification time)
 //! are not copied again. Order: audio files, then songs, then the playlist,
-//! so a playlist never points at a song that is not there yet.
+//! so a playlist never points at a song that is not there yet. A playlist
+//! of the same name is replaced.
 //!
 //! The manifest is UTF-8 text, one entry per line, fields separated by tabs:
 //!
@@ -30,7 +32,7 @@
 //! lp16pack <TAB> 1
 //! app <TAB> lp16-tool 0.2.0
 //! created <TAB> <ms since 1970>
-//! playlist <TAB> <name>
+//! playlist <TAB> <name>         (one line per playlist)
 //! song <TAB> <file stem>
 //! file <TAB> <mtime ms> <TAB> <size> <TAB> <path below AudioLibrary, with \>
 //! ```
@@ -85,16 +87,24 @@ impl PackFile {
 
 /// What an export writes; built by [`plan_export`] (reads only).
 pub struct ExportPlan {
-    pub playlist: String,
-    playlist_xml: String,
-    markers: SetMarkers,
+    playlists: Vec<PackPlaylist>,
     /// (file stem, .songprj text with the paths of the package)
     songs: Vec<(String, String)>,
     /// (full path on this computer, file in the package)
     files: Vec<(String, PackFile)>,
 }
 
+/// A playlist in a package.
+struct PackPlaylist {
+    name: String,
+    xml: String,
+    markers: SetMarkers,
+}
+
 impl ExportPlan {
+    pub fn playlist_names(&self) -> Vec<String> {
+        self.playlists.iter().map(|p| p.name.clone()).collect()
+    }
     pub fn song_count(&self) -> usize {
         self.songs.len()
     }
@@ -107,15 +117,22 @@ impl ExportPlan {
     }
 }
 
-/// Collect playlist `name` with its songs and their files. Refused if a
-/// song cannot be read or a file is missing: a package must be complete.
-pub fn plan_export(lib: &ProjectLibrary, name: &str) -> Result<ExportPlan, String> {
+/// Collect the playlists `names` with their songs and their files (each
+/// song and file once). Refused if a song cannot be read or a file is
+/// missing: a package must be complete.
+pub fn plan_export(lib: &ProjectLibrary, names: &[String]) -> Result<ExportPlan, String> {
     let audio_lib = lib.audio_lib();
-    let pl = lib
-        .playlists()
-        .into_iter()
-        .find(|p| p.name == name)
-        .ok_or_else(|| tr!("pack.no_playlist", name = name))?;
+    let all = lib.playlists();
+    let mut chosen: Vec<&crate::project_lib::Playlist> = Vec::new();
+    for name in names {
+        if !chosen.iter().any(|p| &p.name == name) {
+            chosen.push(all.iter().find(|p| &p.name == name).ok_or_else(|| tr!("pack.no_playlist", name = name))?);
+        }
+    }
+    if chosen.is_empty() {
+        return Err(tr!("pack.nothing").to_string());
+    }
+    let mut playlists = Vec::new();
     let mut problems: Vec<String> = Vec::new();
     let mut songs: Vec<(String, String)> = Vec::new();
     let mut seen_songs: HashSet<String> = HashSet::new();
@@ -123,74 +140,77 @@ pub fn plan_export(lib: &ProjectLibrary, name: &str) -> Result<ExportPlan, Strin
     // full path (key) -> path in the package
     let mut packed: HashMap<String, String> = HashMap::new();
     let mut used_rel: HashSet<String> = HashSet::new();
-    let mut entries: Vec<PlaylistSong> = Vec::new();
 
-    for s in &pl.songs {
-        let stem = stem(&s.songprj);
-        entries.push(PlaylistSong {
-            name: s.name.clone(),
-            songprj: lib.song_path(&stem).to_string_lossy().into_owned(),
-            mode: s.mode.clone(),
-            delay: s.delay.clone(),
-        });
-        if !seen_songs.insert(stem.to_lowercase()) {
-            continue;
-        }
-        let mut prj = match SongProject::load(&s.songprj, audio_lib) {
-            Ok(p) => p,
-            Err(e) => {
-                problems.push(e.to_string());
+    for pl in chosen {
+        let mut entries: Vec<PlaylistSong> = Vec::new();
+        for s in &pl.songs {
+            let stem = stem(&s.songprj);
+            entries.push(PlaylistSong {
+                name: s.name.clone(),
+                songprj: lib.song_path(&stem).to_string_lossy().into_owned(),
+                mode: s.mode.clone(),
+                delay: s.delay.clone(),
+            });
+            if !seen_songs.insert(stem.to_lowercase()) {
                 continue;
             }
-        };
-        // every file once; the stored path becomes {$AudioLib}\<rel>
-        let mut pack = |stored: &str, problems: &mut Vec<String>| -> String {
-            let full = crate::resolve(stored, audio_lib);
-            let k = crate::path_key::path_key(&full);
-            if let Some(rel) = packed.get(&k) {
-                return format!("{}\\{}", AUDIO_LIB, rel);
-            }
-            let meta = match fs::metadata(&full) {
-                Ok(m) if m.is_file() => m,
-                _ => {
-                    problems.push(tr!("pack.missing_file", song = stem, path = full));
-                    return stored.to_string();
+            let mut prj = match SongProject::load(&s.songprj, audio_lib) {
+                Ok(p) => p,
+                Err(e) => {
+                    problems.push(e.to_string());
+                    continue;
                 }
             };
-            let rel = match stored.strip_prefix(AUDIO_LIB) {
-                Some(r) if valid_rel(r.trim_start_matches('\\')) => r.trim_start_matches('\\').to_string(),
-                _ => {
-                    // outside the audio library: _extern\<song>\<file>
-                    let file = Path::new(&full).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-                    let mut rel = format!("{}\\{}\\{}", EXTERN, stem, file);
-                    let mut n = 2;
-                    while used_rel.contains(&rel.to_lowercase()) {
-                        rel = format!("{}\\{}\\{} ({})", EXTERN, stem, n, file);
-                        n += 1;
+            // every file once; the stored path becomes {$AudioLib}\<rel>
+            let mut pack = |stored: &str, problems: &mut Vec<String>| -> String {
+                let full = crate::resolve(stored, audio_lib);
+                let k = crate::path_key::path_key(&full);
+                if let Some(rel) = packed.get(&k) {
+                    return format!("{}\\{}", AUDIO_LIB, rel);
+                }
+                let meta = match fs::metadata(&full) {
+                    Ok(m) if m.is_file() => m,
+                    _ => {
+                        problems.push(tr!("pack.missing_file", song = stem, path = full));
+                        return stored.to_string();
                     }
-                    rel
-                }
+                };
+                let rel = match stored.strip_prefix(AUDIO_LIB) {
+                    Some(r) if valid_rel(r.trim_start_matches('\\')) => r.trim_start_matches('\\').to_string(),
+                    _ => {
+                        // outside the audio library: _extern\<song>\<file>
+                        let file = Path::new(&full).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+                        let mut rel = format!("{}\\{}\\{}", EXTERN, stem, file);
+                        let mut n = 2;
+                        while used_rel.contains(&rel.to_lowercase()) {
+                            rel = format!("{}\\{}\\{} ({})", EXTERN, stem, n, file);
+                            n += 1;
+                        }
+                        rel
+                    }
+                };
+                used_rel.insert(rel.to_lowercase());
+                packed.insert(k, rel.clone());
+                files.push((full.clone(), PackFile { rel: rel.clone(), size: meta.len(), mtime: mtime_ms(&full) }));
+                format!("{}\\{}", AUDIO_LIB, rel)
             };
-            used_rel.insert(rel.to_lowercase());
-            packed.insert(k, rel.clone());
-            files.push((full.clone(), PackFile { rel: rel.clone(), size: meta.len(), mtime: mtime_ms(&full) }));
-            format!("{}\\{}", AUDIO_LIB, rel)
-        };
-        for t in prj.tracks.iter_mut() {
-            if !t.audiofile.is_empty() {
-                t.audiofile = pack(&t.audiofile, &mut problems);
+            for t in prj.tracks.iter_mut() {
+                if !t.audiofile.is_empty() {
+                    t.audiofile = pack(&t.audiofile, &mut problems);
+                }
             }
+            if !prj.midi_file.is_empty() {
+                prj.midi_file = pack(&prj.midi_file, &mut problems);
+            }
+            songs.push((stem, prj.to_xml()));
         }
-        if !prj.midi_file.is_empty() {
-            prj.midi_file = pack(&prj.midi_file, &mut problems);
-        }
-        songs.push((stem, prj.to_xml()));
+        let xml = generate_playlistprj(&pl.name, now_ms(), lib.root(), &entries);
+        playlists.push(PackPlaylist { name: pl.name.clone(), xml, markers: pl.markers });
     }
     if !problems.is_empty() {
         return Err(tr!("pack.incomplete", list = problems.join("\n")));
     }
-    let playlist_xml = generate_playlistprj(&pl.name, now_ms(), lib.root(), &entries);
-    Ok(ExportPlan { playlist: pl.name, playlist_xml, markers: pl.markers, songs, files })
+    Ok(ExportPlan { playlists, songs, files })
 }
 
 fn manifest(plan: &ExportPlan) -> String {
@@ -198,7 +218,9 @@ fn manifest(plan: &ExportPlan) -> String {
     m.push_str(&format!("lp16pack\t{}\r\n", FORMAT));
     m.push_str(&format!("app\tlp16-tool {}\r\n", env!("CARGO_PKG_VERSION")));
     m.push_str(&format!("created\t{}\r\n", now_ms()));
-    m.push_str(&format!("playlist\t{}\r\n", plan.playlist));
+    for pl in &plan.playlists {
+        m.push_str(&format!("playlist\t{}\r\n", pl.name));
+    }
     for (stem, _) in &plan.songs {
         m.push_str(&format!("song\t{}\r\n", stem));
     }
@@ -218,11 +240,13 @@ pub fn write_package(plan: &ExportPlan, dest: &Path, progress: &mut dyn FnMut(u6
         let stored = SimpleFileOptions::default().compression_method(CompressionMethod::Stored).large_file(true);
         zip.start_file(MANIFEST, small).map_err(io::Error::other)?;
         zip.write_all(manifest(plan).as_bytes())?;
-        zip.start_file(format!("{}{}.playlistprj", PLAYLISTS, plan.playlist), small).map_err(io::Error::other)?;
-        zip.write_all(plan.playlist_xml.as_bytes())?;
-        if !plan.markers.is_empty() {
-            zip.start_file(format!("{}{}.setlist", PLAYLISTS, plan.playlist), small).map_err(io::Error::other)?;
-            zip.write_all(plan.markers.generate().as_bytes())?;
+        for pl in &plan.playlists {
+            zip.start_file(format!("{}{}.playlistprj", PLAYLISTS, pl.name), small).map_err(io::Error::other)?;
+            zip.write_all(pl.xml.as_bytes())?;
+            if !pl.markers.is_empty() {
+                zip.start_file(format!("{}{}.setlist", PLAYLISTS, pl.name), small).map_err(io::Error::other)?;
+                zip.write_all(pl.markers.generate().as_bytes())?;
+            }
         }
         for (stem, xml) in &plan.songs {
             zip.start_file(format!("{}{}.songprj", SONGS, stem), small).map_err(io::Error::other)?;
@@ -265,12 +289,10 @@ pub fn write_package(plan: &ExportPlan, dest: &Path, progress: &mut dyn FnMut(u6
 /// A package as read by [`open_package`]: the manifest and the small files.
 pub struct Package {
     pub path: PathBuf,
-    pub playlist: String,
     /// "lp16-tool 0.2.0" of the sender
     pub app: String,
     pub created: i64,
-    playlist_xml: String,
-    markers: SetMarkers,
+    playlists: Vec<PackPlaylist>,
     /// (file stem, .songprj text)
     songs: Vec<(String, String)>,
     files: Vec<PackFile>,
@@ -285,7 +307,7 @@ pub fn open_package(path: &Path) -> Result<Package, String> {
     let mut zip = ZipArchive::new(io::BufReader::new(file)).map_err(|e| err(&e))?;
     let text = read_text(&mut zip, MANIFEST).map_err(|_| tr!("pack.no_manifest", path = path.display()))?;
     let mut format = 0u32;
-    let (mut playlist, mut app, mut created) = (String::new(), String::new(), 0i64);
+    let (mut names, mut app, mut created) = (Vec::<String>::new(), String::new(), 0i64);
     let mut stems: Vec<String> = Vec::new();
     let mut files: Vec<PackFile> = Vec::new();
     for line in text.lines() {
@@ -294,7 +316,7 @@ pub fn open_package(path: &Path) -> Result<Package, String> {
             ["lp16pack", v] => format = v.trim().parse().unwrap_or(0),
             ["app", v] => app = v.to_string(),
             ["created", v] => created = v.trim().parse().unwrap_or(0),
-            ["playlist", v] => playlist = v.to_string(),
+            ["playlist", v] => names.push(v.to_string()),
             ["song", v] => stems.push(v.to_string()),
             ["file", mtime, size, rel] => files.push(PackFile {
                 rel: rel.to_string(),
@@ -307,13 +329,20 @@ pub fn open_package(path: &Path) -> Result<Package, String> {
     if format == 0 || format > FORMAT {
         return Err(tr!("pack.format", path = path.display(), v = format));
     }
-    if !valid_fat32_name(&playlist) {
-        return Err(err(&tr!("pack.bad_name", name = playlist)));
+    if names.is_empty() {
+        return Err(err(&tr!("pack.nothing")));
     }
-    let playlist_xml = read_text(&mut zip, &format!("{}{}.playlistprj", PLAYLISTS, playlist)).map_err(|e| err(&e))?;
-    let markers = read_text(&mut zip, &format!("{}{}.setlist", PLAYLISTS, playlist))
-        .map(|t| SetMarkers::parse(&t))
-        .unwrap_or_default();
+    let mut playlists = Vec::new();
+    for name in names {
+        if !valid_fat32_name(&name) {
+            return Err(err(&tr!("pack.bad_name", name = name)));
+        }
+        let xml = read_text(&mut zip, &format!("{}{}.playlistprj", PLAYLISTS, name)).map_err(|e| err(&e))?;
+        let markers = read_text(&mut zip, &format!("{}{}.setlist", PLAYLISTS, name))
+            .map(|t| SetMarkers::parse(&t))
+            .unwrap_or_default();
+        playlists.push(PackPlaylist { name, xml, markers });
+    }
     let mut songs = Vec::new();
     for stem in stems {
         if !valid_fat32_name(&stem) {
@@ -331,7 +360,7 @@ pub fn open_package(path: &Path) -> Result<Package, String> {
             return Err(err(&tr!("pack.file_missing", name = f.rel)));
         }
     }
-    Ok(Package { path: path.to_path_buf(), playlist, app, created, playlist_xml, markers, songs, files })
+    Ok(Package { path: path.to_path_buf(), app, created, playlists, songs, files })
 }
 
 fn read_text<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) -> Result<String, String> {
@@ -369,9 +398,8 @@ pub struct ImportSong {
 
 /// What an import would do; built by [`plan_import`] (reads only).
 pub struct ImportPlan {
-    pub playlist: String,
-    /// a playlist of that name is replaced
-    pub playlist_exists: bool,
+    /// (name, a playlist of that name is there and is replaced)
+    pub playlists: Vec<(String, bool)>,
     pub songs: Vec<ImportSong>,
     /// files to copy (the others are there already)
     copy: Vec<PackFile>,
@@ -384,7 +412,7 @@ impl ImportPlan {
     pub fn file_count(&self) -> usize {
         self.copy.len()
     }
-    /// Nothing to write at all (the playlist is still written again).
+    /// Nothing to write at all (the playlists are still written again).
     pub fn up_to_date(&self) -> bool {
         self.copy.is_empty() && self.songs.iter().all(|s| s.action == SongAction::Same)
     }
@@ -434,14 +462,13 @@ pub fn plan_import(pkg: &Package, lib: &ProjectLibrary) -> Result<ImportPlan, St
         songs.push(ImportSong { name: stem.clone(), action, xml: prj.to_xml(), bytes });
     }
     Ok(ImportPlan {
-        playlist: pkg.playlist.clone(),
-        playlist_exists: lib.playlist_path(&pkg.playlist).exists(),
+        playlists: pkg.playlists.iter().map(|p| (p.name.clone(), lib.playlist_path(&p.name).exists())).collect(),
         songs,
         copy,
     })
 }
 
-/// Do the import: copy the files, write the songs, then the playlist.
+/// Do the import: copy the files, write the songs, then the playlists.
 /// `progress` as for [`write_package`]; a canceled import keeps the files
 /// copied so far but writes no song and no playlist.
 pub fn run_import(pkg: &Package, plan: &ImportPlan, lib: &ProjectLibrary, progress: &mut dyn FnMut(u64, &str) -> bool) -> io::Result<()> {
@@ -488,12 +515,14 @@ pub fn run_import(pkg: &Package, plan: &ImportPlan, lib: &ProjectLibrary, progre
         let path = lib.song_path(&s.name);
         write_bytes_atomic(&path, s.xml.as_bytes()).map_err(|e| io::Error::new(e.kind(), format!("{}: {}", path.display(), e)))?;
     }
-    let (_, songs) = parse_playlist(&pkg.playlist_xml, lib.root());
-    let songs: Vec<PlaylistSong> = songs
-        .into_iter()
-        .map(|s| PlaylistSong { songprj: lib.song_path(&stem(&s.songprj)).to_string_lossy().into_owned(), ..s })
-        .collect();
-    lib.save_playlist(&pkg.playlist, &songs, &pkg.markers).map_err(io::Error::other)?;
+    for pl in &pkg.playlists {
+        let (_, songs) = parse_playlist(&pl.xml, lib.root());
+        let songs: Vec<PlaylistSong> = songs
+            .into_iter()
+            .map(|s| PlaylistSong { songprj: lib.song_path(&stem(&s.songprj)).to_string_lossy().into_owned(), ..s })
+            .collect();
+        lib.save_playlist(&pl.name, &songs, &pl.markers).map_err(io::Error::other)?;
+    }
     Ok(())
 }
 
@@ -538,6 +567,10 @@ mod tests {
         lib
     }
 
+    fn names(n: &[&str]) -> Vec<String> {
+        n.iter().map(|s| s.to_string()).collect()
+    }
+
     fn receiver(root: &Path) -> ProjectLibrary {
         let audio = root.join("THEIR_AUDIO");
         ProjectLibrary::new(&root.join("THEIR_LIB").to_string_lossy(), &audio.to_string_lossy())
@@ -554,14 +587,14 @@ mod tests {
     fn export_and_import_a_playlist() {
         let root = temp_dir("pack-roundtrip");
         let from = sender(&root);
-        let plan = plan_export(&from, "Probe").unwrap();
+        let plan = plan_export(&from, &names(&["Probe"])).unwrap();
         assert_eq!((plan.song_count(), plan.file_count()), (2, 3), "songs once, files once");
         let pack = root.join("Probe.lp16pack");
         write_package(&plan, &pack, &mut |_, _| true).unwrap();
 
         let to = receiver(&root);
         let first = import(&pack, &to);
-        assert!(!first.playlist_exists);
+        assert_eq!(first.playlists, [("Probe".to_string(), false)]);
         assert!(first.songs.iter().all(|s| s.action == SongAction::New));
         assert_eq!(first.file_count(), 3);
 
@@ -584,7 +617,38 @@ mod tests {
 
         // a second import copies nothing
         let again = import(&pack, &to);
-        assert!(again.playlist_exists && again.up_to_date());
+        assert_eq!(again.playlists, [("Probe".to_string(), true)]);
+        assert!(again.up_to_date());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn several_playlists_share_their_songs() {
+        let root = temp_dir("pack-several");
+        let from = sender(&root);
+        let ballad = PlaylistSong {
+            name: "Ballad".into(),
+            songprj: from.song_path("Ballad").to_string_lossy().into_owned(),
+            mode: "wait_for_button_press".into(),
+            delay: "0".into(),
+        };
+        from.create_playlist("Akustik", &[ballad], &SetMarkers { encore: None, end: Some(1) }).unwrap();
+        let plan = plan_export(&from, &names(&["Probe", "Akustik", "Probe"])).unwrap();
+        assert_eq!(plan.playlist_names(), ["Probe", "Akustik"]);
+        assert_eq!((plan.song_count(), plan.file_count()), (2, 3), "Ballad and its files once");
+        assert!(plan_export(&from, &names(&["Probe", "Gibts-nicht"])).is_err());
+        assert!(plan_export(&from, &[]).is_err());
+
+        let pack = root.join("p.lp16pack");
+        write_package(&plan, &pack, &mut |_, _| true).unwrap();
+        let to = receiver(&root);
+        let done = import(&pack, &to);
+        assert_eq!(done.playlists, [("Probe".to_string(), false), ("Akustik".to_string(), false)]);
+        let akustik = to.playlists().into_iter().find(|p| p.name == "Akustik").unwrap();
+        assert_eq!(akustik.songs.len(), 1);
+        assert!(Path::new(&akustik.songs[0].songprj).exists());
+        assert_eq!(akustik.markers, SetMarkers { encore: None, end: Some(1) });
+        assert!(to.playlists().iter().any(|p| p.name == "Probe"));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -593,7 +657,7 @@ mod tests {
         let root = temp_dir("pack-mix");
         let from = sender(&root);
         let pack = root.join("p.lp16pack");
-        write_package(&plan_export(&from, "Probe").unwrap(), &pack, &mut |_, _| true).unwrap();
+        write_package(&plan_export(&from, &names(&["Probe"])).unwrap(), &pack, &mut |_, _| true).unwrap();
         let to = receiver(&root);
         import(&pack, &to);
 
@@ -609,7 +673,7 @@ mod tests {
         theirs.duration_seconds = 123.0;
         theirs.tracks[1].monitor_level = "3.0".into();
         theirs.save().unwrap();
-        write_package(&plan_export(&from, "Probe").unwrap(), &pack, &mut |_, _| true).unwrap();
+        write_package(&plan_export(&from, &names(&["Probe"])).unwrap(), &pack, &mut |_, _| true).unwrap();
 
         let plan = import(&pack, &to);
         let intro = plan.songs.iter().find(|s| s.name == "Intro").unwrap();
@@ -635,7 +699,7 @@ mod tests {
         prj.tracks[0].audiofile = wav.to_string_lossy().into_owned();
         prj.save().unwrap();
 
-        let plan = plan_export(&from, "Probe").unwrap();
+        let plan = plan_export(&from, &names(&["Probe"])).unwrap();
         assert_eq!(plan.file_count(), 4);
         let pack = root.join("p.lp16pack");
         write_package(&plan, &pack, &mut |_, _| true).unwrap();
@@ -653,7 +717,7 @@ mod tests {
         let from = sender(&root);
         let prj = SongProject::load(&from.song_path("Intro").to_string_lossy(), from.audio_lib()).unwrap();
         fs::remove_file(prj.wav(&prj.tracks[1])).unwrap();
-        let err = plan_export(&from, "Probe").err().unwrap();
+        let err = plan_export(&from, &names(&["Probe"])).err().unwrap();
         assert!(err.contains("a-2-bass.wav"), "{}", err);
         let _ = fs::remove_dir_all(&root);
     }
@@ -680,7 +744,7 @@ mod tests {
     fn canceled_export_leaves_no_file() {
         let root = temp_dir("pack-cancel");
         let from = sender(&root);
-        let plan = plan_export(&from, "Probe").unwrap();
+        let plan = plan_export(&from, &names(&["Probe"])).unwrap();
         let pack = root.join("p.lp16pack");
         let e = write_package(&plan, &pack, &mut |_, _| false).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::Interrupted);
