@@ -14,6 +14,7 @@ pub mod backup_mix;
 #[cfg(feature = "mp3")]
 pub mod backup;
 pub mod mix;
+pub mod path_key;
 pub mod project_lib;
 pub mod setlist;
 #[cfg(feature = "player")]
@@ -394,6 +395,15 @@ pub struct PlaylistSong {
 /// Song name, pause mode, pause delay and the .songprj path for each
 /// <ns0:song_project> of a .playlistprj. Durations are NOT read here;
 /// they come from SongProject::duration() of each .songprj.
+/// A song location of a .playlistprj: `{$ProjectLib}\...` below
+/// `project_lib`, with one `\` between them (also for "D:\").
+fn resolve_project_lib(location: &str, project_lib: &str) -> String {
+    match location.strip_prefix("{$ProjectLib}") {
+        Some(rest) => path_key::join_root(project_lib, rest),
+        None => location.to_string(),
+    }
+}
+
 pub fn parse_playlist(xml: &str, project_lib: &str) -> (String, Vec<PlaylistSong>) {
     let name = tag(xml, "playlist_name").unwrap_or_default();
     let mut songs = Vec::new();
@@ -410,9 +420,7 @@ pub fn parse_playlist(xml: &str, project_lib: &str) -> (String, Vec<PlaylistSong
         rest = &after_open[end + close.len()..];
         songs.push(PlaylistSong {
             name: tag(block, "song_project_name").unwrap_or_default(),
-            songprj: tag(block, "project_file_location")
-                .unwrap_or_default()
-                .replace("{$ProjectLib}", project_lib),
+            songprj: resolve_project_lib(&tag(block, "project_file_location").unwrap_or_default(), project_lib),
             mode: tag(block, "start_mode").unwrap_or_default(),
             delay: tag(block, "start_mode_delay").unwrap_or_default(),
         });
@@ -1121,7 +1129,6 @@ pub fn generate_playlistprj(
     project_lib: &str,
     songs: &[PlaylistSong],
 ) -> String {
-    let prefix = format!("{}\\", project_lib.trim_end_matches('\\'));
     let mut lines: Vec<String> = Vec::new();
     lines.push("<?xml version=\"1.0\" encoding=\"utf-8\"?>".into());
     lines.push(String::new());
@@ -1138,7 +1145,7 @@ pub fn generate_playlistprj(
     lines.push("  <ns0:project_type>multitrackplaylist</ns0:project_type>".into());
     lines.push("  <ns0:song_projects>".into());
     for (i, s) in songs.iter().enumerate() {
-        let rel = s.songprj.strip_prefix(&prefix).unwrap_or(&s.songprj);
+        let rel = path_key::relative_to(&s.songprj, project_lib).unwrap_or(&s.songprj);
         let name = Path::new(&s.songprj)
             .file_stem()
             .map(|x| x.to_string_lossy().into_owned())
@@ -1666,18 +1673,10 @@ pub fn playlist_song(rel_path: &str, project_lib: &str) -> PlaylistSong {
 /// The {$ProjectLib} placeholder is stripped again, so the paths can be
 /// edited in the GUI and written back with generate_playlistprj().
 pub fn playlist_song_prjs(xml: &str, project_lib: &str) -> Vec<String> {
-    let prefix = format!("{}\\", project_lib.trim_end_matches('\\'));
     parse_playlist(xml, project_lib)
         .1
         .iter()
-        .map(|s| {
-            let p = &s.songprj;
-            if p.starts_with(&prefix) {
-                p[prefix.len()..].to_string()
-            } else {
-                p.clone()
-            }
-        })
+        .map(|s| path_key::relative_to(&s.songprj, project_lib).unwrap_or(&s.songprj).to_string())
         .collect()
 }
 
@@ -1842,10 +1841,6 @@ pub fn newest_version<'a>(song: &LibrarySong, library: &'a [LibrarySong]) -> Opt
     best
 }
 
-fn norm_dir(p: &str) -> String {
-    p.replace('/', "\\").trim_end_matches('\\').to_lowercase()
-}
-
 /// Read all .songprj of `songs_dir` for the import check.
 pub fn library_songs(songs_dir: &Path, audio_lib: &str) -> Vec<LibrarySong> {
     let mut out = Vec::new();
@@ -1869,7 +1864,7 @@ pub fn library_songs(songs_dir: &Path, audio_lib: &str) -> Vec<LibrarySong> {
             .filter_map(|t| {
                 Path::new(&prj.wav(t))
                     .parent()
-                    .map(|d| norm_dir(&d.to_string_lossy()))
+                    .map(|d| path_key::path_key(&d.to_string_lossy()))
             })
             .collect();
         wav_dirs.sort();
@@ -1942,7 +1937,7 @@ pub fn scan_import(import_lib: &str, library: &[LibrarySong]) -> Result<Vec<Impo
                 .collect();
             let dir = date_dir.to_string_lossy().into_owned();
             let name = import_song_name(&song_folder, &date_folder);
-            let key = norm_dir(&dir);
+            let key = path_key::path_key(&dir);
             let covering: Vec<String> = library
                 .iter()
                 .filter(|s| s.name.eq_ignore_ascii_case(&name) || s.wav_dirs.iter().any(|d| *d == key))
@@ -2199,12 +2194,13 @@ impl Config {
     /// <library>\AudioLibrary = audio file library ({$AudioLib}) and import
     /// source. Without a base folder the separate paths stay (old files).
     pub fn apply_library(&mut self) {
-        let base = self.library.trim().trim_end_matches('\\').to_string();
-        if base.is_empty() {
+        let base = self.library.trim();
+        if base.trim_end_matches(['\\', '/']).is_empty() {
             return;
         }
-        self.project_lib = Path::new(&base).join(PROJECT_LIB_NAME).to_string_lossy().into_owned();
-        self.audio_lib = Path::new(&base).join(AUDIO_LIB_NAME).to_string_lossy().into_owned();
+        // "D:\" gives "D:\CymaticProjectLib", not the relative "D:CymaticProjectLib"
+        self.project_lib = path_key::join_root(base, PROJECT_LIB_NAME);
+        self.audio_lib = path_key::join_root(base, AUDIO_LIB_NAME);
         self.import_lib = self.audio_lib.clone();
     }
 }
@@ -3769,5 +3765,28 @@ mod tests {
             assert_eq!(new, old, "{}", s);
         }
         println!("compared {} .mid files", files.len());
+    }
+    #[test]
+    fn project_lib_with_a_backslash_at_the_end_or_a_drive_root() {
+        let song = |p: &str| PlaylistSong { name: "Intro".into(), songprj: p.into(), mode: "m".into(), delay: "0".into() };
+        for (lib, scanned) in [
+            ("C:\\Lib\\", "C:\\Lib\\LP16\\Multitrack Songs\\Intro.songprj"),
+            ("C:\\Lib", "C:\\Lib\\LP16\\Multitrack Songs\\Intro.songprj"),
+            ("D:\\", "D:\\LP16\\Multitrack Songs\\Intro.songprj"),
+        ] {
+            // the path as the folder scan builds it
+            assert_eq!(Path::new(lib).join("LP16\\Multitrack Songs").join("Intro.songprj").to_string_lossy(), scanned);
+            let xml = generate_playlistprj("Set", 1, lib, &[song(scanned)]);
+            assert!(xml.contains("{$ProjectLib}\\LP16\\Multitrack Songs\\Intro.songprj"), "{}", lib);
+            // read back: exactly the scanned path, no doubled "\"
+            let (_, songs) = parse_playlist(&xml, lib);
+            assert_eq!(songs[0].songprj, scanned, "{}", lib);
+            assert_eq!(playlist_song_prjs(&xml, lib), vec!["LP16\\Multitrack Songs\\Intro.songprj"]);
+        }
+        // the library folder on a drive root
+        let mut c = Config { library: "D:\\".into(), ..Config::default() };
+        c.apply_library();
+        assert_eq!(c.project_lib, "D:\\CymaticProjectLib");
+        assert_eq!(c.audio_lib, "D:\\AudioLibrary");
     }
 }

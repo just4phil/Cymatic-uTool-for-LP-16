@@ -410,7 +410,7 @@ impl SyncPlan {
 }
 
 fn key(path: &str) -> String {
-    path.to_lowercase()
+    crate::path_key::path_key(path)
 }
 
 /// Plan an export of `songs` (.songprj paths) and `playlists` (name and

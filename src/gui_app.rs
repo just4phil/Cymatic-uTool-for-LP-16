@@ -460,8 +460,9 @@ pub struct Lp16App {
 // helpers: paths, formatting, Windows bits
 // ---------------------------------------------------------------------------
 
+/// The comparison key of a song / playlist path (see `lp16_tool::path_key`).
 pub(crate) fn key(path: &str) -> String {
-    path.to_lowercase()
+    lp16_tool::path_key::path_key(path)
 }
 
 /// "\Recording" or "\Recording\<sub>": where songs and playlists go on the stick

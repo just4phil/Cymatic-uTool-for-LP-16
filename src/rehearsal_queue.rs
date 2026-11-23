@@ -98,15 +98,12 @@ pub fn entries_from_playlist(songs: &[PlaylistSong], audio_lib: &str) -> Vec<Que
 pub fn same_songs(a: &[PlaylistSong], b: &[PlaylistSong]) -> bool {
     a.len() == b.len()
         && a.iter().zip(b).all(|(x, y)| {
-            x.songprj.eq_ignore_ascii_case(&y.songprj) && x.mode == y.mode && x.delay == y.delay && x.name == y.name
+            same_path(&x.songprj, &y.songprj) && x.mode == y.mode && x.delay == y.delay && x.name == y.name
         })
 }
 
-/// Same file? (Windows paths: case does not matter, `/` = `\`.)
-pub fn same_path(a: &str, b: &str) -> bool {
-    let norm = |s: &str| s.replace('/', "\\").to_lowercase();
-    norm(a) == norm(b)
-}
+/// Same file? See [`crate::path_key`].
+pub use crate::path_key::same_path;
 
 // ---------------------------------------------------------------------------
 // what the song list shows

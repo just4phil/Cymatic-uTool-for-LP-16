@@ -323,11 +323,7 @@ fn list(dir: &Path, ext: &str) -> Vec<PathBuf> {
 /// Comparable form of a path: case-insensitive, `\` only, no doubled `\`
 /// (a project_lib with a trailing `\` resolves to `…\\LP16\…`).
 fn key(path: &Path) -> String {
-    let mut s = path.to_string_lossy().to_lowercase().replace('/', "\\");
-    while s.contains("\\\\") {
-        s = s.replace("\\\\", "\\");
-    }
-    s
+    crate::path_key::path_key(&path.to_string_lossy())
 }
 
 fn stem(path: &Path) -> String {
