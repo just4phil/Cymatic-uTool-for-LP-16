@@ -67,7 +67,7 @@ impl Mixdown {
         let right_gain: [f32; STRIPS] = std::array::from_fn(|k| r[k] * song[k]);
         let mut warnings = opened.warnings;
         if project.midi_path().is_some() {
-            warnings.push("The MIDI file of the song is not part of the MP3".to_string());
+            warnings.push(tr!("backup.midi_not_in_mp3").to_string());
         }
         // the length of the song: the longest track, also the silent ones
         let frames = opened.tracks.iter().map(|(_, r)| r.frames()).max().unwrap_or(0);
@@ -75,7 +75,7 @@ impl Mixdown {
         let tracks: Vec<_> =
             opened.tracks.into_iter().filter(|(k, _)| left_gain[*k] > 0.0 || right_gain[*k] > 0.0).collect();
         if tracks.is_empty() {
-            warnings.push("No track reaches the left or the right side: the MP3 is silent".to_string());
+            warnings.push(tr!("backup.silent").to_string());
         }
         Mixdown {
             tracks,
@@ -169,7 +169,7 @@ pub fn render_song(
 ) -> std::io::Result<SongReport> {
     let mut mixdown = Mixdown::new(project, mix);
     if mixdown.rate() == 0 {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "the song has no sample rate"));
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, tr!("backup.no_rate")));
     }
     let mut encoder = encoder(mixdown.rate())?;
     let total = mixdown.frames().max(1) as f64;
@@ -198,12 +198,12 @@ pub fn render_song(
 }
 
 fn lame_error(e: impl std::fmt::Display) -> std::io::Error {
-    std::io::Error::other(format!("MP3 encoder: {}", e))
+    std::io::Error::other(tr!("backup.encoder", err = e))
 }
 
 /// LAME: stereo, CBR 192 kbit/s, quality 0, no VBR/LAME info frame.
 fn encoder(rate: u32) -> std::io::Result<mp3lame_encoder::Encoder> {
-    let mut b = Builder::new().ok_or_else(|| lame_error("cannot be created"))?;
+    let mut b = Builder::new().ok_or_else(|| lame_error(tr!("backup.encoder_create")))?;
     b.set_num_channels(2).map_err(lame_error)?;
     b.set_sample_rate(rate).map_err(lame_error)?;
     b.set_output_sample_rate(std::num::NonZeroU32::new(mp3_rate(rate))).map_err(lame_error)?;

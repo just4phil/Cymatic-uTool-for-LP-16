@@ -284,13 +284,13 @@ impl RehearsalMix {
 pub fn validate_name(name: &str) -> Result<String, String> {
     let n = name.trim();
     if n.is_empty() {
-        return Err("The name must not be empty.".to_string());
+        return Err(tr!("mix.name_empty").to_string());
     }
     if n.contains('"') {
-        return Err("The name must not contain a double quote.".to_string());
+        return Err(tr!("mix.name_quote").to_string());
     }
     if n.chars().any(|c| c.is_control()) {
-        return Err("The name must not contain a line break.".to_string());
+        return Err(tr!("mix.name_newline").to_string());
     }
     Ok(n.to_string())
 }
@@ -341,7 +341,7 @@ impl MixLibrary {
                 self.active = i;
                 Ok(())
             }
-            None => Err(format!("There is no mix \"{}\".", name)),
+            None => Err(tr!("mix.no_such", name = name)),
         }
     }
 
@@ -361,7 +361,7 @@ impl MixLibrary {
     /// A copy of the active preset, "<Name> copy" (then "<Name> copy 2", ...),
     /// right behind it; it becomes the active one. Returns its name.
     pub fn copy_active(&mut self) -> String {
-        let base = format!("{} copy", self.active_name());
+        let base = tr!("mix.copy_name", name = self.active_name());
         let mut name = base.clone();
         let mut n = 2;
         while self.taken(&name) {
@@ -379,7 +379,7 @@ impl MixLibrary {
     pub fn rename_active(&mut self, name: &str) -> Result<(), String> {
         let name = validate_name(name)?;
         if self.mixes.iter().enumerate().any(|(i, m)| i != self.active && m.name == name) {
-            return Err(format!("There is already a mix \"{}\".", name));
+            return Err(tr!("mix.exists", name = name));
         }
         self.mixes[self.active].name = name;
         Ok(())
@@ -389,7 +389,7 @@ impl MixLibrary {
     /// active. The last preset cannot be deleted.
     pub fn delete_active(&mut self) -> Result<(), String> {
         if self.mixes.len() <= 1 {
-            return Err("The last mix cannot be deleted.".to_string());
+            return Err(tr!("mix.last").to_string());
         }
         self.mixes.remove(self.active);
         self.active = self.active.saturating_sub(1);

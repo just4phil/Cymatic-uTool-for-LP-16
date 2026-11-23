@@ -7,6 +7,7 @@
 
 use crate::gui_app::{small_btn, DIM, LINE, RED, TEXT};
 use eframe::egui::{self, pos2, vec2, Color32, RichText, Sense, Stroke, Ui};
+use lp16_tool::tr;
 use lp16_tool::mix::{MixLibrary, LEVEL_MAX_DB, LEVEL_MIN_DB, STRIPS};
 use lp16_tool::rehearsal::Levels;
 
@@ -61,9 +62,9 @@ pub(crate) fn decayed(shown: f32, peak: f32, dt: f32) -> f32 {
 
 pub(crate) fn fmt_pan(pan: i32) -> String {
     match pan {
-        0 => "Center".to_string(),
-        p if p < 0 => format!("Left {}", -p),
-        p => format!("Right {}", p),
+        0 => tr!("mixer.center").to_string(),
+        p if p < 0 => tr!("mixer.pan_left", n = -p),
+        p => tr!("mixer.pan_right", n = p),
     }
 }
 
@@ -145,7 +146,7 @@ impl PresetBar {
     pub fn ui(&mut self, ui: &mut Ui, lib: &mut MixLibrary, extra: impl FnOnce(&mut Ui)) -> bool {
         let mut changed = false;
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Rehearsal mix").size(14.0).color(TEXT));
+            ui.label(RichText::new(tr!("mixer.rehearsal_mix")).size(14.0).color(TEXT));
             let mut select = None;
             egui::ComboBox::from_id_source("mix_preset").width(190.0).selected_text(lib.active_name().to_string()).show_ui(
                 ui,
@@ -164,23 +165,23 @@ impl PresetBar {
                     changed = true;
                 }
             }
-            if small_btn(ui, "New", true) {
+            if small_btn(ui, tr!("mixer.new"), true) {
                 self.renaming = None;
                 self.message = None;
                 lib.new_mix();
                 changed = true;
             }
-            if small_btn(ui, "Copy", true) {
+            if small_btn(ui, tr!("common.copy"), true) {
                 self.renaming = None;
                 self.message = None;
                 lib.copy_active();
                 changed = true;
             }
-            if small_btn(ui, "Rename", self.renaming.is_none()) {
+            if small_btn(ui, tr!("common.rename"), self.renaming.is_none()) {
                 self.message = None;
                 self.renaming = Some(lib.active_name().to_string());
             }
-            if small_btn(ui, "Delete", lib.presets().len() > 1) {
+            if small_btn(ui, tr!("common.delete"), lib.presets().len() > 1) {
                 self.renaming = None;
                 match lib.delete_active() {
                     Ok(()) => {
@@ -190,7 +191,7 @@ impl PresetBar {
                     Err(e) => self.message = Some(e),
                 }
             }
-            if small_btn(ui, "Reset", true) {
+            if small_btn(ui, tr!("mixer.reset"), true) {
                 self.renaming = None;
                 self.message = None;
                 lib.reset_active();
@@ -201,16 +202,16 @@ impl PresetBar {
         if let Some(name) = self.renaming.as_mut() {
             let mut done = None;
             ui.horizontal(|ui| {
-                ui.label(RichText::new("New name").size(12.5).color(DIM));
+                ui.label(RichText::new(tr!("mixer.new_name")).size(12.5).color(DIM));
                 let resp = ui.add(egui::TextEdit::singleline(name).desired_width(190.0));
                 if !resp.has_focus() && !resp.lost_focus() {
                     resp.request_focus();
                 }
                 let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if small_btn(ui, "OK", true) || enter {
+                if small_btn(ui, tr!("common.ok"), true) || enter {
                     done = Some(true);
                 }
-                if small_btn(ui, "Cancel", true) || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                if small_btn(ui, tr!("common.cancel"), true) || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                     done = Some(false);
                 }
             });

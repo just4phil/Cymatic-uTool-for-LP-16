@@ -30,7 +30,7 @@ pub const SEEK_MEMORY: Duration = Duration::from_millis(400);
 pub const SONG_SAVE_DELAY: Duration = Duration::from_millis(800);
 
 /// Shown after the loaded song was renamed, deleted or saved.
-pub const CHANGED_NOTICE: &str = "The song was changed in the library \u{2013} load it again.";
+pub fn changed_notice() -> &'static str { tr!("session.changed") }
 
 // ---------------------------------------------------------------------------
 // the seam
@@ -154,7 +154,7 @@ pub fn track_names(project: &SongProject) -> [String; STRIPS] {
         if !n.is_empty() {
             n.push_str(" + ");
         }
-        n.push_str(if t.name.is_empty() { "Track" } else { &t.name });
+        n.push_str(if t.name.is_empty() { tr!("session.track") } else { &t.name });
     }
     names
 }
@@ -616,7 +616,7 @@ impl Session {
         if self.playlist.as_deref() != Some(name) {
             return;
         }
-        self.clear(format!("The playlist \"{}\" was deleted \u{2013} the player stopped.", name));
+        self.clear(tr!("session.playlist_deleted", name = name));
     }
 
     /// The song file `path` is about to be renamed, deleted or saved: stop
@@ -637,7 +637,7 @@ impl Session {
                 return;
             }
         }
-        self.clear(CHANGED_NOTICE.to_string());
+        self.clear(changed_notice().to_string());
     }
 
     /// Stop, unload everything and show `notice`.
@@ -684,11 +684,8 @@ impl Session {
             }
         }
         if loaded && at.is_none() {
-            let what = if self.playlist.is_some() { "playlist" } else { "library" };
-            self.notice = Some(format!(
-                "The {} was changed and the song that was loaded is no longer in it \u{2013} the player stopped.",
-                what
-            ));
+            let changed = if self.playlist.is_some() { tr!("session.playlist_changed") } else { tr!("session.library_changed") };
+            self.notice = Some(changed.to_string());
         }
     }
 

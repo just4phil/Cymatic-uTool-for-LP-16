@@ -26,6 +26,8 @@ use lp16_tool::project_lib::ProjectLibrary;
 use lp16_tool::setlist::{self, SetMarkers, Timeline};
 use lp16_tool::sync::{self, Action, ExportMode, Progress};
 use lp16_tool::wav_tail::{self, TailReport};
+use lp16_tool::i18n::{self, Lang};
+use lp16_tool::tr;
 use lp16_tool::{
     import_songs, init_folders,
     library_songs, midi_duration, natural_cmp, newest_version, scan_import, ImportItem, ImportStatus, LibrarySong,
@@ -83,16 +85,16 @@ enum Tab {
     Support,
 }
 
-const TABS: [(Tab, &str); 8] = [
-    (Tab::Home, "Home"),
-    (Tab::Rehearsal, "Rehearsal"),
-    (Tab::Export, "Export"),
-    (Tab::Backup, "Export Stereo-MP3"),
-    (Tab::Import, "Import"),
-    (Tab::EditTarget, "Edit Target"),
-    (Tab::Settings, "Settings"),
-    (Tab::Support, "Support"),
-];
+fn tabs() -> [(Tab, &'static str); 8] { [
+    (Tab::Home, tr!("tab.home")),
+    (Tab::Rehearsal, tr!("tab.rehearsal")),
+    (Tab::Export, tr!("tab.export")),
+    (Tab::Backup, tr!("tab.backup")),
+    (Tab::Import, tr!("tab.import")),
+    (Tab::EditTarget, tr!("tab.edit_target")),
+    (Tab::Settings, tr!("tab.settings")),
+    (Tab::Support, tr!("tab.support")),
+] }
 
 struct TrackInfo {
     num: i32,
@@ -129,7 +131,7 @@ impl SongInfo {
             || (!self.midi_full.is_empty() && !self.midi_exists)
     }
     fn format_line(&self) -> String {
-        format!("{} ch - {}-bit", self.tracks.len(), self.bits)
+        tr!("home.track_fmt", n = self.tracks.len(), bits = self.bits)
     }
 }
 
@@ -277,8 +279,8 @@ fn split_items(items: &[PlItem]) -> (Vec<PlSong>, SetMarkers) {
 fn item_label(item: &PlItem) -> String {
     match item {
         PlItem::Song(s) => stem(&s.prj),
-        PlItem::Encore => "ENCORES".into(),
-        PlItem::End => "END OF CONCERT".into(),
+        PlItem::Encore => tr!("common.encores").into(),
+        PlItem::End => tr!("common.end_of_concert").into(),
     }
 }
 
@@ -536,6 +538,9 @@ fn fmt_date(ms: i64) -> String {
         return "-".into();
     }
     let (y, mo, d, h, mi) = local_time(ms);
+    if i18n::lang() == Lang::De {
+        return format!("{}.{}.{} {}:{:02}", d, mo, y, h, mi);
+    }
     const MON: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
@@ -967,11 +972,11 @@ fn paint_song_cols(p: &egui::Painter, rect: Rect, s: &SongInfo) {
 fn paint_mark(p: &egui::Painter, rect: Rect, mark: Mark) {
     let text = match mark {
         Mark::None => return,
-        Mark::Skip => "Skip",
-        Mark::Quick => "Quick Export",
-        Mark::Overwrite => "Overwrite",
-        Mark::New => "New Export",
-        Mark::Force => "Force Overwrite",
+        Mark::Skip => tr!("mark.skip"),
+        Mark::Quick => tr!("mark.quick"),
+        Mark::Overwrite => tr!("mark.overwrite"),
+        Mark::New => tr!("mark.new"),
+        Mark::Force => tr!("mark.force"),
     };
     // "Skip" (nothing is written) is grey, the others orange
     let color = if mark == Mark::Skip { DIM } else { ORANGE };
@@ -1032,7 +1037,7 @@ pub(crate) fn panel_tab(ui: &mut Ui, title: &str, refresh: bool) -> bool {
         if refresh
             && ui
                 .add(egui::Button::new(RichText::new("🔄").size(13.0)).frame(false))
-                .on_hover_text("Refresh")
+                .on_hover_text(tr!("common.refresh"))
                 .clicked()
         {
             clicked = true;
@@ -1291,7 +1296,7 @@ impl Lp16App {
         }
         if self.dialog.is_none() && self.pl_update.is_none() && self.pl_editor.is_none() && self.song_ed.is_none() {
             if let Some(text) = self.tail_msg.take() {
-                self.message("Song endings", text);
+                self.message(tr!("tail.title"), text);
             }
         }
     }
@@ -1335,17 +1340,17 @@ impl Lp16App {
         }
         let done = wavs.len() - errors.len();
         let mut text = if trim_ms > 0.0 {
-            format!("{} WAV file(s) shortened by {:.0} ms and faded out over {:.0} ms.", done, trim_ms, wav_tail::FADE_MS)
+            tr!("tail.cut_done", n = done, trim = format!("{:.0}", trim_ms), fade = format!("{:.0}", wav_tail::FADE_MS))
         } else {
-            format!("{} WAV file(s) faded out over {:.0} ms.", done, wav_tail::FADE_MS)
+            tr!("tail.fade_done", n = done, fade = format!("{:.0}", wav_tail::FADE_MS))
         };
         if done > 0 {
-            text += "\nThe originals are kept as *.orig.wav next to them.";
+            text += tr!("tail.originals_kept");
         }
         if !errors.is_empty() {
-            text += &format!("\n\nFailed:\n{}", errors.join("\n"));
+            text += &tr!("common.failed", list = errors.join("\n"));
         }
-        self.message("Fade-out", text);
+        self.message(tr!("tail.fade_title"), text);
     }
 
     fn message(&mut self, title: &str, text: impl Into<String>) {
@@ -1482,7 +1487,7 @@ impl Lp16App {
         match result {
             Ok(_) => true,
             Err(e) => {
-                self.message("Error", e);
+                self.message(tr!("common.error"), e);
                 false
             }
         }
@@ -1524,7 +1529,7 @@ impl Lp16App {
                 self.sel = Sel::SongsFolder;
                 self.refresh();
             }
-            Err(e) => self.message("Delete Song", e),
+            Err(e) => self.message(tr!("common.delete_song"), e),
         }
     }
 
@@ -1541,7 +1546,7 @@ impl Lp16App {
     fn open_playlist_editor(&mut self, index: Option<usize>) {
         let (name, items) = match index {
             Some(i) => (self.playlists[i].name.clone(), items_from(&self.playlists[i].songs, &self.playlists[i].markers)),
-            None => ("New Playlist".to_string(), Vec::new()),
+            None => (tr!("home.new_playlist_name").to_string(), Vec::new()),
         };
         self.pl_editor = Some(PlaylistEditor {
             index,
@@ -1566,13 +1571,13 @@ impl Lp16App {
         let (songs, markers) = split_items(&ed.items);
         let index = ed.index;
         if !valid_fat32_name(&name) {
-            self.message("Playlist Name", "The new Playlist Name contains invalid characters.");
+            self.message(tr!("home.playlist_name"), tr!("home.playlist_name_invalid"));
             return;
         }
         let new_path = self.lib().playlist_path(&name);
         let same_name = index.map(|i| self.playlists[i].name == name).unwrap_or(false);
         if !same_name && new_path.exists() {
-            self.message("Playlist Name", format!("A Playlist \"{}\" already exists.", name));
+            self.message(tr!("home.playlist_name"), tr!("common.playlist_exists", name = name));
             return;
         }
         match (index, same_name, copy_or_rename) {
@@ -1706,12 +1711,12 @@ impl Lp16App {
     fn export_check(&mut self) {
         let target = self.config.stick_root.clone();
         if target.trim().is_empty() || !Path::new(&target).is_dir() {
-            self.message("Export", "No target location selected.");
+            self.message(tr!("tab.export"), tr!("common.no_target"));
             return;
         }
         let (prjs, pls) = self.export_selection();
         if prjs.is_empty() && pls.is_empty() {
-            self.message("Export", "Nothing selected.");
+            self.message(tr!("tab.export"), tr!("export.nothing_selected"));
             return;
         }
         let keys = prjs.iter().map(|p| key(p)).collect();
@@ -1721,12 +1726,12 @@ impl Lp16App {
     fn start_export(&mut self, ctx: &egui::Context) {
         let target = self.config.stick_root.clone();
         if target.trim().is_empty() || !Path::new(&target).is_dir() {
-            self.message("Export", "No target location selected.");
+            self.message(tr!("tab.export"), tr!("common.no_target"));
             return;
         }
         let (prjs, pls) = self.export_selection();
         if prjs.is_empty() && pls.is_empty() {
-            self.message("Export", "Nothing selected.");
+            self.message(tr!("tab.export"), tr!("export.nothing_selected"));
             return;
         }
         let playlists = self.export_playlists(&pls);
@@ -1753,8 +1758,8 @@ impl Lp16App {
                     Progress::Start(name) => j.current = name.to_string(),
                     Progress::Done(line) => {
                         let what = match line.kind {
-                            sync::Kind::Song => "Multitrack Song",
-                            sync::Kind::Playlist => "Playlist",
+                            sync::Kind::Song => tr!("export.kind_song"),
+                            sync::Kind::Playlist => tr!("export.kind_playlist"),
                         };
                         j.lines.push((format!("{} {}", what, line.name), line.ok, line.message.clone()));
                         j.done += 1;
@@ -1767,7 +1772,7 @@ impl Lp16App {
             });
             let mut j = job.lock().unwrap();
             if let Err(e) = result {
-                j.lines.push(("Export".to_string(), false, format!("ERROR: {}", e)));
+                j.lines.push((tr!("tab.export").to_string(), false, tr!("export.error_line", err = e)));
             }
             j.elapsed = j.started.elapsed().as_secs_f64();
             j.finished = true;
@@ -1782,12 +1787,12 @@ impl Lp16App {
             self.save_settings();
         }
         match init_folders(&self.config) {
-            Ok(c) if c.is_empty() => self.message("Initialize Folders", "All folders already exist."),
+            Ok(c) if c.is_empty() => self.message(tr!("settings.init_folders"), tr!("settings.init_all_exist")),
             Ok(c) => {
                 self.refresh();
-                self.message("Initialize Folders", format!("Created:\n{}", c.join("\n")));
+                self.message(tr!("settings.init_folders"), tr!("settings.init_created", list = c.join("\n")));
             }
-            Err(e) => self.message("Initialize Folders", format!("Cannot create the folders:\n{}", e)),
+            Err(e) => self.message(tr!("settings.init_folders"), tr!("settings.init_failed", err = e)),
         }
     }
 
@@ -1796,7 +1801,7 @@ impl Lp16App {
         // other library: the old import scan does not fit any more
         self.import_scan = None;
         if let Err(e) = save_config(&config_path(), &self.config) {
-            self.message("Settings", format!("Cannot save {}:\n{}", config_path().display(), e));
+            self.message(tr!("common.settings"), tr!("common.cannot_save", path = config_path().display(), err = e));
             return;
         }
         self.settings_dirty = false;
@@ -1862,8 +1867,7 @@ impl eframe::App for Lp16App {
         if let Some(on) = self.rehearsal.take_autoplay_change() {
             self.config.rehearsal_autoplay = on;
             if let Err(e) = save_config(&config_path(), &self.config) {
-                self.message("Settings", format!("Cannot save {}:
-{}", config_path().display(), e));
+                self.message(tr!("common.settings"), tr!("common.cannot_save", path = config_path().display(), err = e));
             }
         }
         self.playlist_editor(ctx);
@@ -1912,7 +1916,7 @@ impl Lp16App {
     fn tab_bar(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            for (t, title) in TABS {
+            for (t, title) in tabs() {
                 // long titles get a wider tab
                 let w = ui.fonts(|f| f.layout_no_wrap(title.to_string(), FontId::proportional(14.0), Color32::WHITE).size().x);
                 let (rect, resp) = ui.allocate_exact_size(vec2((w + 20.0).max(78.0), 32.0), Sense::click());
@@ -1965,13 +1969,13 @@ impl Lp16App {
             ui,
             h,
             |app, ui| {
-                if panel_tab(ui, "Project Explorer", true) {
+                if panel_tab(ui, tr!("common.project_explorer"), true) {
                     app.refresh();
                 }
                 panel_body(ui, true, |ui| app.home_tree(ui));
             },
             |app, ui| {
-                panel_tab(ui, "Details", false);
+                panel_tab(ui, tr!("common.details"), false);
                 panel_body(ui, true, |ui| {
                     egui::ScrollArea::vertical()
                         .id_source("home_details")
@@ -2004,14 +2008,14 @@ impl Lp16App {
                 if open_root {
                     // Multitrack Songs
                     let open = self.is_open("h:songs");
-                    let r = tree_row(ui, 1, Some(open), None, "", "Multitrack Songs", self.sel == Sel::SongsFolder, false, |p, rect| {
+                    let r = tree_row(ui, 1, Some(open), None, "", tr!("common.multitrack_songs"), self.sel == Sel::SongsFolder, false, |p, rect| {
                         if songs_warn {
                             paint_warn(p, rect)
                         }
                     });
                     let mut new_song = false;
                     r.resp.context_menu(|ui| {
-                        if ui.button("New Multitrack Song").clicked() {
+                        if ui.button(tr!("common.new_ml_song")).clicked() {
                             new_song = true;
                             ui.close_menu();
                         }
@@ -2032,7 +2036,7 @@ impl Lp16App {
                             });
                             let mut play = false;
                             r.resp.context_menu(|ui| {
-                                if ui.button("Play in Rehearsal").clicked() {
+                                if ui.button(tr!("common.play_in_rehearsal")).clicked() {
                                     play = true;
                                     ui.close_menu();
                                 }
@@ -2049,14 +2053,14 @@ impl Lp16App {
                     }
                     // Multitrack Playlists
                     let open = self.is_open("h:pl");
-                    let r = tree_row(ui, 1, Some(open), None, "", "Multitrack Playlists", self.sel == Sel::PlaylistsFolder, false, |p, rect| {
+                    let r = tree_row(ui, 1, Some(open), None, "", tr!("common.multitrack_playlists"), self.sel == Sel::PlaylistsFolder, false, |p, rect| {
                         if pl_warn {
                             paint_warn(p, rect)
                         }
                     });
                     let mut new_pl = false;
                     r.resp.context_menu(|ui| {
-                        if ui.button("New Multitrack Playlist").clicked() {
+                        if ui.button(tr!("common.new_ml_playlist")).clicked() {
                             new_pl = true;
                             ui.close_menu();
                         }
@@ -2081,7 +2085,7 @@ impl Lp16App {
                             });
                             let mut play = false;
                             r.resp.context_menu(|ui| {
-                                if ui.button("Play in Rehearsal").clicked() {
+                                if ui.button(tr!("common.play_in_rehearsal")).clicked() {
                                     play = true;
                                     ui.close_menu();
                                 }
@@ -2113,19 +2117,19 @@ impl Lp16App {
                 title(ui, "LP-16");
             }
             Sel::SongsFolder => {
-                title(ui, "Multitrack Songs");
+                title(ui, tr!("common.multitrack_songs"));
                 let (mut new, mut refresh, mut check) = (false, false, false);
                 let running = self.tail_check.as_ref().map(|(c, _)| c.progress());
                 ui.horizontal(|ui| {
-                    new = small_btn(ui, "New Multitrack Song", true);
-                    refresh = small_btn(ui, "Refresh", true);
-                    check = small_btn(ui, "Check song endings", running.is_none());
+                    new = small_btn(ui, tr!("common.new_ml_song"), true);
+                    refresh = small_btn(ui, tr!("common.refresh"), true);
+                    check = small_btn(ui, tr!("home.check_endings"), running.is_none());
                     if let Some((done, total)) = running {
-                        ui.label(format!("Checking song endings: {} / {} WAV files", done, total));
+                        ui.label(tr!("common.checking_endings", done = done, total = total));
                     }
                 });
                 ui.add_space(8.0);
-                field_box(ui, "Target Disk Location", &stick_location(""));
+                field_box(ui, tr!("common.target_disk_location"), &stick_location(""));
                 ui.add_space(14.0);
                 let mut srs: Vec<u32> = self.songs.iter().map(|s| s.sr).collect();
                 srs.sort();
@@ -2133,15 +2137,9 @@ impl Lp16App {
                 let mut bits: Vec<u32> = self.songs.iter().map(|s| s.bits).collect();
                 bits.sort();
                 bits.dedup();
-                ui.label(format!("This branch contains {} Songs.", self.songs.len()));
-                ui.label(format!(
-                    "Sample rates in use: {}",
-                    srs.iter().map(|&s| fmt_sr(s)).collect::<Vec<_>>().join(", ")
-                ));
-                ui.label(format!(
-                    "Resolutions in use: {}",
-                    bits.iter().map(|b| format!("{}-bit", b)).collect::<Vec<_>>().join(", ")
-                ));
+                ui.label(tr!("home.branch_songs", n = self.songs.len()));
+                ui.label(tr!("home.rates_in_use", list = srs.iter().map(|&s| fmt_sr(s)).collect::<Vec<_>>().join(", ")));
+                ui.label(tr!("home.bits_in_use", list = bits.iter().map(|b| tr!("common.bits", n = b)).collect::<Vec<_>>().join(", ")));
                 if new {
                     self.new_song_dialog();
                 }
@@ -2153,16 +2151,16 @@ impl Lp16App {
                 }
             }
             Sel::PlaylistsFolder => {
-                title(ui, "Multitrack Playlists");
+                title(ui, tr!("common.multitrack_playlists"));
                 let (mut new, mut refresh) = (false, false);
                 ui.horizontal(|ui| {
-                    new = small_btn(ui, "New Multitrack Playlist", true);
-                    refresh = small_btn(ui, "Refresh", true);
+                    new = small_btn(ui, tr!("common.new_ml_playlist"), true);
+                    refresh = small_btn(ui, tr!("common.refresh"), true);
                 });
                 ui.add_space(8.0);
-                field_box(ui, "Target Disk Location", &stick_location(sync::PLAYLISTS));
+                field_box(ui, tr!("common.target_disk_location"), &stick_location(sync::PLAYLISTS));
                 ui.add_space(14.0);
-                ui.label(format!("This branch contains {} Playlists.", self.playlists.len()));
+                ui.label(tr!("home.branch_playlists", n = self.playlists.len()));
                 if new {
                     self.open_playlist_editor(None);
                 }
@@ -2180,45 +2178,45 @@ impl Lp16App {
                     let s = &self.songs[i];
                     title(ui, &s.name);
                     ui.horizontal(|ui| {
-                        small_btn(ui, "New MultiTrack Song", false);
-                        if small_btn(ui, "Edit", true) {
+                        small_btn(ui, tr!("common.new_ml_song"), false);
+                        if small_btn(ui, tr!("common.edit"), true) {
                             act = 1;
                         }
-                        if small_btn(ui, "Mixer", true) {
+                        if small_btn(ui, tr!("common.mixer"), true) {
                             act = 5;
                         }
-                        if small_btn(ui, "Rename", true) {
+                        if small_btn(ui, tr!("common.rename"), true) {
                             act = 2;
                         }
-                        if small_btn(ui, "Delete", true) {
+                        if small_btn(ui, tr!("common.delete"), true) {
                             act = 3;
                         }
-                        if small_btn(ui, "Duplicate", true) {
+                        if small_btn(ui, tr!("common.duplicate"), true) {
                             act = 4;
                         }
                     });
                     ui.add_space(8.0);
-                    field_box(ui, "Target Disk Location", &stick_location(&s.name));
+                    field_box(ui, tr!("common.target_disk_location"), &stick_location(&s.name));
                     ui.add_space(14.0);
-                    kv(ui, "Type", "LP-16 multitrack Song");
-                    kv(ui, "Sample rate", &fmt_sr(s.sr));
-                    kv(ui, "Resolution", &format!("{}-bit", s.bits));
-                    kv(ui, "Track count", &s.tracks.len().to_string());
-                    ui.label("Tracks:");
+                    kv(ui, tr!("common.type"), tr!("home.type_song"));
+                    kv(ui, tr!("common.sample_rate"), &fmt_sr(s.sr));
+                    kv(ui, tr!("common.resolution"), &tr!("common.bits", n = s.bits));
+                    kv(ui, tr!("home.track_count"), &s.tracks.len().to_string());
+                    ui.label(tr!("home.tracks"));
                     list_box(ui, |ui| {
                         for t in &s.tracks {
                             ui.horizontal(|ui| {
                                 ui.label(format!("{:>3}: {}", t.num, t.name));
                                 if !t.exists {
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        badge(ui, "Missing Wav file")
-                                            .on_hover_text(format!("Expected wav file:\n{}", t.wav));
+                                        badge(ui, tr!("common.missing_wav"))
+                                            .on_hover_text(tr!("home.expected_wav", path = t.wav));
                                     });
                                 } else if let Some(Some(r)) = &t.tail {
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        let b = badge(ui, "No clean fade-out")
+                                        let b = badge(ui, tr!("tail.no_clean"))
                                             .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                            .on_hover_text(format!("{}.\nClick to add a fade-out.", r.describe()));
+                                            .on_hover_text(tr!("home.click_fade", what = r.describe()));
                                         if b.clicked() {
                                             act = 6;
                                         }
@@ -2227,19 +2225,19 @@ impl Lp16App {
                             });
                         }
                     });
-                    kv(ui, "Length", &fmt_len(s.duration));
-                    kv(ui, "Size", &fmt_size(s.size));
-                    kv(ui, "Modification Date", &fmt_date(s.modified));
+                    kv(ui, tr!("common.length"), &fmt_len(s.duration));
+                    kv(ui, tr!("common.size"), &fmt_size(s.size));
+                    kv(ui, tr!("common.mod_date"), &fmt_date(s.modified));
                     ui.horizontal(|ui| {
-                        ui.label(format!("MIDI file:  {}", if s.midi_name.is_empty() { "-" } else { &s.midi_name }));
+                        ui.label(tr!("home.midi_file", name = if s.midi_name.is_empty() { "-" } else { &s.midi_name }));
                         if !s.midi_full.is_empty() && !s.midi_exists {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                badge(ui, "Missing MIDI file")
-                                    .on_hover_text(format!("Expected midi file:\n{}", s.midi_full));
+                                badge(ui, tr!("common.missing_midi"))
+                                    .on_hover_text(tr!("home.expected_midi", path = s.midi_full));
                             });
                         }
                     });
-                    ui.label("Related Playlists:");
+                    ui.label(tr!("common.related_playlists"));
                     let k = key(&s.path);
                     let related: Vec<&str> = self
                         .playlists
@@ -2281,30 +2279,30 @@ impl Lp16App {
                     let pl = &self.playlists[i];
                     title(ui, &pl.name);
                     ui.horizontal(|ui| {
-                        if small_btn(ui, "New Multitrack Playlist", true) {
+                        if small_btn(ui, tr!("common.new_ml_playlist"), true) {
                             act = 5;
                         }
-                        if small_btn(ui, "Edit", true) {
+                        if small_btn(ui, tr!("common.edit"), true) {
                             act = 1;
                         }
-                        if small_btn(ui, "Rename", true) {
+                        if small_btn(ui, tr!("common.rename"), true) {
                             act = 2;
                         }
-                        if small_btn(ui, "Delete", true) {
+                        if small_btn(ui, tr!("common.delete"), true) {
                             act = 3;
                         }
-                        if small_btn(ui, "Duplicate", true) {
+                        if small_btn(ui, tr!("common.duplicate"), true) {
                             act = 4;
                         }
-                        if small_btn(ui, "Update Songs", true) {
+                        if small_btn(ui, tr!("home.update_songs"), true) {
                             act = 6;
                         }
                     });
                     ui.add_space(8.0);
-                    field_box(ui, "Target Disk Location", &stick_location(sync::PLAYLISTS));
+                    field_box(ui, tr!("common.target_disk_location"), &stick_location(sync::PLAYLISTS));
                     ui.add_space(14.0);
-                    kv(ui, "Type", " multitrack Playlist");
-                    kv(ui, "Song count", &pl.songs.len().to_string());
+                    kv(ui, tr!("common.type"), tr!("home.type_playlist"));
+                    kv(ui, tr!("common.song_count"), &pl.songs.len().to_string());
                     let tl = self.concert_timeline(&pl.songs, &pl.markers, self.config.set_pause);
                     let times_font = FontId::proportional(11.5);
                     list_box(ui, |ui| {
@@ -2329,10 +2327,10 @@ impl Lp16App {
                                             }
                                             match info {
                                                 None => {
-                                                    badge(ui, "Missing Song").on_hover_text(&s.prj);
+                                                    badge(ui, tr!("common.missing_song")).on_hover_text(&s.prj);
                                                 }
                                                 Some(x) if x.warn() => {
-                                                    badge(ui, "Missing files");
+                                                    badge(ui, tr!("home.missing_files"));
                                                 }
                                                 _ => {}
                                             }
@@ -2344,13 +2342,13 @@ impl Lp16App {
                                     let (text, time) = match marker {
                                         PlItem::Encore => {
                                             let t = if tl.main_set.is_some() {
-                                                format!("ENCORES  ({} songs)", tl.encore_count)
+                                                tr!("common.encores_n", n = tl.encore_count)
                                             } else {
-                                                "ENCORES  (after the end of the concert)".into()
+                                                tr!("common.encores_after").into()
                                             };
                                             (t, tl.main_set)
                                         }
-                                        _ => ("END OF CONCERT".to_string(), Some(tl.concert)),
+                                        _ => (tr!("common.end_of_concert").to_string(), Some(tl.concert)),
                                     };
                                     egui::Frame::none().fill(MARKER_FILL).outer_margin(Margin::symmetric(-16.0, 0.0)).inner_margin(Margin::symmetric(16.0, 2.0)).show(ui, |ui| {
                                         ui.set_min_width(ui.available_width());
@@ -2369,14 +2367,14 @@ impl Lp16App {
                             }
                         }
                     });
-                    kv(ui, "Length", &fmt_len(self.playlist_len(&pl.songs)));
+                    kv(ui, tr!("common.length"), &fmt_len(self.playlist_len(&pl.songs)));
                     let concert = match tl.main_set {
-                        Some(main) => format!("{} (main set {}, {} encores; {} s pause)", fmt_clock(tl.concert), fmt_clock(main), tl.encore_count, self.config.set_pause),
-                        None => format!("{} ({} s pause)", fmt_clock(tl.concert), self.config.set_pause),
+                        Some(main) => tr!("home.concert_main", total = fmt_clock(tl.concert), main = fmt_clock(main), n = tl.encore_count, pause = self.config.set_pause),
+                        None => tr!("home.concert", total = fmt_clock(tl.concert), pause = self.config.set_pause),
                     };
-                    kv(ui, "Concert", &concert);
-                    kv(ui, "Size", &fmt_size(pl.size));
-                    kv(ui, "Modification date", &fmt_date(pl.modified));
+                    kv(ui, tr!("home.concert_label"), &concert);
+                    kv(ui, tr!("common.size"), &fmt_size(pl.size));
+                    kv(ui, tr!("common.mod_date"), &fmt_date(pl.modified));
                 }
                 match act {
                     1 => self.open_playlist_editor(Some(i)),
@@ -2411,10 +2409,10 @@ impl Lp16App {
 
     fn target_picker(&mut self, ui: &mut Ui, width: f32) {
         let mut new_target: Option<String> = None;
-        ui.label(RichText::new("🗀").size(15.0)).on_hover_text("Target location");
+        ui.label(RichText::new("🗀").size(15.0)).on_hover_text(tr!("export.target_location"));
         if ui
             .add(egui::Button::new(RichText::new("✏").size(13.0)).frame(false))
-            .on_hover_text("Type a folder as target")
+            .on_hover_text(tr!("export.type_folder"))
             .clicked()
         {
             self.folder_edit = !self.folder_edit;
@@ -2435,7 +2433,7 @@ impl Lp16App {
             let shown = self.target_display();
             egui::ComboBox::from_id_source("target")
                 .width(width)
-                .selected_text(if shown.is_empty() { "Select removable drive".to_string() } else { shown })
+                .selected_text(if shown.is_empty() { tr!("export.select_drive").to_string() } else { shown })
                 .show_ui(ui, |ui| {
                     for (root, display) in &self.drives {
                         if ui.selectable_label(self.config.stick_root.eq_ignore_ascii_case(root), display).clicked() {
@@ -2451,10 +2449,10 @@ impl Lp16App {
 
     fn export(&mut self, ui: &mut Ui) {
         self.ensure_preview();
-        panel_tab(ui, "Settings", false);
+        panel_tab(ui, tr!("common.settings"), false);
         panel_body(ui, false, |ui| {
             ui.horizontal(|ui| {
-                ui.label("Target Type:");
+                ui.label(tr!("export.target_type"));
                 egui::ComboBox::from_id_source("target_type")
                     .width(ui.available_width() * 0.42)
                     .selected_text("LP-16")
@@ -2462,7 +2460,7 @@ impl Lp16App {
                         let _ = ui.selectable_label(true, "LP-16");
                     });
                 ui.add_space(20.0);
-                ui.label("Target:");
+                ui.label(tr!("export.target"));
                 let w = ui.available_width() - 60.0;
                 self.target_picker(ui, w);
             });
@@ -2477,26 +2475,26 @@ impl Lp16App {
             let mut force = self.force;
             ui.horizontal(|ui| {
                 ui.add_space(20.0);
-                ui.label("Selected:");
+                ui.label(tr!("export.selected"));
                 ui.label(sel_t);
                 ui.add_space(120.0);
-                ui.label("To Copy:");
+                ui.label(tr!("export.to_copy"));
                 ui.label(copy_t);
                 ui.add_space(120.0);
-                ui.label("Free:");
+                ui.label(tr!("export.free"));
                 ui.label(RichText::new(free_t).color(GREEN));
                 ui.add_space(120.0);
-                ui.label("Free After Export:");
+                ui.label(tr!("export.free_after"));
                 ui.label(RichText::new(after_t).color(GREEN));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     egui::ComboBox::from_id_source("mode")
                         .width(130.0)
-                        .selected_text(if force { "Force Overwrite" } else { "Quick Export" })
+                        .selected_text(if force { tr!("mark.force") } else { tr!("mark.quick") })
                         .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut force, false, "Quick Export")
-                                .on_hover_text("Only new and changed songs are written.");
-                            ui.selectable_value(&mut force, true, "Force Overwrite")
-                                .on_hover_text("Every selected song is written again.");
+                            ui.selectable_value(&mut force, false, tr!("mark.quick"))
+                                .on_hover_text(tr!("export.quick_tip"));
+                            ui.selectable_value(&mut force, true, tr!("mark.force"))
+                                .on_hover_text(tr!("export.force_tip"));
                         });
                 });
             });
@@ -2508,13 +2506,13 @@ impl Lp16App {
             ui,
             h,
             |app, ui| {
-                if panel_tab(ui, "Project Explorer", true) {
+                if panel_tab(ui, tr!("common.project_explorer"), true) {
                     app.refresh();
                 }
                 panel_body(ui, true, |ui| app.export_tree(ui));
             },
             |app, ui| {
-                if panel_tab(ui, "Target Content", true) {
+                if panel_tab(ui, tr!("export.target_content"), true) {
                     app.preview_gen += 1;
                     app.drives = list_drives();
                 }
@@ -2533,21 +2531,21 @@ impl Lp16App {
             go = ui
                 .add_enabled(
                     can_export,
-                    egui::Button::new(RichText::new("Export").color(TEXT)).min_size(vec2(100.0, 28.0)),
+                    egui::Button::new(RichText::new(tr!("tab.export")).color(TEXT)).min_size(vec2(100.0, 28.0)),
                 )
                 .clicked();
             if checking {
                 let text = match self.tail_check.as_ref().filter(|(c, _)| c.kind == TailCheckKind::Export) {
                     Some((c, _)) => {
                         let (done, total) = c.progress();
-                        format!("Checking song endings: {} / {} WAV files", done, total)
+                        tr!("common.checking_endings", done = done, total = total)
                     }
-                    None => "Checking song endings …".to_string(),
+                    None => tr!("export.checking").to_string(),
                 };
                 ui.label(RichText::new(text).color(DIM));
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                ui.add_enabled(false, egui::Button::new("Export Batch").min_size(vec2(110.0, 28.0)));
+                ui.add_enabled(false, egui::Button::new(tr!("export.batch")).min_size(vec2(110.0, 28.0)));
             });
         });
         if go {
@@ -2557,7 +2555,7 @@ impl Lp16App {
 
     fn export_tree(&mut self, ui: &mut Ui) {
         ui.vertical_centered(|ui| {
-            ui.label(RichText::new("Review missing information & warnings").size(11.0).color(DIM));
+            ui.label(RichText::new(tr!("export.review")).size(11.0).color(DIM));
         });
         let songs_warn = self.songs.iter().any(|s| s.warn());
         let pl_warn: Vec<bool> = (0..self.playlists.len()).map(|i| self.playlist_warn(i)).collect();
@@ -2587,7 +2585,7 @@ impl Lp16App {
                     .collect();
                 let shown: HashSet<usize> = self.x_songs.union(&via_pl).copied().collect();
                 let c = folder_check(&shown, ok_songs.len().max(1));
-                let r = tree_row(ui, 0, Some(open), Some((c, true)), "", "Multitrack Songs", false, false, |p, rect| {
+                let r = tree_row(ui, 0, Some(open), Some((c, true)), "", tr!("common.multitrack_songs"), false, false, |p, rect| {
                     if songs_warn {
                         paint_warn(p, rect)
                     }
@@ -2619,7 +2617,7 @@ impl Lp16App {
                             |p, rect| paint_song_cols(p, rect, s),
                         );
                         if in_pl {
-                            r.resp.on_hover_text("Exported with a checked playlist.");
+                            r.resp.on_hover_text(tr!("export.with_playlist"));
                         } else if r.check || (r.clicked && !s.warn()) {
                             if !self.x_songs.remove(&i) {
                                 self.x_songs.insert(i);
@@ -2631,7 +2629,7 @@ impl Lp16App {
                 let open = self.is_open("x:pl");
                 let ok_pls: Vec<usize> = (0..self.playlists.len()).filter(|&i| !pl_warn[i]).collect();
                 let c = folder_check(&self.x_playlists, ok_pls.len().max(1));
-                let r = tree_row(ui, 0, Some(open), Some((c, true)), "", "Multitrack Playlists", false, false, |p, rect| {
+                let r = tree_row(ui, 0, Some(open), Some((c, true)), "", tr!("common.multitrack_playlists"), false, false, |p, rect| {
                     if pl_warn.iter().any(|&w| w) {
                         paint_warn(p, rect)
                     }
@@ -2674,15 +2672,15 @@ impl Lp16App {
                         }
                     }
                 }
-                tree_row(ui, 0, Some(false), Some((Check::Off, false)), "", "Stereo Playlists", false, false, |_, _| {});
-                tree_row(ui, 0, Some(false), Some((Check::Off, false)), "", "Stereo Songs", false, false, |_, _| {});
+                tree_row(ui, 0, Some(false), Some((Check::Off, false)), "", tr!("export.stereo_playlists"), false, false, |_, _| {});
+                tree_row(ui, 0, Some(false), Some((Check::Off, false)), "", tr!("export.stereo_songs"), false, false, |_, _| {});
             });
     }
 
     fn target_content(&mut self, ui: &mut Ui) {
         let p = self.preview.take().unwrap();
         if !p.target_ok {
-            centered_text(ui, "No target location selected.");
+            centered_text(ui, tr!("common.no_target"));
         } else {
             egui::ScrollArea::vertical()
                 .id_source("target_content")
@@ -2725,7 +2723,7 @@ impl Lp16App {
                 ctx,
                 "export_progress",
                 egui::Order::Foreground,
-                "Export",
+                tr!("tab.export"),
                 vec2(1460.0, 300.0),
                 |ui| {
                     let frac = if total > 0 { done as f32 / total as f32 } else { 0.0 };
@@ -2737,22 +2735,19 @@ impl Lp16App {
                     ui.painter().text(
                         rect.left_center() + vec2(8.0, 0.0),
                         Align2::LEFT_CENTER,
-                        format!("Exporting {}", current),
+                        tr!("export.exporting", name = current),
                         FontId::proportional(12.0),
                         Color32::WHITE,
                     );
                     ui.add_space(14.0);
                     ui.vertical_centered(|ui| {
                         ui.label(
-                            RichText::new(format!(
-                                "Copying to the target drive, it can take unpredictable time on USB Thumb Drive... {} remaining jobs.",
-                                total - done
-                            ))
+                            RichText::new(tr!("export.copying", n = total - done))
                             .size(15.0),
                         );
                     });
                 },
-                &[("Cancel", true)],
+                &[(tr!("common.cancel"), true)],
             );
             if clicked.is_some() {
                 job.lock().unwrap().cancel = true;
@@ -2761,11 +2756,11 @@ impl Lp16App {
         }
         let ok = j.lines.iter().all(|(_, ok, _)| *ok) && !j.cancel;
         let title = if j.cancel {
-            "Export operation canceled."
+            tr!("export.canceled")
         } else if ok {
-            "Export operation successfully finished."
+            tr!("export.finished")
         } else {
-            "Export finished with errors."
+            tr!("export.finished_errors")
         };
         let lines = j.lines.clone();
         let elapsed = j.elapsed;
@@ -2777,10 +2772,10 @@ impl Lp16App {
             title,
             vec2(1460.0, 720.0),
             |ui| {
-                ui.label(RichText::new(format!("Total time: {}", fmt_len(elapsed))).size(15.0));
+                ui.label(RichText::new(tr!("export.total_time", time = fmt_len(elapsed))).size(15.0));
                 ui.add_space(6.0);
                 ui.label(
-                    RichText::new("Note: Copy to external disk depends directly on the type of external disk unit. A USB Thumb Drive (Flash key) offers very poor performance compared to regular USB Hard Disk.")
+                    RichText::new(tr!("export.note_speed"))
                         .italics()
                         .size(13.0),
                 );
@@ -2796,7 +2791,7 @@ impl Lp16App {
                     }
                 });
             },
-            &[("OK", true)],
+            &[(tr!("common.ok"), true)],
         );
         if clicked.is_some() {
             self.export_job = None;
@@ -2843,12 +2838,12 @@ impl Lp16App {
                 if !w.is_empty() {
                     self.tail_queue.push((TailCheckKind::Import, Some(w.iter().map(|p| key(p)).collect())));
                 }
-                let info = format!("{} Song(s) imported into the Project Library.", w.len());
+                let info = tr!("import.done", n = w.len());
                 if !self.open_playlist_update(None, &w, &info) {
-                    self.message("Import", info);
+                    self.message(tr!("tab.import"), info);
                 }
             }
-            Err(e) => self.message("Import", format!("The import stopped:\n{}\n\nSongs written before the error stay in the library.", e)),
+            Err(e) => self.message(tr!("tab.import"), tr!("import.stopped", err = e)),
         }
     }
 
@@ -2928,10 +2923,10 @@ impl Lp16App {
     fn update_name_problem(&self, name: &str) -> Option<String> {
         let name = name.trim();
         if !valid_fat32_name(name) {
-            return Some("The Playlist Name is empty or contains invalid characters.".into());
+            return Some(tr!("update.name_invalid").into());
         }
         if self.playlists.iter().any(|p| p.name.eq_ignore_ascii_case(name)) {
-            return Some(format!("A Playlist \"{}\" already exists.", name));
+            return Some(tr!("common.playlist_exists", name = name));
         }
         None
     }
@@ -2944,10 +2939,10 @@ impl Lp16App {
             ctx,
             "pl_update",
             egui::Order::Foreground,
-            "Update Playlist to the newest Songs",
+            tr!("update.title"),
             vec2((screen.width() - 180.0).min(1300.0), screen.height()),
             |ui| self.playlist_update_body(ui, &mut up, problem.as_deref()),
-            &[("Create Playlist", problem.is_none()), ("Cancel", true)],
+            &[(tr!("update.create"), problem.is_none()), (tr!("common.cancel"), true)],
         );
         match clicked {
             Some(0) => self.playlist_update_create(&up),
@@ -2962,7 +2957,7 @@ impl Lp16App {
             ui.add_space(6.0);
         }
         egui::Grid::new("plu_head").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-            ui.label(RichText::new("Based on Playlist:").color(TEXT));
+            ui.label(RichText::new(tr!("update.based_on")).color(TEXT));
             let before = up.source;
             egui::ComboBox::from_id_source("plu_src")
                 .width(360.0)
@@ -2979,7 +2974,7 @@ impl Lp16App {
                 }
             }
             ui.end_row();
-            ui.label(RichText::new("New Playlist Name:").color(TEXT));
+            ui.label(RichText::new(tr!("update.new_name")).color(TEXT));
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut up.name).desired_width(360.0));
                 if let Some(p) = problem {
@@ -2991,13 +2986,13 @@ impl Lp16App {
         let Some(pl) = self.playlists.get(up.source) else { return };
         let changed = up.picks.iter().flatten().count();
         ui.add_space(4.0);
-        ui.label(RichText::new(format!("{} of {} Songs replaced. Start mode and order stay the same.", changed, pl.songs.len())).color(TEXT));
+        ui.label(RichText::new(tr!("update.replaced", n = changed, total = pl.songs.len())).color(TEXT));
         ui.add_space(4.0);
         let lib = &up.lib;
         list_box(ui, |ui| {
             egui::ScrollArea::vertical().max_height(ui.available_height() - 8.0).auto_shrink([false, false]).show(ui, |ui| {
                 egui::Grid::new("plu_rows").num_columns(4).striped(true).spacing([12.0, 4.0]).show(ui, |ui| {
-                    for h in ["#", "Current Song", "New Song", ""] {
+                    for h in ["#", tr!("update.current_song"), tr!("update.new_song"), ""] {
                         ui.label(RichText::new(h).color(DIM));
                     }
                     ui.end_row();
@@ -3006,12 +3001,12 @@ impl Lp16App {
                         ui.label(RichText::new(format!("{}", n + 1)).color(DIM));
                         ui.label(RichText::new(stem(&s.prj)).color(TEXT));
                         let pick = &mut up.picks[n];
-                        let shown = pick.map(|i| lib[i].name.clone()).unwrap_or_else(|| "(keep)".into());
+                        let shown = pick.map(|i| lib[i].name.clone()).unwrap_or_else(|| tr!("update.keep").into());
                         egui::ComboBox::from_id_source(("plu_pick", n))
                             .width(380.0)
                             .selected_text(shown)
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(pick, None, "(keep)");
+                                ui.selectable_value(pick, None, tr!("update.keep"));
                                 // versions of the same song first, newest first
                                 let ck = cur.and_then(|c| lib[c].key.clone());
                                 let mut same: Vec<usize> = (0..lib.len()).filter(|&i| ck.is_some() && lib[i].key == ck && Some(i) != cur).collect();
@@ -3025,10 +3020,10 @@ impl Lp16App {
                                 }
                             });
                         match *pick {
-                            Some(i) if up.fresh.contains(&key(&lib[i].path)) => ui.label(RichText::new("just imported").color(ORANGE)),
-                            Some(_) => ui.label(RichText::new("newer version").color(ORANGE)),
-                            None if cur.is_none() => ui.label(RichText::new("Missing Song").color(RED)),
-                            None => ui.label(RichText::new("unchanged").color(DIM)),
+                            Some(i) if up.fresh.contains(&key(&lib[i].path)) => ui.label(RichText::new(tr!("update.just_imported")).color(ORANGE)),
+                            Some(_) => ui.label(RichText::new(tr!("update.newer")).color(ORANGE)),
+                            None if cur.is_none() => ui.label(RichText::new(tr!("common.missing_song")).color(RED)),
+                            None => ui.label(RichText::new(tr!("update.unchanged")).color(DIM)),
                         };
                         ui.end_row();
                     }
@@ -3051,7 +3046,7 @@ impl Lp16App {
             .collect();
         let name = up.name.trim().to_string();
         if self.lib().playlist_path(&name).exists() {
-            self.message("Update Playlist", format!("A Playlist \"{}\" already exists.", name));
+            self.message(tr!("common.update_playlist"), tr!("common.playlist_exists", name = name));
             return;
         }
         let markers = pl.markers;
@@ -3061,36 +3056,36 @@ impl Lp16App {
             self.select_playlist_name(&name);
             self.tab = Tab::Home;
             let n = up.picks.iter().flatten().count();
-            self.message("Update Playlist", format!("Playlist \"{}\" created, {} Song(s) replaced.", name, n));
+            self.message(tr!("common.update_playlist"), tr!("update.created", name = name, n = n));
         }
     }
 
     fn import(&mut self, ui: &mut Ui) {
-        panel_tab(ui, "Import Songs from the AudioLibrary", false);
+        panel_tab(ui, tr!("import.title"), false);
         panel_body(ui, true, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("AudioLibrary:").color(TEXT));
-                let lib = if self.config.import_lib.is_empty() { "(not set, see Settings)" } else { &self.config.import_lib };
+                ui.label(RichText::new(tr!("import.audiolib")).color(TEXT));
+                let lib = if self.config.import_lib.is_empty() { tr!("import.not_set") } else { &self.config.import_lib };
                 ui.label(RichText::new(lib).color(DIM));
                 ui.add_space(12.0);
-                if small_btn(ui, "Import Songs", !self.config.import_lib.is_empty()) {
+                if small_btn(ui, tr!("common.import_songs"), !self.config.import_lib.is_empty()) {
                     self.import_rescan();
                 }
-                if small_btn(ui, "Update Playlist…", !self.playlists.is_empty())
+                if small_btn(ui, tr!("import.update_playlist"), !self.playlists.is_empty())
                     && !self.open_playlist_update(None, &[], "")
                 {
-                    self.message("Update Playlist", "All Playlists already use the newest version of every Song.");
+                    self.message(tr!("common.update_playlist"), tr!("import.all_newest"));
                 }
             });
             ui.label(
-                RichText::new("Layout: <AudioLibrary>\\<Song>\\<Date + note>\\*.wav + 1 .mid.  New date folders (newer than the newest version in the library) get a Song named <Song>_(<Date + note>). Folders without a date are skipped.")
+                RichText::new(tr!("import.layout"))
                     .size(11.0)
                     .color(DIM),
             );
             ui.add_space(6.0);
             let items = match &self.import_scan {
                 None => {
-                    centered_text(ui, "Click \"Import Songs\" to scan the AudioLibrary.");
+                    centered_text(ui, tr!("import.click_scan"));
                     return;
                 }
                 Some(Err(e)) => {
@@ -3105,12 +3100,9 @@ impl Lp16App {
             let old = items.iter().filter(|i| !in_lib(i) && i.older_than.is_some()).count();
             let problems = items.iter().filter(|i| matches!(i.status, ImportStatus::Invalid(_)) && i.older_than.is_none()).count();
             ui.horizontal(|ui| {
-                ui.label(RichText::new(format!(
-                    "{} date folders:  {} new,  {} with problems,  {} in the library,  {} old without Song",
-                    items.len(), new, problems, present, old
-                )).color(TEXT));
+                ui.label(RichText::new(tr!("import.summary", n = items.len(), new = new, problems = problems, present = present, old = old)).color(TEXT));
                 ui.add_space(16.0);
-                ui.checkbox(&mut self.import_show_all, "Show all (also in library and old folders)");
+                ui.checkbox(&mut self.import_show_all, tr!("import.show_all"));
             });
             ui.add_space(4.0);
             let selected = self.import_selected().len();
@@ -3118,7 +3110,7 @@ impl Lp16App {
             list_box(ui, |ui| {
                 egui::ScrollArea::vertical().max_height(list_h).auto_shrink([false, false]).show(ui, |ui| {
                     egui::Grid::new("import").num_columns(5).striped(true).spacing([14.0, 4.0]).show(ui, |ui| {
-                        for h in ["", "Song (library name)", "Tracks", "MIDI", "Status"] {
+                        for h in ["", tr!("import.col_song"), tr!("import.col_tracks"), "MIDI", tr!("import.col_status")] {
                             ui.label(RichText::new(h).color(DIM));
                         }
                         ui.end_row();
@@ -3134,25 +3126,25 @@ impl Lp16App {
                                 ui.label("");
                             }
                             ui.label(RichText::new(&it.name).color(TEXT)).on_hover_text(&it.dir);
-                            let fmt = if it.rate > 0 { format!("{} ch - {} - {}-bit", it.wavs.len(), fmt_sr(it.rate), it.bits) } else { format!("{} ch", it.wavs.len()) };
+                            let fmt = if it.rate > 0 { tr!("import.fmt", n = it.wavs.len(), rate = fmt_sr(it.rate), bits = it.bits) } else { tr!("import.fmt_ch", n = it.wavs.len()) };
                             ui.label(RichText::new(format!("{}   {}", fmt, fmt_len(it.duration))).color(TEXT));
                             let midi = it.midi.as_deref().map(file_name).unwrap_or_else(|| "-".into());
                             ui.label(RichText::new(midi).color(TEXT));
                             let notes = if it.notes.is_empty() { String::new() } else { format!(" ({})", it.notes.join(", ")) };
                             let (text, color) = match (&it.status, &it.older_than) {
-                                (ImportStatus::Missing, None) => (format!("new{}", notes), ORANGE),
-                                (ImportStatus::Missing, Some(n)) => (format!("old folder, newer version: {}{}", n, notes), DIM),
-                                (ImportStatus::Present(n), _) => (format!("in library: {}", n), GREEN),
-                                (ImportStatus::Duplicate(n), _) => (format!("in library: {}", n.join(", ")), GREEN),
-                                (ImportStatus::Invalid(e), None) => (format!("cannot import: {}", e), RED),
-                                (ImportStatus::Invalid(e), Some(_)) => (format!("old folder, cannot import: {}", e), DIM),
+                                (ImportStatus::Missing, None) => (tr!("import.st_new", notes = notes), ORANGE),
+                                (ImportStatus::Missing, Some(n)) => (tr!("import.st_old_newer", name = n, notes = notes), DIM),
+                                (ImportStatus::Present(n), _) => (tr!("import.st_in_lib", name = n), GREEN),
+                                (ImportStatus::Duplicate(n), _) => (tr!("import.st_in_lib", name = n.join(", ")), GREEN),
+                                (ImportStatus::Invalid(e), None) => (tr!("import.st_invalid", err = e), RED),
+                                (ImportStatus::Invalid(e), Some(_)) => (tr!("import.st_old_invalid", err = e), DIM),
                             };
                             ui.label(RichText::new(text).color(color));
                             ui.end_row();
                         }
                         if shown == 0 {
                             ui.label("");
-                            ui.label(RichText::new("No new date folders: every Song is up to date.").color(GREEN));
+                            ui.label(RichText::new(tr!("import.up_to_date")).color(GREEN));
                             ui.end_row();
                         }
                     });
@@ -3160,16 +3152,16 @@ impl Lp16App {
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if small_btn(ui, "Select new", new > 0) {
+                if small_btn(ui, tr!("import.select_new"), new > 0) {
                     for (c, it) in self.import_check.iter_mut().zip(&items) {
                         *c = it.is_new() || (*c && it.status == ImportStatus::Missing);
                     }
                 }
-                if small_btn(ui, "Select none", selected > 0) {
+                if small_btn(ui, tr!("import.select_none"), selected > 0) {
                     self.import_check.iter_mut().for_each(|c| *c = false);
                 }
                 ui.add_space(20.0);
-                if small_btn(ui, &format!("Import {} selected Song(s)", selected), selected > 0) {
+                if small_btn(ui, &tr!("import.import_n", n = selected), selected > 0) {
                     self.dialog = Some(Dialog::ImportConfirm);
                 }
             });
@@ -3188,12 +3180,12 @@ impl Lp16App {
                     ui.set_width(760.0);
                     ui.label(RichText::new("lp16-tool").size(64.0).color(ORANGE));
                     ui.add_space(10.0);
-                    ui.label(RichText::new(format!("Version {}", env!("CARGO_PKG_VERSION"))).size(22.0));
+                    ui.label(RichText::new(tr!("support.version", v = env!("CARGO_PKG_VERSION"))).size(22.0));
                     ui.add_space(10.0);
-                    ui.label("A rebuild of the uTool2 workflow for the Cymatic Audio LP-16:");
-                    ui.label("project library, playlists and export to the stick.");
+                    ui.label(tr!("support.line1"));
+                    ui.label(tr!("support.line2"));
                     ui.add_space(10.0);
-                    ui.label(RichText::new(format!("Settings file: {}", config_path().display())).color(DIM));
+                    ui.label(RichText::new(tr!("support.settings_file", path = config_path().display())).color(DIM));
                 });
         });
     }
@@ -3208,10 +3200,10 @@ impl Lp16App {
             ui,
             h,
             |app, ui| {
-                panel_tab(ui, "Target Explorer", false);
+                panel_tab(ui, tr!("et.target_explorer"), false);
                 panel_body(ui, true, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("Target location:");
+                        ui.label(tr!("et.target_location"));
                         let w = ui.available_width() - 90.0;
                         app.target_picker(ui, w);
                         if ui
@@ -3224,7 +3216,7 @@ impl Lp16App {
                     });
                     ui.add_space(4.0);
                     let stick_ok = app.et_stick().is_some();
-                    if small_btn(ui, "Delete all songs not in playlists", stick_ok) {
+                    if small_btn(ui, tr!("common.delete_unused"), stick_ok) {
                         app.et_ask_delete_unused();
                     }
                     ui.add_space(4.0);
@@ -3232,7 +3224,7 @@ impl Lp16App {
                 });
             },
             |app, ui| {
-                panel_tab(ui, "Details", false);
+                panel_tab(ui, tr!("common.details"), false);
                 panel_body(ui, true, |ui| {
                     egui::ScrollArea::vertical()
                         .id_source("et_details")
@@ -3246,7 +3238,7 @@ impl Lp16App {
     fn target_tree(&mut self, ui: &mut Ui) {
         let root = PathBuf::from(&self.config.stick_root);
         if self.config.stick_root.trim().is_empty() || !root.is_dir() {
-            centered_text(ui, "No target location selected.");
+            centered_text(ui, tr!("common.no_target"));
             return;
         }
         let stick = sync::Stick::new(&self.config.stick_root);
@@ -3270,7 +3262,7 @@ impl Lp16App {
                     let r = tree_row(ui, 0, Some(open), None, "🗀", folder, false, false, |_, _| {});
                     if base == rec {
                         r.resp.context_menu(|ui| {
-                            if ui.button("Delete all songs not in playlists").clicked() {
+                            if ui.button(tr!("common.delete_unused")).clicked() {
                                 action = Some(EtAction::DeleteUnused);
                                 ui.close_menu();
                             }
@@ -3297,7 +3289,7 @@ impl Lp16App {
                                 }
                                 rows.push(EtSel::Play(s.clone()));
                                 r.resp.context_menu(|ui| {
-                                    if ui.button("Delete Playlist").clicked() {
+                                    if ui.button(tr!("common.delete_playlist")).clicked() {
                                         action = Some(EtAction::Delete(EtSel::Play(s.clone())));
                                         ui.close_menu();
                                     }
@@ -3317,11 +3309,11 @@ impl Lp16App {
                             }
                             rows.push(EtSel::Song(n.clone()));
                             r.resp.context_menu(|ui| {
-                                if ui.button("Delete Song").clicked() {
+                                if ui.button(tr!("common.delete_song")).clicked() {
                                     action = Some(EtAction::Delete(EtSel::Song(n.clone())));
                                     ui.close_menu();
                                 }
-                                if ui.button("Delete all songs not in playlists").clicked() {
+                                if ui.button(tr!("common.delete_unused")).clicked() {
                                     action = Some(EtAction::DeleteUnused);
                                     ui.close_menu();
                                 }
@@ -3410,12 +3402,12 @@ impl Lp16App {
     fn et_ask_delete_unused(&mut self) {
         let Some(stick) = self.et_stick() else { return };
         match stick.songs_not_in_playlists() {
-            Ok(v) if v.is_empty() => self.message("Delete Songs", "Every song on the stick is in at least one playlist."),
+            Ok(v) if v.is_empty() => self.message(tr!("et.delete_songs"), tr!("et.all_used")),
             Ok(v) => {
                 let bytes = v.iter().map(|n| stick.song_size(n)).sum();
                 self.dialog = Some(Dialog::EtDeleteUnused(v, bytes));
             }
-            Err(e) => self.message("Delete Songs", format!("A playlist on the stick cannot be read, nothing deleted:\n{}", e)),
+            Err(e) => self.message(tr!("et.delete_songs"), tr!("et.playlist_unreadable", err = e)),
         }
     }
 
@@ -3449,13 +3441,13 @@ impl Lp16App {
         self.et_cache = None;
         self.preview_gen += 1;
         if songs.len() > 1 {
-            let mut text = format!("{} of {} Song(s) deleted from the stick.", done, songs.len());
+            let mut text = tr!("et.deleted_n", n = done, total = songs.len());
             if !errors.is_empty() {
-                text += &format!("\n\nFailed:\n{}", errors.join("\n"));
+                text += &tr!("common.failed", list = errors.join("\n"));
             }
-            self.message("Delete Songs", text);
+            self.message(tr!("et.delete_songs"), text);
         } else if !errors.is_empty() {
-            self.message("Delete", errors.join("\n"));
+            self.message(tr!("common.delete"), errors.join("\n"));
         }
     }
 
@@ -3472,22 +3464,22 @@ impl Lp16App {
                     .into_iter()
                     .filter_map(|p| {
                         let other = stick.playlist_songs(&p).into_iter().find(|n| n.to_lowercase() == key)?;
-                        Some(if &other == name { p } else { format!("{}   ⚠ names it \"{}\"", p, other) })
+                        Some(if &other == name { p } else { tr!("et.names_it", playlist = p, name = other) })
                     })
                     .collect();
                 EtDetails {
                     title: name.clone(),
                     lines: vec![
-                        ("Type".into(), "LP-16 Multitrack Song".into()),
-                        ("Sample rate".into(), fmt_sr(info.sample_rate)),
-                        ("Resolution".into(), format!("{}-bit", info.bits)),
-                        ("Channel count".into(), info.channels),
-                        ("Length".into(), fmt_len(info.length)),
-                        ("Size".into(), fmt_size(info.size)),
-                        ("Modification date".into(), fmt_date(info.modified)),
-                        ("MIDI file".into(), info.midi_file),
+                        (tr!("common.type").into(), tr!("home.type_song").into()),
+                        (tr!("common.sample_rate").into(), fmt_sr(info.sample_rate)),
+                        (tr!("common.resolution").into(), tr!("common.bits", n = info.bits)),
+                        (tr!("et.channel_count").into(), info.channels),
+                        (tr!("common.length").into(), fmt_len(info.length)),
+                        (tr!("common.size").into(), fmt_size(info.size)),
+                        (tr!("common.mod_date").into(), fmt_date(info.modified)),
+                        (tr!("et.midi_file").into(), info.midi_file),
                     ],
-                    list_title: "Related Playlists:".into(),
+                    list_title: tr!("common.related_playlists").into(),
                     list: related,
                     play_songs: false,
                     starts: Vec::new(),
@@ -3498,8 +3490,8 @@ impl Lp16App {
                 EtDetails {
                     title: name.clone(),
                     lines: vec![
-                        ("Type".into(), "LP-16 multitrackplaylist".into()),
-                        ("Song count".into(), info.songs.len().to_string()),
+                        (tr!("common.type").into(), tr!("et.type_playlist").into()),
+                        (tr!("common.song_count").into(), info.songs.len().to_string()),
                     ],
                     list_title: String::new(),
                     list: info
@@ -3508,9 +3500,9 @@ impl Lp16App {
                         .enumerate()
                         .map(|(i, n)| {
                             let warn = if let Some(other) = stick.song_case_differs(n) {
-                                format!("   ⚠ folder is \"{}\"", other)
+                                format!("   {}", tr!("et.folder_is", name = other))
                             } else if !stick.song_dir(n).is_dir() {
-                                "   ⚠ not on the stick".to_string()
+                                format!("   {}", tr!("et.not_on_stick"))
                             } else {
                                 String::new()
                             };
@@ -3519,9 +3511,9 @@ impl Lp16App {
                         .chain(std::iter::once(String::new()))
                         .chain(
                             [
-                                format!("Length:  {}", fmt_len(info.length)),
-                                format!("Size:  {}", fmt_size(info.size)),
-                                format!("Modification date:  {}", fmt_date(info.modified)),
+                                format!("{}:  {}", tr!("common.length"), fmt_len(info.length)),
+                                format!("{}:  {}", tr!("common.size"), fmt_size(info.size)),
+                                format!("{}:  {}", tr!("common.mod_date"), fmt_date(info.modified)),
                             ]
                             .into_iter(),
                         )
@@ -3547,12 +3539,12 @@ impl Lp16App {
         ui.add_space(4.0);
         let mut delete = false;
         ui.horizontal(|ui| {
-            delete = small_btn(ui, "Delete", true);
+            delete = small_btn(ui, tr!("common.delete"), true);
             if d.play_songs {
-                small_btn(ui, "New Playlist", false);
-                small_btn(ui, "Edit", false);
+                small_btn(ui, tr!("et.new_playlist"), false);
+                small_btn(ui, tr!("common.edit"), false);
             } else {
-                small_btn(ui, "Mixer", false);
+                small_btn(ui, tr!("common.mixer"), false);
             }
         });
         if delete {
@@ -3585,7 +3577,7 @@ impl Lp16App {
                 }
             });
             ui.add_space(8.0);
-            ui.label(RichText::new("Double-click on a Song to find it in the Project Explorer").size(11.5).color(DIM));
+            ui.label(RichText::new(tr!("et.dblclick")).size(11.5).color(DIM));
         }
     }
 
@@ -3601,23 +3593,25 @@ impl Lp16App {
             ui.add_space(margin);
             ui.vertical(|ui| {
                 ui.set_width(w);
-                panel_tab(ui, "Devices", false);
+                self.language(ui);
+                ui.add_space(12.0);
+                panel_tab(ui, tr!("settings.devices"), false);
                 panel_body(ui, false, |ui| {
-                    ui.label("Select the devices to be managed by this application.");
+                    ui.label(tr!("settings.devices_hint"));
                     for (name, on) in [("uTrack-X32", false), ("uTrack24", false), ("LP-16", true), ("LR-16", false)] {
                         let mut v = on;
                         ui.add_enabled(false, egui::Checkbox::new(&mut v, name));
                     }
                 });
                 ui.add_space(12.0);
-                panel_tab(ui, "Default File Location", false);
+                panel_tab(ui, tr!("settings.file_location"), false);
                 let mut save = false;
                 let mut init = false;
                 panel_body(ui, false, |ui| {
                     egui::Grid::new("paths").num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.label("Library Folder:"));
-                        if folder_btn(ui, "Choose folder") {
-                            let mut dlg = rfd::FileDialog::new().set_title("Library Folder");
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.label(tr!("settings.library_folder")));
+                        if folder_btn(ui, tr!("settings.choose_folder")) {
+                            let mut dlg = rfd::FileDialog::new().set_title(tr!("settings.library_folder_title"));
                             if Path::new(&self.config.library).is_dir() {
                                 dlg = dlg.set_directory(&self.config.library);
                             }
@@ -3637,34 +3631,30 @@ impl Lp16App {
                         // derived folders (read only), with a hint if missing
                         let mut derived = self.config.clone();
                         derived.apply_library();
-                        for (label, path) in [("Project Library:", derived.project_lib), ("Audio Library:", derived.audio_lib)] {
+                        for (label, path) in [(tr!("settings.project_library"), derived.project_lib), (tr!("settings.audio_library"), derived.audio_lib)] {
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.label(RichText::new(label).color(DIM)));
                             ui.label("");
                             ui.horizontal(|ui| {
                                 ui.label(RichText::new(if path.is_empty() { "-" } else { &path }).color(DIM));
                                 if !path.is_empty() && !Path::new(&path).is_dir() {
-                                    ui.label(RichText::new("(missing, use Initialize Folders)").color(ORANGE));
+                                    ui.label(RichText::new(tr!("settings.missing")).color(ORANGE));
                                 }
                             });
                             ui.end_row();
                         }
                     });
                     ui.label(
-                        RichText::new(format!(
-                            "Below the Library Folder: {} = songs and playlists, {} = <Song>\\<Date + note>\\*.wav + 1 .mid (audio files and import). Saved when you leave the field (lp16-tool.toml).",
-                            lp16_tool::PROJECT_LIB_NAME,
-                            lp16_tool::AUDIO_LIB_NAME
-                        ))
+                        RichText::new(tr!("settings.library_hint", prj = lp16_tool::PROJECT_LIB_NAME, audio = lp16_tool::AUDIO_LIB_NAME))
                         .size(11.0)
                         .color(DIM),
                     );
                     ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        if small_btn(ui, "Initialize Folders", !self.config.library.trim().is_empty()) {
+                        if small_btn(ui, tr!("settings.init_folders"), !self.config.library.trim().is_empty()) {
                             init = true;
                         }
                         ui.label(
-                            RichText::new("Creates the missing folders: CymaticProjectLib (with LP16\\Multitrack Songs, …) and AudioLibrary.")
+                            RichText::new(tr!("settings.init_hint"))
                                 .size(11.0)
                                 .color(DIM),
                         );
@@ -3684,6 +3674,33 @@ impl Lp16App {
         });
     }
 
+    /// The language area of the Settings tab: a change applies at once and
+    /// is saved in lp16-tool.toml ("language").
+    fn language(&mut self, ui: &mut Ui) {
+        panel_tab(ui, "Language / Sprache", false);
+        let mut lang = i18n::lang();
+        panel_body(ui, false, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(tr!("settings.language"));
+                egui::ComboBox::from_id_source("language")
+                    .selected_text(lang.native_name())
+                    .show_ui(ui, |ui| {
+                        for l in Lang::ALL {
+                            ui.selectable_value(&mut lang, l, l.native_name());
+                        }
+                    });
+            });
+        });
+        if lang != i18n::lang() {
+            i18n::set_lang(lang);
+            self.config.language = lang.code().to_string();
+            if let Err(e) = save_config(&config_path(), &self.config) {
+                self.message(tr!("common.settings"), tr!("common.cannot_save", path = config_path().display(), err = e));
+            }
+            ui.ctx().request_repaint();
+        }
+    }
+
     /// The "Audio output" area of the Settings tab (gui_audio.rs): changes
     /// are saved at once and handed to the rehearsal player, which uses
     /// them the next time it opens its stream.
@@ -3695,7 +3712,7 @@ impl Lp16App {
         if out.changed {
             self.rehearsal.session.set_settings(AudioSettings::from(&self.config));
             if let Err(e) = save_config(&config_path(), &self.config) {
-                self.message("Settings", format!("Cannot save {}:\n{}", config_path().display(), e));
+                self.message(tr!("common.settings"), tr!("common.cannot_save", path = config_path().display(), err = e));
             }
         }
         if out.tone {
@@ -3715,13 +3732,12 @@ impl Lp16App {
         if out.changed {
             self.rehearsal.session.set_midi_port(&self.config.midi_port);
             if let Err(e) = save_config(&config_path(), &self.config) {
-                self.message("Settings", format!("Cannot save {}:
-{}", config_path().display(), e));
+                self.message(tr!("common.settings"), tr!("common.cannot_save", path = config_path().display(), err = e));
             }
         }
         if out.test {
             let sent = self.rehearsal.session.send_midi_test();
-            self.midi.set_test_note(if sent { None } else { Some("The MIDI file of the loaded song could not be read.".to_string()) });
+            self.midi.set_test_note(if sent { None } else { Some(tr!("settings.midi_unreadable").to_string()) });
         }
     }
 
@@ -3737,15 +3753,15 @@ impl Lp16App {
             ctx,
             "pl_editor",
             egui::Order::Foreground,
-            "Edit Multitrack Playlist",
+            tr!("common.edit_playlist"),
             vec2(screen.width() - 180.0, screen.height()),
             |ui| self.playlist_editor_body(ui, &mut ed),
-            &[("Save", can_save), ("Close Editor", true)],
+            &[(tr!("common.save"), can_save), (tr!("common.close_editor"), true)],
         );
         match ed.drag {
             Some(PlDrag::Rows) => {
                 let sel: Vec<usize> = (0..ed.items.len()).filter(|&k| ed.checked[k]).collect();
-                let text = if sel.len() == 1 { item_label(&ed.items[sel[0]]) } else { format!("{} rows", sel.len()) };
+                let text = if sel.len() == 1 { item_label(&ed.items[sel[0]]) } else { tr!("pled.rows", n = sel.len()) };
                 paint_drag_ghost(ctx, text);
             }
             Some(PlDrag::Song(i)) => {
@@ -3759,7 +3775,7 @@ impl Lp16App {
         if ed.pause != self.config.set_pause && !ctx.input(|i| i.pointer.any_down()) {
             self.config.set_pause = ed.pause;
             if let Err(e) = save_set_pause(&config_path(), ed.pause) {
-                self.message("Settings", format!("Cannot save {}:\n{}", config_path().display(), e));
+                self.message(tr!("common.settings"), tr!("common.cannot_save", path = config_path().display(), err = e));
             }
         }
         self.pl_editor = Some(ed);
@@ -3780,37 +3796,37 @@ impl Lp16App {
         let (songs, markers) = split_items(&ed.items);
         let tl = self.concert_timeline(&songs, &markers, ed.pause);
         // Playlist Settings
-        panel_tab(ui, "Playlist Settings", false);
+        panel_tab(ui, tr!("pled.settings"), false);
         panel_body(ui, false, |ui| {
             ui.horizontal(|ui| {
-                ui.label("     Location:");
+                ui.label(format!("     {}", tr!("pled.location")));
                 ui.label("LP16\\Multitrack Playlists");
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add_space(140.0);
-                    ui.label(format!("Song Count: {}", songs.len()));
+                    ui.label(tr!("pled.song_count", n = songs.len()));
                 });
             });
             ui.horizontal(|ui| {
-                ui.label("Playlist Name:");
+                ui.label(tr!("pled.name"));
                 let w = ui.available_width() - 360.0;
                 if ui.add(egui::TextEdit::singleline(&mut ed.name).desired_width(w)).changed() {
                     ed.dirty = true;
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add_space(100.0);
-                    ui.label(format!("Playlist Length: {}", fmt_len(self.playlist_len(&songs))));
+                    ui.label(tr!("pled.length", time = fmt_len(self.playlist_len(&songs))));
                 });
             });
             ui.horizontal(|ui| {
-                ui.label("Pause between songs:");
+                ui.label(tr!("pled.pause"));
                 ui.add(egui::DragValue::new(&mut ed.pause).clamp_range(0..=MAX_SET_PAUSE).suffix(" s"))
-                    .on_hover_text("Used for the concert length of every playlist (a global setting).");
-                ui.label(RichText::new("(all playlists)").color(DIM));
+                    .on_hover_text(tr!("pled.pause_tip"));
+                ui.label(RichText::new(tr!("pled.all_playlists")).color(DIM));
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add_space(100.0);
-                    ui.label(RichText::new(format!("Concert: {}", fmt_clock(tl.concert))).color(ORANGE));
+                    ui.label(RichText::new(tr!("pled.concert", time = fmt_clock(tl.concert))).color(ORANGE));
                     if let Some(main) = tl.main_set {
-                        ui.label(format!("Main Set: {}   ·   Encores: {}   ·", fmt_clock(main), tl.encore_count));
+                        ui.label(tr!("pled.main_set", time = fmt_clock(main), n = tl.encore_count));
                     }
                 });
             });
@@ -3824,9 +3840,9 @@ impl Lp16App {
         // Available Songs
         ui.allocate_ui_at_rect(Rect::from_min_size(top, vec2(half, h)), |ui| {
             ui.horizontal(|ui| {
-                panel_tab(ui, "Available Songs", false);
+                panel_tab(ui, tr!("pled.available"), false);
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if small_btn(ui, "Add ▶", ed.avail_sel.is_some()) {
+                    if small_btn(ui, tr!("pled.add"), ed.avail_sel.is_some()) {
                         add = ed.avail_sel;
                     }
                 });
@@ -3834,7 +3850,7 @@ impl Lp16App {
             panel_body(ui, true, |ui| {
                 egui::ScrollArea::vertical().id_source("avail").auto_shrink([false; 2]).show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
-                    let r = tree_row(ui, 0, Some(ed.avail_open), None, "", "Multitrack Songs", false, false, |_, _| {});
+                    let r = tree_row(ui, 0, Some(ed.avail_open), None, "", tr!("common.multitrack_songs"), false, false, |_, _| {});
                     if r.toggle {
                         ed.avail_open = !ed.avail_open;
                     }
@@ -3862,22 +3878,22 @@ impl Lp16App {
         let mut move_by: i32 = 0;
         let mut apply_mode = false;
         ui.allocate_ui_at_rect(Rect::from_min_size(top + vec2(half + 30.0, 0.0), vec2(half, h)), |ui| {
-            panel_tab(ui, "Playlist Content", false);
+            panel_tab(ui, tr!("pled.content"), false);
             panel_body(ui, true, |ui| {
                 let any = ed.checked.iter().any(|&c| c);
                 ui.horizontal(|ui| {
-                    if small_btn(ui, "+ Encores", markers.encore.is_none()) {
+                    if small_btn(ui, tr!("pled.add_encores"), markers.encore.is_none()) {
                         new_marker = Some(PlItem::Encore);
                     }
-                    if small_btn(ui, "+ End of Concert", markers.end.is_none()) {
+                    if small_btn(ui, tr!("pled.add_end"), markers.end.is_none()) {
                         new_marker = Some(PlItem::End);
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        delete = small_btn(ui, "Delete", any);
-                        if small_btn(ui, "Down", any) {
+                        delete = small_btn(ui, tr!("common.delete"), any);
+                        if small_btn(ui, tr!("pled.down"), any) {
                             move_by = 1;
                         }
-                        if small_btn(ui, "Up", any) {
+                        if small_btn(ui, tr!("pled.up"), any) {
                             move_by = -1;
                         }
                     });
@@ -3885,7 +3901,7 @@ impl Lp16App {
                 // start mode of the checked songs (uTool2: "Apply to selected rows")
                 let any_song = ed.items.iter().zip(&ed.checked).any(|(it, &c)| c && matches!(it, PlItem::Song(_)));
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Start Mode:").size(11.5));
+                    ui.label(RichText::new(tr!("pled.start_mode_label")).size(11.5));
                     // toggle buttons, not a ComboBox: its popup stays hidden
                     // behind this overlay
                     for m in StartMode::ALL {
@@ -3893,18 +3909,18 @@ impl Lp16App {
                     }
                     if ed.start_mode == StartMode::Timer {
                         ui.add(egui::DragValue::new(&mut ed.start_delay).clamp_range(0..=MAX_START_DELAY).suffix(" s"))
-                            .on_hover_text("Delay before the song starts by itself.");
+                            .on_hover_text(tr!("pled.delay_tip"));
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let r = ui.add_enabled(
                             any_song,
-                            egui::Button::new(RichText::new("Apply to selected rows").size(11.5).color(TEXT))
+                            egui::Button::new(RichText::new(tr!("pled.apply")).size(11.5).color(TEXT))
                                 .fill(Color32::from_rgb(0x3a, 0x3a, 0x3a))
                                 .stroke(Stroke::new(1.0_f32, ORANGE))
                                 .rounding(3.0),
                         );
                         apply_mode = r.clicked();
-                        r.on_disabled_hover_text("Check the songs first.");
+                        r.on_disabled_hover_text(tr!("pled.check_first"));
                     });
                 });
                 // header
@@ -3914,12 +3930,12 @@ impl Lp16App {
                 let state = if all { Check::On } else if any { Check::Partial } else { Check::Off };
                 paint_check(&p, Rect::from_center_size(pos2(hr.left() + 12.0, hr.center().y), vec2(14.0, 14.0)), state, true);
                 let f = FontId::proportional(11.0);
-                p.text(pos2(hr.left() + 70.0, hr.center().y), Align2::CENTER_CENTER, "Start Mode", f.clone(), TEXT);
-                p.text(pos2((hr.left() + hr.right() - 350.0) / 2.0, hr.center().y), Align2::CENTER_CENTER, "Song Name", f.clone(), TEXT);
-                p.text(pos2(hr.right() - COL_START, hr.center().y), Align2::CENTER_CENTER, "Start", f.clone(), TEXT);
-                p.text(pos2(hr.right() - COL_END, hr.center().y), Align2::CENTER_CENTER, "End", f.clone(), TEXT);
-                p.text(pos2(hr.right() - 120.0, hr.center().y), Align2::CENTER_CENTER, "Properties", f.clone(), TEXT);
-                p.text(pos2(hr.right() - 40.0, hr.center().y), Align2::CENTER_CENTER, "Length", f, TEXT);
+                p.text(pos2(hr.left() + 70.0, hr.center().y), Align2::CENTER_CENTER, tr!("pled.col_start_mode"), f.clone(), TEXT);
+                p.text(pos2((hr.left() + hr.right() - 350.0) / 2.0, hr.center().y), Align2::CENTER_CENTER, tr!("pled.col_song"), f.clone(), TEXT);
+                p.text(pos2(hr.right() - COL_START, hr.center().y), Align2::CENTER_CENTER, tr!("pled.col_start"), f.clone(), TEXT);
+                p.text(pos2(hr.right() - COL_END, hr.center().y), Align2::CENTER_CENTER, tr!("pled.col_end"), f.clone(), TEXT);
+                p.text(pos2(hr.right() - 120.0, hr.center().y), Align2::CENTER_CENTER, tr!("pled.col_props"), f.clone(), TEXT);
+                p.text(pos2(hr.right() - 40.0, hr.center().y), Align2::CENTER_CENTER, tr!("common.length"), f, TEXT);
                 if hresp.clicked() && hresp.interact_pointer_pos().map(|q| q.x < hr.left() + 24.0).unwrap_or(false) {
                     let v = !all;
                     ed.checked.iter_mut().for_each(|c| *c = v);
@@ -3988,7 +4004,7 @@ impl Lp16App {
                                 match self.song_of(&s.prj) {
                                     Some(info) => paint_song_cols(&p, rect, info),
                                     None => {
-                                        p.text(pos2(rect.right() - 120.0, cy), Align2::CENTER_CENTER, "missing", FontId::proportional(11.0), ORANGE);
+                                        p.text(pos2(rect.right() - 120.0, cy), Align2::CENTER_CENTER, tr!("pled.missing"), FontId::proportional(11.0), ORANGE);
                                         paint_warn(&p, rect);
                                     }
                                 }
@@ -4002,10 +4018,10 @@ impl Lp16App {
                                 paint_check(&p, Rect::from_center_size(pos2(rect.left() + 12.0, cy), vec2(14.0, 14.0)), if ed.checked[k] { Check::On } else { Check::Off }, true);
                                 let (text, time) = match item {
                                     PlItem::Encore => {
-                                        let t = if tl.main_set.is_some() { format!("ENCORES  ({} songs)", tl.encore_count) } else { "ENCORES  (after the end of the concert)".into() };
+                                        let t = if tl.main_set.is_some() { tr!("common.encores_n", n = tl.encore_count) } else { tr!("common.encores_after").into() };
                                         (t, tl.main_set)
                                     }
-                                    _ => ("END OF CONCERT".to_string(), Some(tl.concert)),
+                                    _ => (tr!("common.end_of_concert").to_string(), Some(tl.concert)),
                                 };
                                 p.text(pos2(rect.left() + 102.0, cy), Align2::LEFT_CENTER, text, FontId::proportional(13.0), ORANGE);
                                 if let Some(t) = time {
@@ -4121,8 +4137,7 @@ impl Lp16App {
                 self.rehearsal.session.play_song(&prj);
                 self.tab = Tab::Rehearsal;
             }
-            Err(e) => self.message("Play in Rehearsal", format!("The Song can't be opened:
-{}", e)),
+            Err(e) => self.message(tr!("common.play_in_rehearsal"), tr!("common.song_cant_open", err = e)),
         }
     }
 
@@ -4130,7 +4145,7 @@ impl Lp16App {
     /// starting it and show its song mix in the mixer of the Rehearsal tab.
     fn open_in_mixer(&mut self, index: usize) {
         let path = self.songs[index].path.clone();
-        self.load_in_mixer(&path, "Mixer");
+        self.load_in_mixer(&path, tr!("common.mixer"));
     }
 
     /// Load the song file `path` (stopped), switch to the Rehearsal tab and
@@ -4142,8 +4157,7 @@ impl Lp16App {
                 self.rehearsal.session.edit_song_mix();
                 self.tab = Tab::Rehearsal;
             }
-            Err(e) => self.message(title, format!("The Song can't be opened:
-{}", e)),
+            Err(e) => self.message(title, tr!("common.song_cant_open", err = e)),
         }
     }
 
@@ -4159,7 +4173,7 @@ impl Lp16App {
         if let Some(s) = self.songs.get(i) {
             match SongEditor::load(&s.path, &self.config.audio_lib) {
                 Ok(ed) => self.song_ed = Some(ed),
-                Err(e) => self.message("Edit Multitrack Song", format!("The Song can't be opened:\n{}", e)),
+                Err(e) => self.message(tr!("common.edit_song"), tr!("common.song_cant_open", err = e)),
             }
         }
     }
@@ -4187,29 +4201,29 @@ impl Lp16App {
             ctx,
             "song_editor",
             egui::Order::Foreground,
-            "Edit Multitrack Song",
+            tr!("common.edit_song"),
             vec2(screen.width() - 180.0, screen.height()),
             |ui| song_editor_body(ui, &mut ed, &audio_lib, frame),
-            &[("Save", can_save), ("Close Editor", true)],
+            &[(tr!("common.save"), can_save), (tr!("common.close_editor"), true)],
         );
         // drag ghost next to the mouse pointer
         if let Some(files) = &ed.drag {
             let text = if files.len() == 1 {
                 Path::new(&files[0]).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
             } else {
-                format!("{} files", files.len())
+                tr!("songed.files", n = files.len())
             };
             paint_drag_ghost(ctx, text);
         }
         if let Some(text) = ed.message.take() {
-            self.message("Edit Multitrack Song", text);
+            self.message(tr!("common.edit_song"), text);
         }
         let path = ed.path.clone();
         let open_mixer = std::mem::take(&mut ed.open_mixer);
         self.song_ed = Some(ed);
         if open_mixer {
             self.song_ed = None;
-            self.load_in_mixer(&path, "Edit Multitrack Song");
+            self.load_in_mixer(&path, tr!("common.edit_song"));
             return;
         }
         match clicked {
@@ -4222,7 +4236,7 @@ impl Lp16App {
                         self.refresh();
                         self.select_song_path(Path::new(&path));
                     }
-                    Err(e) => self.message("Edit Multitrack Song", format!("The Song could not be saved:\n{}", e)),
+                    Err(e) => self.message(tr!("common.edit_song"), tr!("songed.save_failed", err = e)),
                 }
             }
             Some(1) => {
@@ -4257,22 +4271,22 @@ impl Lp16App {
         }
         match &mut d {
             Dialog::Message { title, text } => {
-                if overlay(ctx, "dlg", order, title, size, |ui| centered_text(ui, text), &[("OK", true)]).is_some() {
+                if overlay(ctx, "dlg", order, title, size, |ui| centered_text(ui, text), &[(tr!("common.ok"), true)]).is_some() {
                     close = true;
                 }
             }
             Dialog::SongName { .. } | Dialog::PlaylistName { .. } | Dialog::NewSong { .. } => {}
             Dialog::FixTail { song, tracks, trim_ms } => {
-                let fade_label = format!("Fade-out {:.0} ms", wav_tail::FADE_MS);
+                let fade_label = tr!("tail.fade_btn", ms = format!("{:.0}", wav_tail::FADE_MS));
                 let can_cut = *trim_ms >= 1.0;
                 let clicked = overlay(
                     ctx,
                     "dlg",
                     order,
-                    "No clean fade-out",
+                    tr!("tail.no_clean"),
                     vec2(920.0, 400.0),
                     |ui| {
-                        ui.label("These WAV files do not end cleanly (the LP-16 may play a click at the end):");
+                        ui.label(tr!("tail.not_clean"));
                         ui.add_space(6.0);
                         egui::ScrollArea::vertical().max_height(150.0).show(ui, |ui| {
                             for (name, _, r) in tracks.iter() {
@@ -4281,18 +4295,15 @@ impl Lp16App {
                         });
                         ui.add_space(10.0);
                         ui.horizontal(|ui| {
-                            ui.label("Cut off before the fade-out:");
+                            ui.label(tr!("tail.cut_label"));
                             ui.add(egui::DragValue::new(trim_ms).clamp_range(0.0..=2000.0).speed(1.0).suffix(" ms"));
-                            ui.label("(suggested: the clipped end and the silence after it, plus 2 ms)");
+                            ui.label(tr!("tail.suggested"));
                         });
                         ui.add_space(10.0);
-                        ui.label(format!(
-                            "\"{}\" only fades the end out, \"Cut + fade-out\" removes the broken end first.",
-                            fade_label
-                        ));
-                        ui.label("The originals are kept as *.orig.wav. A WAV used by several songs changes for all of them.");
+                        ui.label(tr!("tail.explain", fade = fade_label, cut = tr!("tail.cut_btn")));
+                        ui.label(tr!("tail.originals_note"));
                     },
-                    &[(fade_label.as_str(), true), ("Cut + fade-out", can_cut), ("Cancel", true)],
+                    &[(fade_label.as_str(), true), (tr!("tail.cut_btn"), can_cut), (tr!("common.cancel"), true)],
                 );
                 if let Some(b) = clicked {
                     close = true;
@@ -4308,10 +4319,10 @@ impl Lp16App {
                     ctx,
                     "dlg",
                     order,
-                    "Export",
+                    tr!("tab.export"),
                     vec2(920.0, 420.0),
                     |ui| centered_text(ui, text),
-                    &[("Yes, export anyway", true), ("No, cancel", true)],
+                    &[(tr!("dlg.export_anyway"), true), (tr!("common.no_cancel"), true)],
                 ) {
                     Some(0) => {
                         close = true;
@@ -4325,16 +4336,16 @@ impl Lp16App {
                 let names: Vec<String> = self.import_selected().iter().map(|i| i.name.clone()).collect();
                 let mut list = names.iter().take(12).cloned().collect::<Vec<_>>().join("\n");
                 if names.len() > 12 {
-                    list += &format!("\n… and {} more", names.len() - 12);
+                    list += &tr!("common.and_more", n = names.len() - 12);
                 }
                 match overlay(
                     ctx,
                     "dlg",
                     order,
-                    "Import Songs",
+                    tr!("common.import_songs"),
                     vec2(920.0, 420.0),
-                    |ui| centered_text(ui, &format!("Create these {} Song(s) in the Project Library?\n\n{}", names.len(), list)),
-                    &[("Yes, import", true), ("No, cancel", true)],
+                    |ui| centered_text(ui, &tr!("dlg.import_q", n = names.len(), list = list)),
+                    &[(tr!("dlg.yes_import"), true), (tr!("common.no_cancel"), true)],
                 ) {
                     Some(0) => {
                         close = true;
@@ -4351,10 +4362,10 @@ impl Lp16App {
                     ctx,
                     "dlg",
                     order,
-                    "Delete Song",
+                    tr!("common.delete_song"),
                     size,
-                    |ui| centered_text(ui, &format!("Do you want to delete the Song \"{}\"?\n(only the song project in the library, the audio files stay)", name)),
-                    &[("Yes, delete the Song", true), ("No, cancel", true)],
+                    |ui| centered_text(ui, &tr!("dlg.delete_song_q", name = name)),
+                    &[(tr!("common.yes_delete_song"), true), (tr!("common.no_cancel"), true)],
                 ) {
                     Some(0) => {
                         close = true;
@@ -4371,10 +4382,10 @@ impl Lp16App {
                     ctx,
                     "dlg",
                     order,
-                    "Delete Playlist",
+                    tr!("common.delete_playlist"),
                     size,
-                    |ui| centered_text(ui, &format!("Do you want to delete the Playlist \"{}\"?", name)),
-                    &[("Yes, delete the Playlist", true), ("No, cancel", true)],
+                    |ui| centered_text(ui, &tr!("dlg.delete_playlist_q", name = name)),
+                    &[(tr!("common.yes_delete_playlist"), true), (tr!("common.no_cancel"), true)],
                 ) {
                     Some(0) => {
                         close = true;
@@ -4385,21 +4396,18 @@ impl Lp16App {
                 }
             }
             Dialog::EtDeleteSong { name, playlists } => {
-                let mut text = format!("Do you want to delete the Song \"{}\" from the stick?", name);
+                let mut text = tr!("dlg.et_delete_song_q", name = name);
                 if !playlists.is_empty() {
-                    text += &format!(
-                        "\n\nIt is still listed in these playlist(s) on the stick:\n{}",
-                        playlists.join("\n")
-                    );
+                    text += &tr!("dlg.et_still_listed", list = playlists.join("\n"));
                 }
                 match overlay(
                     ctx,
                     "dlg",
                     order,
-                    "Delete Song from Stick",
+                    tr!("dlg.et_delete_song"),
                     vec2(920.0, 360.0),
                     |ui| centered_text(ui, &text),
-                    &[("Yes, delete the Song", true), ("No, cancel", true)],
+                    &[(tr!("common.yes_delete_song"), true), (tr!("common.no_cancel"), true)],
                 ) {
                     Some(0) => {
                         close = true;
@@ -4415,10 +4423,10 @@ impl Lp16App {
                     ctx,
                     "dlg",
                     order,
-                    "Delete Playlist from Stick",
+                    tr!("dlg.et_delete_playlist"),
                     size,
-                    |ui| centered_text(ui, &format!("Do you want to delete the Playlist \"{}\" from the stick?\n(the songs stay on the stick)", name)),
-                    &[("Yes, delete the Playlist", true), ("No, cancel", true)],
+                    |ui| centered_text(ui, &tr!("dlg.et_delete_playlist_q", name = name)),
+                    &[(tr!("common.yes_delete_playlist"), true), (tr!("common.no_cancel"), true)],
                 ) {
                     Some(0) => {
                         close = true;
@@ -4432,22 +4440,17 @@ impl Lp16App {
             Dialog::EtDeleteUnused(names, bytes) => {
                 let mut list = names.iter().take(12).cloned().collect::<Vec<_>>().join("\n");
                 if names.len() > 12 {
-                    list += &format!("\n… and {} more", names.len() - 12);
+                    list += &tr!("common.and_more", n = names.len() - 12);
                 }
-                let text = format!(
-                    "Delete these {} Song(s) ({}) from the stick?\nNo playlist on the stick lists them.\n\n{}",
-                    names.len(),
-                    fmt_size(*bytes),
-                    list
-                );
+                let text = tr!("dlg.et_delete_unused_q", n = names.len(), size = fmt_size(*bytes), list = list);
                 match overlay(
                     ctx,
                     "dlg",
                     order,
-                    "Delete Songs not in Playlists",
+                    tr!("dlg.et_delete_unused"),
                     vec2(920.0, 460.0),
                     |ui| centered_text(ui, &text),
-                    &[("Yes, delete the Songs", true), ("No, cancel", true)],
+                    &[(tr!("dlg.yes_delete_songs"), true), (tr!("common.no_cancel"), true)],
                 ) {
                     Some(0) => {
                         close = true;
@@ -4463,10 +4466,10 @@ impl Lp16App {
                     ctx,
                     "dlg",
                     order,
-                    "Playlist Name Change",
+                    tr!("dlg.playlist_rename"),
                     size,
-                    |ui| centered_text(ui, "Do you want to rename the Playlist file or to create a copy?"),
-                    &[("Rename", true), ("Copy", true), ("Cancel", true)],
+                    |ui| centered_text(ui, tr!("dlg.rename_playlist_q")),
+                    &[(tr!("common.rename"), true), (tr!("common.copy"), true), (tr!("common.cancel"), true)],
                 ) {
                     Some(0) => {
                         close = true;
@@ -4485,10 +4488,10 @@ impl Lp16App {
                     ctx,
                     "dlg",
                     order,
-                    "Edit Multitrack Playlist",
+                    tr!("common.edit_playlist"),
                     size,
-                    |ui| centered_text(ui, "The Playlist has unsaved changes."),
-                    &[("Yes, close without saving", true), ("No, cancel", true)],
+                    |ui| centered_text(ui, tr!("dlg.playlist_unsaved")),
+                    &[(tr!("common.close_unsaved"), true), (tr!("common.no_cancel"), true)],
                 ) {
                     Some(0) => {
                         close = true;
@@ -4503,10 +4506,10 @@ impl Lp16App {
                     ctx,
                     "dlg",
                     order,
-                    "Edit Multitrack Song",
+                    tr!("common.edit_song"),
                     size,
-                    |ui| centered_text(ui, "The Song has unsaved changes."),
-                    &[("Yes, close without saving", true), ("No, cancel", true)],
+                    |ui| centered_text(ui, tr!("dlg.song_unsaved")),
+                    &[(tr!("common.close_unsaved"), true), (tr!("common.no_cancel"), true)],
                 ) {
                     Some(0) => {
                         close = true;
@@ -4525,10 +4528,10 @@ impl Lp16App {
 
     fn new_song_dialog(&mut self) {
         let dir = self.lib().songs_dir();
-        let mut name = "New Song".to_string();
+        let mut name = tr!("songed.default_name").to_string();
         let mut n = 2;
         while dir.join(format!("{}.songprj", name)).exists() {
-            name = format!("New Song {}", n);
+            name = format!("{} {}", tr!("songed.default_name"), n);
             n += 1;
         }
         self.dialog = Some(Dialog::NewSong { name, sr: 48000, bits: 24 });
@@ -4561,35 +4564,35 @@ impl Lp16App {
             ctx,
             "dlg",
             egui::Order::Foreground,
-            "New Multitrack Song",
+            tr!("common.new_ml_song"),
             vec2(920.0, 340.0),
             |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(40.0);
-                    ui.label(RichText::new("Name of the new Song:").size(15.0));
+                    ui.label(RichText::new(tr!("dlg.new_song_name")).size(15.0));
                     ui.add_space(14.0);
                     let r = ui.add(egui::TextEdit::singleline(name).desired_width(600.0));
                     r.request_focus();
                     ui.add_space(8.0);
                     if invalid {
-                        ui.label(RichText::new("The Song Name contains invalid characters.").color(ORANGE));
+                        ui.label(RichText::new(tr!("dlg.song_name_invalid")).color(ORANGE));
                     } else if exists {
-                        ui.label(RichText::new("A Song with this name already exists.").color(ORANGE));
+                        ui.label(RichText::new(tr!("dlg.song_exists")).color(ORANGE));
                     }
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
                         ui.add_space((ui.available_width() - 420.0).max(0.0) / 2.0);
-                        ui.label("Sample rate:");
+                        ui.label(tr!("dlg.sample_rate"));
                         ui.radio_value(sr, 44100, "44.1 kHz");
                         ui.radio_value(sr, 48000, "48 kHz");
                         ui.add_space(24.0);
-                        ui.label("Resolution:");
-                        ui.radio_value(bits, 16, "16-bit");
-                        ui.radio_value(bits, 24, "24-bit");
+                        ui.label(tr!("dlg.resolution"));
+                        ui.radio_value(bits, 16, tr!("common.bits", n = 16));
+                        ui.radio_value(bits, 24, tr!("common.bits", n = 24));
                     });
                 });
             },
-            &[("Create", ok), ("Cancel", true)],
+            &[(tr!("common.create"), ok), (tr!("common.cancel"), true)],
         );
         let enter = ok && ctx.input(|i| i.key_pressed(egui::Key::Enter));
         match clicked {
@@ -4610,7 +4613,7 @@ impl Lp16App {
             Dialog::PlaylistName { index, name, copy_only } => (false, *index, name, *copy_only),
             _ => return true,
         };
-        let what = if is_song { "Song" } else { "Playlist" };
+        
         let current = if is_song {
             self.songs.get(index).map(|s| s.name.clone())
         } else {
@@ -4628,20 +4631,20 @@ impl Lp16App {
         let invalid = !valid_fat32_name(&trimmed);
         let ok = !invalid && !exists && trimmed != current;
         let question = if copy_only {
-            format!("Name of the copy of the {} \"{}\":", what, current)
+            if is_song { tr!("dlg.copy_song_q", name = current) } else { tr!("dlg.copy_playlist_q", name = current) }
         } else {
-            format!("Do you want to rename the {} file or to create a copy?", what)
+            (if is_song { tr!("dlg.rename_song_q") } else { tr!("dlg.rename_playlist_q") }).to_string()
         };
         let buttons: Vec<(&str, bool)> = if copy_only {
-            vec![("Copy", ok), ("Cancel", true)]
+            vec![(tr!("common.copy"), ok), (tr!("common.cancel"), true)]
         } else {
-            vec![("Rename", ok), ("Copy", ok), ("Cancel", true)]
+            vec![(tr!("common.rename"), ok), (tr!("common.copy"), ok), (tr!("common.cancel"), true)]
         };
         let clicked = overlay(
             ctx,
             "dlg",
             egui::Order::Foreground,
-            &format!("{} Name Change", what),
+            if is_song { tr!("dlg.song_rename") } else { tr!("dlg.playlist_rename") },
             vec2(920.0, 300.0),
             |ui| {
                 ui.vertical_centered(|ui| {
@@ -4652,9 +4655,9 @@ impl Lp16App {
                     r.request_focus();
                     ui.add_space(8.0);
                     if invalid {
-                        ui.label(RichText::new(format!("The new {} Name contains invalid characters.", what)).color(ORANGE));
+                        ui.label(RichText::new(if is_song { tr!("dlg.song_name_invalid") } else { tr!("home.playlist_name_invalid") }).color(ORANGE));
                     } else if exists && trimmed != current {
-                        ui.label(RichText::new(format!("A {} with this name already exists.", what)).color(ORANGE));
+                        ui.label(RichText::new(if is_song { tr!("dlg.song_exists") } else { tr!("dlg.playlist_exists") }).color(ORANGE));
                     }
                 });
             },
@@ -4684,9 +4687,9 @@ const MAX_START_DELAY: u32 = 600;
 
 fn start_mode_help(m: StartMode) -> &'static str {
     match m {
-        StartMode::Button => "The LP-16 stops before this song and waits for Play.",
-        StartMode::Timer => "The LP-16 starts this song by itself after the delay.",
-        StartMode::NoWait => "The LP-16 starts this song by itself right away.",
+        StartMode::Button => tr!("mode.button_tip"),
+        StartMode::Timer => tr!("mode.timer_tip"),
+        StartMode::NoWait => tr!("mode.nowait_tip"),
     }
 }
 
@@ -4904,31 +4907,20 @@ impl SongEditor {
                     self.dirty = true;
                     slot += 1;
                 }
-                Ok(i) => rejected.push(format!(
-                    "{}  ({} ch, {}, {}-bit)",
-                    file_name(f),
-                    i.channels,
-                    fmt_sr(i.rate),
-                    i.bits
-                )),
-                Err(_) => rejected.push(format!("{}  (not a usable WAV file)", file_name(f))),
+                Ok(i) => rejected.push(tr!("songed.rejected", name = file_name(f), ch = i.channels, rate = fmt_sr(i.rate), bits = i.bits)),
+                Err(_) => rejected.push(format!("{}  ({})", file_name(f), tr!("common.not_usable_wav"))),
             }
         }
         self.recalc(audio_lib);
         let mut msg = String::new();
         if !rejected.is_empty() {
-            msg += &format!(
-                "The Song needs mono WAV files with {} / {}-bit.\nNot added:\n{}",
-                fmt_sr(self.sr),
-                self.bits,
-                rejected.join("\n")
-            );
+            msg += &tr!("songed.needs_mono", rate = fmt_sr(self.sr), bits = self.bits, list = rejected.join("\n"));
         }
         if overflow > 0 {
             if !msg.is_empty() {
                 msg += "\n\n";
             }
-            msg += &format!("{} file(s) did not fit: the LP-16 has 16 tracks.", overflow);
+            msg += &tr!("songed.overflow", n = overflow);
         }
         if !msg.is_empty() {
             self.message = Some(msg);
@@ -4944,7 +4936,7 @@ impl SongEditor {
         self.dirty = true;
         self.recalc(audio_lib);
         if self.midi_len.is_none() {
-            self.message = Some(format!("{}\nis not a readable MIDI file.", file_name(full)));
+            self.message = Some(tr!("songed.midi_unreadable", name = file_name(full)));
         }
     }
 
@@ -5054,26 +5046,26 @@ fn path_field(ui: &mut Ui, text: &str, color: Color32) {
 }
 
 fn song_editor_body(ui: &mut Ui, ed: &mut SongEditor, audio_lib: &str, frame: &eframe::Frame) {
-    panel_tab(ui, "Multitrack Song Settings", false);
+    panel_tab(ui, tr!("songed.settings"), false);
     panel_body(ui, false, |ui| {
         ui.horizontal(|ui| {
-            ui.label("       Location:");
+            ui.label(format!("       {}", tr!("pled.location")));
             ui.label("LP16\\Multitrack Songs");
         });
         ui.horizontal(|ui| {
-            ui.label("   Song Name:");
+            ui.label(format!("   {}", tr!("songed.name")));
             let mut n = ed.name.clone();
             ui.add_enabled(false, egui::TextEdit::singleline(&mut n).desired_width(ui.available_width() - 20.0));
         });
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Synched Units:").color(DIM));
-            ui.label(RichText::new("Standalone (1)").color(DIM));
+            ui.label(RichText::new(tr!("songed.synched")).color(DIM));
+            ui.label(RichText::new(tr!("songed.standalone")).color(DIM));
             ui.add_space(200.0);
-            ui.label("Sampling Rate:");
+            ui.label(tr!("songed.rate"));
             ui.label(fmt_sr(ed.sr));
             ui.add_space(200.0);
-            ui.label("Resolution:");
-            ui.label(format!("{}-bit", ed.bits));
+            ui.label(tr!("dlg.resolution"));
+            ui.label(tr!("common.bits", n = ed.bits));
         });
     });
     ui.add_space(12.0);
@@ -5086,13 +5078,13 @@ fn song_editor_body(ui: &mut Ui, ed: &mut SongEditor, audio_lib: &str, frame: &e
 
     // ---- Audio Files ----
     ui.allocate_ui_at_rect(Rect::from_min_size(top, vec2(half, h)), |ui| {
-        panel_tab(ui, "Audio Files", false);
+        panel_tab(ui, tr!("songed.audio_files"), false);
         panel_body(ui, true, |ui| {
             ui.horizontal(|ui| {
-                if folder_btn(ui, "Open the folder with the WAV files") {
+                if folder_btn(ui, tr!("songed.open_folder")) {
                     let start = if Path::new(&ed.folder).is_dir() { ed.folder.clone() } else { audio_lib.to_string() };
                     if let Some(dir) = rfd::FileDialog::new()
-                        .set_title("Audio Files")
+                        .set_title(tr!("songed.audio_files"))
                         .set_directory(&start)
                         .set_parent(frame)
                         .pick_folder()
@@ -5100,7 +5092,7 @@ fn song_editor_body(ui: &mut Ui, ed: &mut SongEditor, audio_lib: &str, frame: &e
                         ed.open_folder(dir.to_string_lossy().into_owned());
                     }
                 }
-                if icon_btn(ui, "🔄", "Reload", true) {
+                if icon_btn(ui, "🔄", tr!("songed.reload"), true) {
                     let f = ed.folder.clone();
                     ed.open_folder(f);
                 }
@@ -5122,8 +5114,8 @@ fn song_editor_body(ui: &mut Ui, ed: &mut SongEditor, audio_lib: &str, frame: &e
             {
                 let p = ui.painter_at(hr);
                 paint_check(&p, cb, all_state, !wav_idx.is_empty());
-                p.text(pos2(hr.center().x, hr.center().y), Align2::CENTER_CENTER, "File Name", FontId::proportional(12.0), DIM);
-                p.text(pos2(hr.right() - 30.0, hr.center().y), Align2::CENTER_CENTER, "Length", FontId::proportional(12.0), DIM);
+                p.text(pos2(hr.center().x, hr.center().y), Align2::CENTER_CENTER, tr!("songed.file_name"), FontId::proportional(12.0), DIM);
+                p.text(pos2(hr.right() - 30.0, hr.center().y), Align2::CENTER_CENTER, tr!("common.length"), FontId::proportional(12.0), DIM);
             }
             if hresp.clicked() && hresp.interact_pointer_pos().map(|q| cb.expand(3.0).contains(q)).unwrap_or(false) {
                 let on = all_state != Check::On;
@@ -5137,7 +5129,7 @@ fn song_editor_body(ui: &mut Ui, ed: &mut SongEditor, audio_lib: &str, frame: &e
             egui::ScrollArea::vertical().id_source("audio_files").auto_shrink([false; 2]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 if let Some(parent) = &parent {
-                    if tree_row(ui, 0, None, None, " ", "[Up]", false, false, |p, r| paint_folder(p, pos2(r.left() + 33.0, r.center().y), TEXT)).double {
+                    if tree_row(ui, 0, None, None, " ", tr!("songed.up"), false, false, |p, r| paint_folder(p, pos2(r.left() + 33.0, r.center().y), TEXT)).double {
                         open_dir = Some(parent.clone());
                     }
                 }
@@ -5170,15 +5162,8 @@ fn song_editor_body(ui: &mut Ui, ed: &mut SongEditor, audio_lib: &str, frame: &e
                         resp
                     } else {
                         let why = match e.info {
-                            Some(inf) => format!(
-                                "{} ch, {}, {}-bit - the Song needs mono, {}, {}-bit",
-                                inf.channels,
-                                fmt_sr(inf.rate),
-                                inf.bits,
-                                fmt_sr(ed.sr),
-                                ed.bits
-                            ),
-                            None => "not a usable WAV file".into(),
+                            Some(inf) => tr!("songed.wrong_format", ch = inf.channels, rate = fmt_sr(inf.rate), bits = inf.bits, need_rate = fmt_sr(ed.sr), need_bits = ed.bits),
+                            None => tr!("common.not_usable_wav").into(),
                         };
                         resp.on_hover_text(why)
                     };
@@ -5231,7 +5216,7 @@ fn song_editor_body(ui: &mut Ui, ed: &mut SongEditor, audio_lib: &str, frame: &e
     // ---- Tracks ----
     let mut drop_at: Option<usize> = None;
     ui.allocate_ui_at_rect(Rect::from_min_size(top + vec2(half + 30.0, 0.0), vec2(half, h - 100.0)), |ui| {
-        panel_tab(ui, "Tracks", false);
+        panel_tab(ui, tr!("import.col_tracks"), false);
         panel_body(ui, true, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let used: Vec<usize> = (0..SLOTS).filter(|&i| ed.slots[i].is_some()).collect();
@@ -5257,16 +5242,16 @@ fn song_editor_body(ui: &mut Ui, ed: &mut SongEditor, audio_lib: &str, frame: &e
                     ui.add_space(8.0);
                     // the player loads the saved song, so only without unsaved changes
                     if ui
-                        .add_enabled(!ed.dirty, egui::Button::new("Mixer").frame(false))
-                        .on_hover_text("Edit the mixer values of the Song in the Rehearsal tab (save the changes first)")
+                        .add_enabled(!ed.dirty, egui::Button::new(tr!("common.mixer")).frame(false))
+                        .on_hover_text(tr!("songed.mixer_tip"))
                         .clicked()
                     {
                         ed.open_mixer = true;
                     }
                     ui.add_space(20.0);
                     delete = ui
-                        .add_enabled(n_checked > 0, egui::Button::new("Delete").frame(false))
-                        .on_hover_text("Remove the checked tracks from the Song")
+                        .add_enabled(n_checked > 0, egui::Button::new(tr!("common.delete")).frame(false))
+                        .on_hover_text(tr!("songed.delete_tip"))
                         .clicked();
                 });
             });
@@ -5316,7 +5301,7 @@ fn song_editor_body(ui: &mut Ui, ed: &mut SongEditor, audio_lib: &str, frame: &e
                         paint_warn(&p, rect);
                     }
                     let full = resolve(&t.audiofile, audio_lib);
-                    let resp = resp.on_hover_text(if missing { format!("Missing Wav file:\n{}", full) } else { full });
+                    let resp = resp.on_hover_text(if missing { format!("{}:\n{}", tr!("common.missing_wav"), full) } else { full });
                     if resp.clicked() {
                         let in_cb = resp.interact_pointer_pos().map(|q| cb.expand(3.0).contains(q)).unwrap_or(false);
                         let m = ui.input(|i| i.modifiers);
@@ -5340,18 +5325,18 @@ fn song_editor_body(ui: &mut Ui, ed: &mut SongEditor, audio_lib: &str, frame: &e
 
     // ---- MIDI File ----
     ui.allocate_ui_at_rect(Rect::from_min_size(top + vec2(half + 30.0, h - 90.0), vec2(half, 90.0)), |ui| {
-        panel_tab(ui, "MIDI File", false);
+        panel_tab(ui, tr!("songed.midi_file"), false);
         panel_body(ui, true, |ui| {
             let full = if ed.midi.is_empty() { String::new() } else { resolve(&ed.midi, audio_lib) };
             ui.horizontal(|ui| {
-                if folder_btn(ui, "Choose the MIDI file") {
+                if folder_btn(ui, tr!("songed.choose_midi")) {
                     let start = Path::new(&full)
                         .parent()
                         .filter(|d| d.is_dir())
                         .map(|d| d.to_string_lossy().into_owned())
                         .unwrap_or_else(|| ed.folder.clone());
                     if let Some(f) = rfd::FileDialog::new()
-                        .set_title("MIDI File")
+                        .set_title(tr!("songed.midi_file"))
                         .set_directory(&start)
                         .add_filter("MIDI", &["mid", "midi"])
                         .set_parent(frame)
@@ -5362,7 +5347,7 @@ fn song_editor_body(ui: &mut Ui, ed: &mut SongEditor, audio_lib: &str, frame: &e
                 }
                 let missing = !full.is_empty() && ed.midi_len.is_none();
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if icon_btn(ui, "🗑", "Remove the MIDI file from the Song", !ed.midi.is_empty()) {
+                    if icon_btn(ui, "🗑", tr!("songed.remove_midi"), !ed.midi.is_empty()) {
                         ed.midi.clear();
                         ed.dirty = true;
                         ed.recalc(audio_lib);
@@ -5372,9 +5357,9 @@ fn song_editor_body(ui: &mut Ui, ed: &mut SongEditor, audio_lib: &str, frame: &e
             });
             let len = ed.wav_len().max(ed.midi_len.unwrap_or(0.0));
             ui.horizontal(|ui| {
-                ui.label(format!("Duration: {}", fmt_len(len)));
+                ui.label(tr!("songed.duration", time = fmt_len(len)));
                 if !full.is_empty() && ed.midi_len.is_none() {
-                    badge(ui, "Missing MIDI file");
+                    badge(ui, tr!("common.missing_midi"));
                 }
             });
         });
@@ -5384,6 +5369,7 @@ fn song_editor_body(ui: &mut Ui, ed: &mut SongEditor, audio_lib: &str, frame: &e
 
 /// Run the GUI. Settings are written to lp16-tool.toml.
 pub fn run_gui(config: Config) {
+    i18n::set_lang(Lang::from_code(&config.language));
     let native_options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1500.0, 950.0])

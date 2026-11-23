@@ -3,6 +3,7 @@
 //! freshly imported songs.
 
 use eframe::egui;
+use lp16_tool::tr;
 use lp16_tool::wav_tail::{self, TailReport};
 use std::sync::{Arc, Mutex};
 
@@ -77,36 +78,27 @@ pub(crate) fn summary(kind: TailCheckKind, songs: usize, wavs: usize, affected: 
     }
     if affected.is_empty() {
         return (kind == TailCheckKind::Library)
-            .then(|| format!("{} Song(s) checked ({} WAV files): all end cleanly.", songs, wavs));
+            .then(|| tr!("tail.all_clean", n = songs, wavs = wavs));
     }
     let list = name_list(affected);
     let head = match kind {
-        TailCheckKind::Import => format!("{} of the imported Song(s) have WAV files without a clean fade-out:", affected.len()),
-        _ => format!("{} of {} Song(s) have WAV files without a clean fade-out:", affected.len(), songs),
+        TailCheckKind::Import => tr!("tail.import_head", n = affected.len()),
+        _ => tr!("tail.head", n = affected.len(), total = songs),
     };
-    Some(format!(
-        "{}\n\n{}\n\nThey are marked with \"!\" in Home. Select a song and click \"No clean fade-out\" to repair it.",
-        head, list
-    ))
+    Some(tr!("tail.summary", head = head, list = list, badge = tr!("tail.no_clean")))
 }
 
 /// The question before an export when `affected` of `songs` songs have WAV
 /// files without a clean end.
 pub(crate) fn export_question(songs: usize, affected: &[String]) -> String {
-    format!(
-        "{} of the {} Song(s) to export have WAV files without a clean fade-out \
-         (the LP-16 may play a click at the end):\n\n{}\n\nExport anyway?",
-        affected.len(),
-        songs,
-        name_list(affected)
-    )
+    tr!("tail.export_q", n = affected.len(), total = songs, list = name_list(affected))
 }
 
 /// Up to 15 names, one per line, indented.
 fn name_list(names: &[String]) -> String {
     let mut list = names.iter().take(15).map(|n| format!("    {}", n)).collect::<Vec<_>>().join("\n");
     if names.len() > 15 {
-        list += &format!("\n    … and {} more", names.len() - 15);
+        list += &format!("\n    {}", tr!("common.and_more_inline", n = names.len() - 15));
     }
     list
 }

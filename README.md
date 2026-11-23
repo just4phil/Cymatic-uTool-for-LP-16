@@ -127,6 +127,8 @@ audio_out_right = "2"
 audio_buffer = "0"
 # MIDI output port of the rehearsal player (Settings > MIDI output); empty = off
 midi_port = ""
+# language of the user interface (Settings > Language): "en" or "de"; empty = English
+language = "en"
 # rehearsal mix presets (written by the program, see "Rehearsal mix")
 mix.1.name = "Default"
 mix.1.master = "0.0"
@@ -294,6 +296,14 @@ backing track that is a little too loud.
   the pan of the song is kept as it is. Saving the song editor keeps the song mix in the file.
 - A song whose mixer values differ from uTool2's defaults (0 dB, centre, not muted) has a **mixer
   symbol** (three small faders) in the song list of the Home tab and of the Rehearsal tab.
+
+### Language (Settings tab)
+
+The **Language / Sprache** area at the top of the Settings tab switches the user interface
+between English and German. The change applies at once and is saved as `language` in
+`lp16-tool.toml`. The texts are in `lang/en.lang` and `lang/de.lang` (compiled into the exe);
+the messages of the library (errors, export report) follow the same setting. The command line
+stays English.
 
 ### Audio output (Settings tab)
 
@@ -505,6 +515,7 @@ damaged. Nothing is deleted on the stick.
 | `src/gui_mixer_tab.rs` | The mixer of the Rehearsal tab: uTool2 style strips that scale with the panel, rehearsal mix and song mode |
 | `src/gui_audio.rs` | The "Audio output" area of the Settings tab |
 | `src/gui_midi.rs` | The "MIDI output" area of the Settings tab |
+| `src/i18n.rs` | Translations: `tr!("key")` looks up the texts of `lang/*.lang` in the chosen language |
 | `src/gui_backup.rs` | The Export Stereo-MP3 tab |
 
 There are no dependencies apart from `eframe` and `rfd` for the user interface and `cpal` and

@@ -14,6 +14,7 @@
 use crate::gui_app::{small_btn, DIM, LINE, ORANGE, PANEL, RED, TEXT};
 use crate::gui_mixer::{double_clicked, fmt_pan, meter_sized, toggle, update_shown, MixerOutcome, PresetBar, MUTE_ON, SOLO_ON};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Margin, Rect, RichText, Sense, Stroke, Ui};
+use lp16_tool::tr;
 use lp16_tool::backup_mix::BackupSide;
 use lp16_tool::mix::{parse_level, MixLibrary, SongStrip, LEVEL_MAX_DB, LEVEL_MIN_DB, PAN_MAX, STRIPS};
 use lp16_tool::rehearsal::Levels;
@@ -296,15 +297,11 @@ impl MixerConsole {
                 out.changed |= self.presets.ui(ui, mixes, |ui| {
                     ui.add_space(12.0);
                     let tip = match song {
-                        Some(n) => format!(
-                            "Edit the mixer values of \"{}\" (the uTool2 mixer of the song, exported to the LP-16). \
-                             In the rehearsal they add to the rehearsal mix, for this song only.",
-                            n
-                        ),
-                        None => "Load a song to edit its mixer values".to_string(),
+                        Some(n) => tr!("mixer.song_mix_tip", name = n),
+                        None => tr!("mixer.load_song").to_string(),
                     };
                     if ui
-                        .add_enabled(song.is_some(), egui::Button::new(RichText::new("Song mix").size(13.0).color(TEXT)).fill(SONG_FILL))
+                        .add_enabled(song.is_some(), egui::Button::new(RichText::new(tr!("mixer.song_mix")).size(13.0).color(TEXT)).fill(SONG_FILL))
                         .on_hover_text(tip.clone())
                         .on_disabled_hover_text(tip)
                         .clicked()
@@ -392,15 +389,15 @@ fn song_bar(
     out: &mut MixerOutcome,
 ) {
     ui.horizontal(|ui| {
-        ui.label(RichText::new("Song mix").size(14.0).strong().color(ORANGE));
+        ui.label(RichText::new(tr!("mixer.song_mix")).size(14.0).strong().color(ORANGE));
         ui.label(RichText::new(shorten(name, 60)).size(14.0).color(TEXT)).on_hover_text(name);
         ui.add_space(8.0);
         let neutral = strips.iter().zip(used.iter()).all(|(s, u)| !u || *s == SongStrip::default());
-        if small_btn(ui, "Reset", !neutral) {
+        if small_btn(ui, tr!("mixer.reset"), !neutral) {
             *strips = [SongStrip::default(); STRIPS];
             out.song_changed = true;
         }
-        if small_btn(ui, "Back to the rehearsal mix", true) {
+        if small_btn(ui, tr!("mixer.back"), true) {
             out.leave_song = true;
         }
     });
@@ -413,16 +410,16 @@ fn song_bar(
         .color(DIM),
     );
     if let Some(e) = error {
-        ui.label(RichText::new(format!("The song could not be saved: {}", e)).size(12.5).color(RED));
+        ui.label(RichText::new(tr!("mixer.save_failed", err = e)).size(12.5).color(RED));
     }
 }
 
 /// The line below a strip's name in the rehearsal mix: the song's offset.
 fn song_hint(s: &SongStrip) -> Option<String> {
     if s.mute {
-        Some("song: mute".to_string())
+        Some(tr!("mixer.song_mute").to_string())
     } else if s.level_db != 0.0 {
-        Some(format!("song {:+.1}", s.level_db))
+        Some(tr!("mixer.song_level", db = format!("{:+.1}", s.level_db)))
     } else {
         None
     }
@@ -507,12 +504,12 @@ fn strip(ui: &mut Ui, k: usize, track: &str, shown_db: f32, d: &StripDims, v: &S
         ui.label(RichText::new(format!("{}", k + 1)).size(15.0).strong().color(color));
         let name = if has_track { track } else { "\u{2014}" };
         let (rect, resp) = ui.allocate_exact_size(vec2(inner, d.name_h), Sense::hover());
-        resp.on_hover_text(if has_track { track.to_string() } else { "No track on this output in the song".to_string() });
+        resp.on_hover_text(if has_track { track.to_string() } else { tr!("mixer.no_track").to_string() });
         let galley = name_galley(ui, name, inner, color);
         ui.painter().galley(pos2(rect.center().x, rect.top()), galley, color);
         let hint = v.hint.as_deref().unwrap_or("");
         ui.add_sized([inner, HINT_H], egui::Label::new(RichText::new(hint).size(10.5).color(ORANGE)).truncate(true))
-            .on_hover_text("The song has its own mixer value on this output (\"Song mix\"); it adds to this strip.");
+            .on_hover_text(tr!("mixer.song_value_tip", mix = tr!("mixer.song_mix")));
     });
     edit
 }
@@ -537,7 +534,7 @@ fn master(ui: &mut Ui, shown: [f32; 2], clip: bool, d: &StripDims, lib: &mut Mix
             FontId::proportional(11.0),
             if clip { RED } else { DIM },
         );
-        if resp.on_hover_text("The master was limited. Click to reset.").clicked() {
+        if resp.on_hover_text(tr!("mixer.master_limited")).clicked() {
             reset = true;
         }
         // as tall as the S/M buttons and the knob of the other strips
@@ -571,7 +568,7 @@ fn db_display(ui: &mut Ui, key: &str, width: f32, db: f32, signed: bool, color: 
     let editing = ui.data(|d| d.get_temp::<String>(id));
     let Some(mut text) = editing else {
         let (rect, resp) = ui.allocate_exact_size(vec2(width, 18.0), Sense::click());
-        let resp = resp.on_hover_text("Double-click: type the level (e.g. -0.5, -inf)");
+        let resp = resp.on_hover_text(tr!("mixer.level_edit_tip"));
         let p = ui.painter();
         p.rect_filled(rect, 2.0, Color32::from_rgb(0x4a, 0x4a, 0x4a));
         if resp.hovered() {
@@ -651,7 +648,7 @@ fn scale(ui: &mut Ui, width: f32, height: f32) {
 /// Returns the new level if it changed.
 fn fader(ui: &mut Ui, level_db: f32, width: f32, height: f32) -> Option<f32> {
     let (rect, resp) = ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
-    let resp = resp.on_hover_text("Level. Double-click: 0 dB");
+    let resp = resp.on_hover_text(tr!("mixer.level_tip"));
     let track = rect.shrink2(vec2(0.0, HANDLE_H / 2.0));
     let p = ui.painter();
     // the groove
@@ -684,9 +681,9 @@ fn pan_knob(ui: &mut Ui, pan: i32, size: f32, enabled: bool) -> Option<i32> {
     let sense = if enabled { Sense::click_and_drag() } else { Sense::hover() };
     let (rect, resp) = ui.allocate_exact_size(vec2(size, size), sense);
     let resp = if enabled {
-        resp.on_hover_text(format!("Pan: {}. Drag up or down, double-click: center", fmt_pan(pan)))
+        resp.on_hover_text(tr!("mixer.pan_tip", pan = fmt_pan(pan)))
     } else {
-        resp.on_hover_text(format!("Pan: {} (of the rehearsal mix; the song's pan is not used)", fmt_pan(pan)))
+        resp.on_hover_text(tr!("mixer.pan_song_tip", pan = fmt_pan(pan)))
     };
     let c = rect.center();
     let r = size / 2.0 - 3.0;
@@ -858,10 +855,10 @@ pub fn backup_side(
                         });
                         ui.label(RichText::new(format!("{}", k + 1)).size(15.0).strong().color(color));
                         let tip = match (names[k].is_empty(), auto[k].is_empty()) {
-                            (true, true) => "No track on this output in the songs. Double-click: name it".to_string(),
-                            (true, false) => format!("{}\nDouble-click: rename (for all songs)", auto[k]),
-                            (false, true) => format!("{}\nDouble-click: rename; empty = no name", names[k]),
-                            (false, false) => format!("{}\nIn the songs: {}\nDouble-click: rename; empty = the song name", names[k], auto[k]),
+                            (true, true) => tr!("mixer.name_tip_none").to_string(),
+                            (true, false) => tr!("mixer.name_tip_auto", name = auto[k]),
+                            (false, true) => tr!("mixer.name_tip_own", name = names[k]),
+                            (false, false) => tr!("mixer.name_tip_both", name = names[k], songs = auto[k]),
                         };
                         let edit_text = if names[k].is_empty() { auto[k].as_str() } else { names[k].as_str() };
                         if let Some(text) = name_field(ui, &format!("{}{}", id, k), inner, name_h, &shown[k], edit_text, color, &tip) {

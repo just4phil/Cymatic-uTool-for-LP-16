@@ -43,12 +43,12 @@ impl TailReport {
     /// One line for a tooltip, e.g. "Clipping in the last 12 ms".
     pub fn describe(&self) -> String {
         let mut s = if self.clipped_ms > 0.0 {
-            format!("Clipping in the last {:.0} ms", self.clipped_ms.max(1.0))
+            tr!("tail.clipping", ms = format!("{:.0}", self.clipped_ms.max(1.0)))
         } else {
-            format!("Ends abruptly at {:.0} dBFS", self.end_level_db)
+            tr!("tail.abrupt", db = format!("{:.0}", self.end_level_db))
         };
         if self.silence_ms >= 1.0 {
-            s += &format!(", followed by {:.0} ms of silence", self.silence_ms);
+            s += &tr!("tail.silence", ms = format!("{:.0}", self.silence_ms));
         }
         s
     }
@@ -167,13 +167,13 @@ pub fn fix_tail(path: &str, trim_ms: f64, fade_ms: f64) -> io::Result<()> {
     if frames < trim + fade + 1 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!("{}: too short for a {:.0} ms cut and a {:.0} ms fade-out", path, trim_ms, fade_ms),
+            tr!("tail.too_short", path = path, trim = format!("{:.0}", trim_ms), fade = format!("{:.0}", fade_ms)),
         ));
     }
     let new_frames = frames - trim;
     let new_len = new_frames * fb;
     if new_len > u32::MAX as u64 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, format!("{}: too large", path)));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, tr!("tail.too_large", path = path)));
     }
 
     let backup = backup_path(path);
@@ -214,7 +214,7 @@ pub fn fix_tail(path: &str, trim_ms: f64, fade_ms: f64) -> io::Result<()> {
         input.seek(SeekFrom::Start(info.data_off))?;
         let n = io::copy(&mut (&mut input).take(fade_start * fb), w)?;
         if n != fade_start * fb {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "WAV shorter than expected"));
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, tr!("tail.wav_short")));
         }
         w.write_all(&tail)?;
         if new_len % 2 == 1 {

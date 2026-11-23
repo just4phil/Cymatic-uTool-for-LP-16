@@ -143,8 +143,8 @@ pub struct StreamInfo {
 impl StreamInfo {
     /// "48000 Hz, buffer 256 frames" for the settings.
     pub fn describe(&self) -> String {
-        let buffer = if self.buffer == 0 { "driver default".to_string() } else { format!("{} frames", self.buffer) };
-        format!("{} Hz, buffer {}", self.rate, buffer)
+        let buffer = if self.buffer == 0 { tr!("audio.driver_default_lc").to_string() } else { tr!("audio.frames", n = self.buffer) };
+        tr!("audio.describe", rate = self.rate, buffer = buffer)
     }
 }
 
@@ -293,20 +293,14 @@ pub fn pick_config(ranges: &[RangeInfo], rate: u32, need: u16) -> Result<usize, 
 }
 
 fn open_error(device: &str, what: impl std::fmt::Display) -> String {
-    format!("Cannot open {}: {}. It may be in use by another application (e.g. your DAW).", device, what)
+    tr!("audio.cannot_open", device = device, err = what)
 }
 
 /// The message for a configuration that does not exist on the device.
 pub fn pick_error(device: &str, rate: u32, need: u16, e: PickError) -> String {
     match e {
-        PickError::Rate => format!("{} does not support {} Hz", device, rate),
-        PickError::Channels(max) => format!(
-            "{} has only {} output channel{}, but output channel {} is selected",
-            device,
-            max,
-            if max == 1 { "" } else { "s" },
-            need
-        ),
+        PickError::Rate => tr!("audio.no_rate", device = device, rate = rate),
+        PickError::Channels(max) => if max == 1 { tr!("audio.one_channel", device = device, need = need) } else { tr!("audio.few_channels", device = device, max = max, need = need) },
     }
 }
 
@@ -314,7 +308,7 @@ pub fn pick_error(device: &str, rate: u32, need: u16, e: PickError) -> String {
 /// have their own setting.
 pub fn buffer_hint(host: &str) -> &'static str {
     if host.eq_ignore_ascii_case("asio") {
-        " Tip: set the buffer size in the ASIO driver's control panel."
+        tr!("audio.asio_tip")
     } else {
         ""
     }
@@ -359,8 +353,8 @@ fn host_by_name(name: &str) -> Result<cpal::Host, String> {
     cpal::available_hosts()
         .into_iter()
         .find(|id| id.name().eq_ignore_ascii_case(name.trim()))
-        .ok_or_else(|| format!("The audio host {} is not available in this build.", name))
-        .and_then(|id| cpal::host_from_id(id).map_err(|e| format!("The audio host {} cannot be used: {}", name, e)))
+        .ok_or_else(|| tr!("audio.host_missing", name = name))
+        .and_then(|id| cpal::host_from_id(id).map_err(|e| tr!("audio.host_failed", name = name, err = e)))
 }
 
 fn max_channels(device: &cpal::Device) -> u16 {
@@ -375,8 +369,7 @@ fn max_channels(device: &cpal::Device) -> u16 {
 /// connected (e.g. the XR18) is missing, as is a driver another application
 /// has open.
 pub fn no_asio_driver_message() -> String {
-    "No ASIO driver could be opened. Drivers of devices that are not connected (e.g. the XR18), or that another application (e.g. your DAW) uses, are not listed."
-        .to_string()
+    tr!("audio.no_asio").to_string()
 }
 
 /// ASIO devices with an open stream of this program. Listing the ASIO
@@ -431,7 +424,7 @@ pub fn list_devices(host: &str) -> Result<Vec<DeviceInfo>, String> {
 fn list_devices_of(host: &str) -> Result<Vec<DeviceInfo>, String> {
     let host = host_by_name(host)?;
     let default = host.default_output_device().and_then(|d| d.name().ok());
-    let devices = host.output_devices().map_err(|e| format!("The audio devices cannot be listed: {}", e))?;
+    let devices = host.output_devices().map_err(|e| tr!("audio.list_failed", err = e))?;
     Ok(devices
         .filter_map(|d| {
             let name = d.name().ok()?;
@@ -444,10 +437,10 @@ fn find_device(host: &cpal::Host, name: &str) -> Result<cpal::Device, String> {
     if name.is_empty() {
         return host
             .default_output_device()
-            .ok_or_else(|| "No audio output device found. Check the default playback device of Windows.".to_string());
+            .ok_or_else(|| tr!("audio.no_device").to_string());
     }
     let mut devices = host.output_devices().map_err(|e| open_error(name, e))?;
-    devices.find(|d| d.name().map(|n| n == name).unwrap_or(false)).ok_or_else(|| open_error(name, "device not found"))
+    devices.find(|d| d.name().map(|n| n == name).unwrap_or(false)).ok_or_else(|| open_error(name, tr!("audio.device_not_found")))
 }
 
 // ---------------------------------------------------------------------------
@@ -687,9 +680,9 @@ fn lost_handler(lost: Lost, device: String) -> impl FnMut(cpal::StreamError) + S
     move |e: cpal::StreamError| {
         let text = match e {
             cpal::StreamError::DeviceNotAvailable => {
-                format!("Audio device lost: {}. Check the connection and press Play.", device)
+                tr!("audio.lost", device = device)
             }
-            other => format!("Audio stream error on {}: {}. Check the connection and press Play.", device, other),
+            other => tr!("audio.stream_error", device = device, err = other),
         };
         if let Ok(mut l) = lost.lock() {
             if l.is_none() {
@@ -735,7 +728,7 @@ fn open_stream<S: Source>(
 ) -> Result<(Stream, StreamInfo, Option<AsioClaim>), String> {
     let host = host_by_name(&settings.host)?;
     let device = find_device(&host, &settings.device)?;
-    let name = device.name().unwrap_or_else(|_| "default device".to_string());
+    let name = device.name().unwrap_or_else(|_| tr!("audio.default_device_lc").to_string());
     let supported: Vec<cpal::SupportedStreamConfigRange> =
         device.supported_output_configs().map_err(|e| open_error(&name, e))?.collect();
     let infos: Vec<RangeInfo> = supported.iter().map(range_info).collect();
@@ -762,13 +755,7 @@ fn open_stream<S: Source>(
     if buffer > 0 {
         if let cpal::SupportedBufferSize::Range { min, max } = chosen.buffer_size() {
             if buffer < *min || buffer > *max {
-                note = Some(format!(
-                    "The driver accepts buffers of {} to {} frames, not {}. It uses its default buffer.{}",
-                    min,
-                    max,
-                    buffer,
-                    buffer_hint(host.id().name())
-                ));
+                note = Some(tr!("audio.buffer_range", min = min, max = max, n = buffer, hint = buffer_hint(host.id().name())).trim_end().to_string());
                 buffer = 0;
             }
         }
@@ -796,11 +783,7 @@ fn open_stream<S: Source>(
         Ok(s) => s,
         Err(_) if buffer > 0 => {
             // the driver refuses the fixed size: its own default instead
-            note = Some(format!(
-                "The driver did not accept a buffer of {} frames. It uses its default buffer.{}",
-                buffer,
-                buffer_hint(host.id().name())
-            ));
+            note = Some(tr!("audio.buffer_refused", n = buffer, hint = buffer_hint(host.id().name())).trim_end().to_string());
             buffer = 0;
             attempt(0).map_err(describe)?
         }

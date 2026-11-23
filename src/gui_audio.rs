@@ -6,6 +6,7 @@
 
 use crate::gui_app::{panel_body, panel_tab, small_btn, DIM, ORANGE, RED, TEXT};
 use eframe::egui::{self, RichText, Ui};
+use lp16_tool::tr;
 use lp16_tool::audio_out::{
     default_host_name, list_devices, list_hosts, start_test_tone, AudioSettings, DeviceInfo, StreamInfo, ToneStream,
 };
@@ -99,12 +100,12 @@ impl AudioPanel {
             self.tone = None;
         }
         let mut refresh = false;
-        panel_tab(ui, "Audio output", false);
+        panel_tab(ui, tr!("audio.title"), false);
         panel_body(ui, false, |ui| {
             let host = if config.audio_host.trim().is_empty() { default_host_name() } else { config.audio_host.clone() };
             let channels = self.channel_count(config);
             egui::Grid::new("audio_output").num_columns(3).spacing([8.0, 6.0]).show(ui, |ui| {
-                ui.label("Host:");
+                ui.label(tr!("audio.host"));
                 egui::ComboBox::from_id_source("audio_host").selected_text(host.clone()).width(260.0).show_ui(ui, |ui| {
                     let mut names = self.hosts.clone();
                     if !names.contains(&host) {
@@ -122,26 +123,26 @@ impl AudioPanel {
                 ui.label("");
                 ui.end_row();
 
-                ui.label("Device:");
+                ui.label(tr!("audio.device"));
                 let shown = if config.audio_device.is_empty() {
                     match self.devices.iter().find(|d| d.is_default) {
-                        Some(d) => format!("Default device ({})", d.name),
-                        None => "Default device".to_string(),
+                        Some(d) => tr!("audio.default_device_x", name = d.name),
+                        None => tr!("audio.default_device").to_string(),
                     }
                 } else if self.devices.iter().any(|d| d.name == config.audio_device) {
                     config.audio_device.clone()
                 } else {
-                    format!("{} (not found)", config.audio_device)
+                    tr!("common.not_found", name = config.audio_device)
                 };
                 egui::ComboBox::from_id_source("audio_device").selected_text(shown).width(260.0).show_ui(ui, |ui| {
-                    if ui.selectable_label(config.audio_device.is_empty(), "Default device").clicked()
+                    if ui.selectable_label(config.audio_device.is_empty(), tr!("audio.default_device")).clicked()
                         && !config.audio_device.is_empty()
                     {
                         config.audio_device.clear();
                         out.changed = true;
                     }
                     for d in &self.devices {
-                        let label = format!("{} ({} ch)", d.name, d.max_channels);
+                        let label = tr!("audio.device_ch", name = d.name, n = d.max_channels);
                         if ui.selectable_label(config.audio_device == d.name, label).clicked() && config.audio_device != d.name {
                             config.audio_device = d.name.clone();
                             // fewer channels than the pair needs: back to 1 and 2
@@ -153,17 +154,17 @@ impl AudioPanel {
                         }
                     }
                 });
-                if small_btn(ui, "Refresh", true) {
+                if small_btn(ui, tr!("common.refresh"), true) {
                     refresh = true;
                 }
                 ui.end_row();
 
-                for (label, id) in [("Left:", "audio_left"), ("Right:", "audio_right")] {
+                for (label, id) in [(tr!("audio.left"), "audio_left"), (tr!("audio.right"), "audio_right")] {
                     ui.label(label);
                     let value = if id == "audio_left" { &mut config.audio_out_left } else { &mut config.audio_out_right };
-                    egui::ComboBox::from_id_source(id).selected_text(format!("Channel {}", value)).width(120.0).show_ui(ui, |ui| {
+                    egui::ComboBox::from_id_source(id).selected_text(tr!("audio.channel", n = value)).width(120.0).show_ui(ui, |ui| {
                         for c in 1..=channels.max(*value) {
-                            if ui.selectable_label(*value == c, format!("Channel {}", c)).clicked() && *value != c {
+                            if ui.selectable_label(*value == c, tr!("audio.channel", n = c)).clicked() && *value != c {
                                 *value = c;
                                 out.changed = true;
                             }
@@ -171,9 +172,9 @@ impl AudioPanel {
                     });
                     ui.label(
                         RichText::new(if id == "audio_left" {
-                            "output channel of the left side of the stereo mix"
+                            tr!("audio.left_tip")
                         } else {
-                            "output channel of the right side"
+                            tr!("audio.right_tip")
                         })
                         .size(11.0)
                         .color(DIM),
@@ -181,8 +182,8 @@ impl AudioPanel {
                     ui.end_row();
                 }
 
-                ui.label("Buffer:");
-                let buffer_text = |b: u32| if b == 0 { "Driver default".to_string() } else { format!("{} frames", b) };
+                ui.label(tr!("audio.buffer"));
+                let buffer_text = |b: u32| if b == 0 { tr!("audio.driver_default").to_string() } else { tr!("audio.frames", n = b) };
                 egui::ComboBox::from_id_source("audio_buffer")
                     .selected_text(buffer_text(config.audio_buffer))
                     .width(120.0)
@@ -194,27 +195,27 @@ impl AudioPanel {
                             }
                         }
                     });
-                ui.label(RichText::new("smaller = less delay, larger = fewer dropouts").size(11.0).color(DIM));
+                ui.label(RichText::new(tr!("audio.buffer_tip")).size(11.0).color(DIM));
                 ui.end_row();
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 let can_tone = !playing && self.tone.is_none();
-                if small_btn(ui, "Test tone", can_tone) {
+                if small_btn(ui, tr!("audio.test_tone"), can_tone) {
                     out.tone = true;
                 }
                 let note = if self.tone.is_some() {
-                    "1 kHz, 1 s on the left channel, then 1 s on the right channel."
+                    tr!("audio.tone_running")
                 } else if playing {
-                    "Not while a song is playing."
+                    tr!("audio.not_while_playing")
                 } else {
-                    "Plays 1 kHz at -20 dBFS, left then right, on the output chosen above."
+                    tr!("audio.tone_tip")
                 };
                 ui.label(RichText::new(note).size(11.0).color(DIM));
             });
             if let Some(info) = running {
                 ui.add_space(4.0);
-                ui.label(RichText::new(format!("Running: {} ({})", info.describe(), info.device)).size(12.0).color(TEXT));
+                ui.label(RichText::new(tr!("audio.running", what = info.describe(), device = info.device)).size(12.0).color(TEXT));
                 if let Some(note) = &info.note {
                     ui.label(RichText::new(note).size(12.0).color(ORANGE));
                 }
@@ -230,7 +231,7 @@ impl AudioPanel {
             }
             ui.label(
                 RichText::new(
-                    "Saved in lp16-tool.toml. A running stream is opened again with the new settings at the next Play.",
+                    tr!("audio.saved_note"),
                 )
                 .size(11.0)
                 .color(DIM),

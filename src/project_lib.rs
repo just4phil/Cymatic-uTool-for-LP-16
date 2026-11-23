@@ -164,7 +164,7 @@ impl ProjectLibrary {
                 })
                 .collect();
             self.write_playlist(&pl.path, &pl.name, &songs).map_err(|e| {
-                format!("{}\nThe song was copied to \"{}\"; the old song project was kept.", e, new_name)
+                tr!("plib.copied", err = e, name = new_name)
             })?;
         }
         if key(song) != key(&new_path) {
@@ -178,19 +178,16 @@ impl ProjectLibrary {
     pub fn delete_song(&self, song: &Path) -> Result<(), String> {
         let used = self.playlists_using(song)?;
         if !used.is_empty() {
-            return Err(format!(
-                "The Song is used in these Playlists and can't be deleted:\n{}",
-                used.join(", ")
-            ));
+            return Err(tr!("plib.in_use", list = used.join(", ")));
         }
-        fs::remove_file(song).map_err(|e| format!("Cannot delete {}:\n{}", song.display(), e))
+        fs::remove_file(song).map_err(|e| tr!("plib.cannot_delete", path = song.display(), err = e))
     }
 
     /// Write playlist `name` with `songs` and `markers` (new or replacing
     /// the playlist of that name).
     pub fn save_playlist(&self, name: &str, songs: &[PlaylistSong], markers: &SetMarkers) -> Result<PathBuf, String> {
         if !valid_fat32_name(name) {
-            return Err(format!("\"{}\" is not a valid Playlist Name.", name));
+            return Err(tr!("plib.invalid_playlist_name", name = name));
         }
         let path = self.playlist_path(name);
         self.write_playlist(&path, name, songs)?;
@@ -235,7 +232,7 @@ impl ProjectLibrary {
 
     pub fn delete_playlist(&self, name: &str) -> Result<(), String> {
         let path = self.playlist_path(name);
-        fs::remove_file(&path).map_err(|e| format!("Cannot delete {}:\n{}", path.display(), e))?;
+        fs::remove_file(&path).map_err(|e| tr!("plib.cannot_delete", path = path.display(), err = e))?;
         remove_if_there(&self.markers_path(name))
     }
 
@@ -277,7 +274,7 @@ impl ProjectLibrary {
 
 fn remove_if_there(path: &Path) -> Result<(), String> {
     match fs::remove_file(path) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("Cannot delete {}:\n{}", path.display(), e)),
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(tr!("plib.cannot_delete", path = path.display(), err = e)),
         _ => Ok(()),
     }
 }
@@ -287,11 +284,11 @@ fn remove_if_there(path: &Path) -> Result<(), String> {
 /// change case).
 fn check_new_name(name: &str, path: &Path, current: Option<&Path>) -> Result<(), String> {
     if !valid_fat32_name(name) {
-        return Err(format!("\"{}\" contains invalid characters.", name));
+        return Err(tr!("plib.invalid_chars", name = name));
     }
     let same_file = current.map(|c| key(c) == key(path)).unwrap_or(false);
     if path.exists() && !same_file {
-        return Err(format!("\"{}\" already exists.", name));
+        return Err(tr!("plib.exists", name = name));
     }
     Ok(())
 }
@@ -304,7 +301,7 @@ fn write_new(path: &Path, text: &str) -> Result<(), String> {
         }
         write_bytes_atomic(path, text.as_bytes())
     };
-    write().map_err(|e| format!("Cannot write {}:\n{}", path.display(), e))
+    write().map_err(|e| tr!("plib.cannot_write", path = path.display(), err = e))
 }
 
 fn list(dir: &Path, ext: &str) -> Vec<PathBuf> {

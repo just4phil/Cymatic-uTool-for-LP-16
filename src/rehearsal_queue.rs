@@ -170,8 +170,8 @@ pub fn song_rows(
 pub fn next_caption(state: crate::rehearsal::PlayState, song_name: &str, countdown_seconds: f64) -> Option<String> {
     use crate::rehearsal::PlayState;
     match state {
-        PlayState::Waiting => Some(format!("Next: {} \u{2013} press Play", song_name)),
-        PlayState::Countdown => Some(format!("Next: {} in {} s", song_name, countdown_seconds.max(0.0).ceil() as u64)),
+        PlayState::Waiting => Some(tr!("queue.next_wait", name = song_name)),
+        PlayState::Countdown => Some(tr!("queue.next_in", name = song_name, s = countdown_seconds.max(0.0).ceil() as u64)),
         _ => None,
     }
 }

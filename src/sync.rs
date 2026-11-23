@@ -123,18 +123,18 @@ impl Stick {
     pub fn fix_song_case(&self, name: &str) -> Result<(), String> {
         check_entry_name(name)?;
         let dir = self.song_dir(name);
-        crate::fix_name_case(&dir).map(|_| ()).map_err(|e| format!("rename to {}: {}", dir.display(), e))
+        crate::fix_name_case(&dir).map(|_| ()).map_err(|e| tr!("sync.rename_failed", path = dir.display(), err = e))
     }
 
     /// Delete one song folder from the stick.
     pub fn delete_song(&self, name: &str) -> Result<(), String> {
         check_entry_name(name)?;
         if name.eq_ignore_ascii_case(PLAYLISTS) {
-            return Err(format!("{} is not a song", PLAYLISTS));
+            return Err(tr!("sync.not_a_song", name = PLAYLISTS));
         }
         let dir = self.song_dir(name);
         if !dir.is_dir() {
-            return Err(format!("Song \"{}\" not found on the stick", name));
+            return Err(tr!("sync.song_not_found", name = name));
         }
         fs::remove_dir_all(&dir).map_err(|e| format!("{}: {}", dir.display(), e))
     }
@@ -144,7 +144,7 @@ impl Stick {
         check_entry_name(name)?;
         let path = self.play_path(name);
         if !path.is_file() {
-            return Err(format!("Playlist \"{}\" not found on the stick", name));
+            return Err(tr!("sync.playlist_not_found", name = name));
         }
         fs::remove_file(&path).map_err(|e| format!("{}: {}", path.display(), e))
     }
@@ -325,7 +325,7 @@ fn check_entry_name(name: &str) -> Result<(), String> {
         || name.contains(['/', '\\', ':'])
         || Path::new(name).components().count() != 1;
     if bad {
-        Err(format!("invalid name \"{}\"", name))
+        Err(tr!("sync.invalid_name", name = name))
     } else {
         Ok(())
     }
@@ -466,7 +466,7 @@ pub fn plan(
                     Action::Skip
                 };
                 if let Some(old) = &case_from {
-                    let note = format!("folder on the stick is spelled \"{}\"", old);
+                    let note = tr!("sync.folder_spelled", name = old);
                     plan.reason = if plan.needs_export { format!("{}; {}", plan.reason, note) } else { note };
                 }
                 planned.push(PlannedSong { plan, action, case_from });
@@ -488,7 +488,7 @@ pub fn plan(
             songs: songs.clone(),
             action: Action::New,
             up_to_date: false,
-            reason: "missing".into(),
+            reason: tr!("sync.missing").into(),
         };
         if let Ok(on_stick) = fs::read_to_string(&path) {
             pl.action = if mode == ExportMode::Force { Action::Force } else { Action::Quick };
@@ -500,9 +500,9 @@ pub fn plan(
             let case = crate::name_case_differs(&path);
             pl.up_to_date = readable && case.is_none() && sync.play_text(&pl, ts) == on_stick;
             pl.reason = match case {
-                Some(old) => format!("file on the stick is spelled \"{}\"", old),
-                None if pl.up_to_date => "up to date".into(),
-                None => "content differs".into(),
+                Some(old) => tr!("sync.file_spelled", name = old),
+                None if pl.up_to_date => tr!("plan.up_to_date").into(),
+                None => tr!("sync.content_differs").into(),
             };
         }
         sync.playlists.push(pl);
@@ -539,11 +539,7 @@ pub enum Progress<'a> {
 /// Err: song projects are unreadable; then nothing is written.
 pub fn run(plan: &SyncPlan, mut progress: impl FnMut(Progress) -> bool) -> Result<Vec<SyncLine>, String> {
     if !plan.problems.is_empty() {
-        return Err(format!(
-            "{} song project(s) cannot be read, nothing exported:\n{}",
-            plan.problems.len(),
-            plan.problems.join("\n")
-        ));
+        return Err(tr!("sync.unreadable", n = plan.problems.len(), list = plan.problems.join("\n")));
     }
     let rec = plan.stick.recording().to_string_lossy().into_owned();
     let mut lines = Vec::new();
@@ -557,9 +553,9 @@ pub fn run(plan: &SyncPlan, mut progress: impl FnMut(Progress) -> bool) -> Resul
             break;
         }
         let t0 = Instant::now();
-        let verified = || format!("OK, verified, {} ms", t0.elapsed().as_millis());
+        let verified = || tr!("sync.ok_verified", ms = t0.elapsed().as_millis());
         let result = match (song, playlist) {
-            (Some(s), _) if s.action == Action::Skip => Ok("OK, up to date".to_string()),
+            (Some(s), _) if s.action == Action::Skip => Ok(tr!("sync.ok_up_to_date").to_string()),
             (Some(s), _) => {
                 let renamed = match &s.case_from {
                     Some(_) => plan.stick.fix_song_case(&s.plan.name).map(|_| true),
@@ -569,7 +565,7 @@ pub fn run(plan: &SyncPlan, mut progress: impl FnMut(Progress) -> bool) -> Resul
                     Err(e) => Err(e),
                     // only the spelling was wrong: nothing else to write
                     Ok(true) if !s.plan.needs_export && s.action == Action::Quick => {
-                        Ok(format!("OK, folder renamed from \"{}\"", s.case_from.as_deref().unwrap_or("")))
+                        Ok(tr!("sync.ok_renamed", name = s.case_from.as_deref().unwrap_or("")))
                     }
                     Ok(_) => export_plan(&s.plan, &rec).map(|_| verified()).map_err(|e| e.to_string()),
                 }
@@ -583,7 +579,7 @@ pub fn run(plan: &SyncPlan, mut progress: impl FnMut(Progress) -> bool) -> Resul
             kind,
             name: name.to_string(),
             ok: result.is_ok(),
-            message: result.unwrap_or_else(|e| format!("ERROR: {}", e)),
+            message: result.unwrap_or_else(|e| tr!("export.error_line", err = e)),
         };
         let go_on = progress(Progress::Done(&line));
         lines.push(line);
@@ -603,7 +599,7 @@ fn write_play(dest: &Path, text: &str) -> std::io::Result<()> {
     if fs::read(dest)? != text.as_bytes() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("verification failed: {} differs", dest.display()),
+            tr!("plan.verify_failed", err = tr!("plan.differs", path = dest.display())),
         ));
     }
     Ok(())

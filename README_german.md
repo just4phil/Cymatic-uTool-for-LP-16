@@ -129,6 +129,8 @@ audio_out_right = "2"
 audio_buffer = "0"
 # MIDI-Ausgang des Probe-Players (Settings > MIDI output); leer = aus
 midi_port = ""
+# Sprache der Oberfläche (Einstellungen > Sprache): "en" oder "de"; leer = Englisch
+language = "de"
 # Presets des Proben-Mix (vom Programm geschrieben, siehe „Proben-Mix“)
 mix.1.name = "Default"
 mix.1.master = "0.0"
@@ -306,6 +308,14 @@ korrigieren, z. B. eine Backing-Track-Spur, die etwas zu laut ist.
 - Ein Song, dessen Mixer-Werte von den uTool2-Standardwerten abweichen (0 dB, Mitte, nicht stumm),
   hat ein **Mixer-Symbol** (drei kleine Fader) in der Songliste des Home-Reiters und des Reiters
   Rehearsal.
+
+### Sprache (Reiter Einstellungen)
+
+Der Bereich **Language / Sprache** oben im Reiter Einstellungen schaltet die Oberfläche zwischen
+Englisch und Deutsch um. Die Wahl wirkt sofort und wird als `language` in `lp16-tool.toml`
+gespeichert. Die Texte stehen in `lang/en.lang` und `lang/de.lang` (in die exe kompiliert); auch
+die Meldungen der Bibliothek (Fehler, Export-Bericht) folgen der Einstellung. Die Kommandozeile
+bleibt englisch.
 
 ### Audio output (Reiter Settings)
 
@@ -520,6 +530,7 @@ Dateien auf dem Stick beschädigt sein könnten. Gelöscht wird auf dem Stick ni
 | `src/gui_mixer_tab.rs` | Der Mixer im Reiter Rehearsal: Kanalzüge im uTool2-Stil, die mit dem Bereich skalieren, Proben-Mix und Song-Modus |
 | `src/gui_audio.rs` | Der Bereich „Audio output“ im Reiter Settings |
 | `src/gui_midi.rs` | Der Bereich „MIDI output“ im Reiter Settings |
+| `src/i18n.rs` | Übersetzungen: `tr!("key")` holt die Texte aus `lang/*.lang` in der gewählten Sprache |
 | `src/gui_backup.rs` | Der Reiter Export Stereo-MP3 |
 
 Es gibt keine Abhängigkeiten außer `eframe` und `rfd` für die Oberfläche sowie `cpal`, `rtrb` und `midir`

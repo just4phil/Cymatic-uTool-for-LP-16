@@ -61,12 +61,12 @@ pub fn target_time(now: Instant, latency: Duration, offset: usize, rate: u32) ->
 /// The MIDI output ports of the system (names). An error text if MIDI
 /// cannot be used at all.
 pub fn list_midi_outputs() -> Result<Vec<String>, String> {
-    let out = MidiOutput::new(CLIENT_NAME).map_err(|e| format!("MIDI is not available: {}", e))?;
+    let out = MidiOutput::new(CLIENT_NAME).map_err(|e| tr!("midi.unavailable", err = e))?;
     Ok(out.ports().iter().filter_map(|p| out.port_name(p).ok()).collect())
 }
 
 fn not_available(name: &str) -> String {
-    format!("MIDI port not available: {}", name)
+    tr!("midi.port_unavailable", name = name)
 }
 
 fn connect(name: &str) -> Result<MidiOutputConnection, String> {

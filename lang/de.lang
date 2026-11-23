@@ -1,0 +1,588 @@
+# lp16-tool - deutsche Texte der Oberfläche.
+# Format: key = Text, siehe src/i18n.rs. {name} = Platzhalter, \n = Zeilenumbruch.
+
+# Common
+lang.name = Deutsch
+common.ok = OK
+common.cancel = Abbrechen
+common.no_cancel = Nein, abbrechen
+common.delete = Löschen
+common.edit = Bearbeiten
+common.rename = Umbenennen
+common.copy = Kopieren
+common.duplicate = Duplizieren
+common.refresh = Aktualisieren
+common.save = Speichern
+common.close_editor = Editor schließen
+common.mixer = Mixer
+common.create = Erstellen
+common.error = Fehler
+common.failed = \n\nFehlgeschlagen:\n{list}
+common.and_more = \n… und {n} weitere
+common.close_unsaved = Ja, ohne Speichern schließen
+common.cannot_save = {path} kann nicht gespeichert werden:\n{err}
+common.type = Typ
+common.sample_rate = Samplerate
+common.resolution = Auflösung
+common.length = Länge
+common.size = Größe
+common.mod_date = Änderungsdatum
+common.song_count = Anzahl Songs
+common.related_playlists = Zugehörige Playlists:
+common.target_disk_location = Speicherort auf dem Ziel
+common.multitrack_songs = Multitrack Songs
+common.multitrack_playlists = Multitrack Playlists
+common.new_ml_song = Neuer Multitrack Song
+common.new_ml_playlist = Neue Multitrack Playlist
+common.play_in_rehearsal = In der Probe abspielen
+common.missing_wav = WAV-Datei fehlt
+common.missing_midi = MIDI-Datei fehlt
+common.missing_song = Song fehlt
+common.no_target = Kein Export-Ziel ausgewählt.
+common.project_explorer = Project Explorer
+common.details = Details
+common.settings = Einstellungen
+common.encores_n = ZUGABEN  ({n} Songs)
+common.encores_after = ZUGABEN  (nach dem Konzertende)
+common.end_of_concert = KONZERTENDE
+common.bits = {n} Bit
+common.checking_endings = Prüfe Song-Enden: {done} / {total} WAV-Dateien
+common.song_cant_open = Der Song kann nicht geöffnet werden:\n{err}
+common.yes_delete_song = Ja, Song löschen
+common.yes_delete_playlist = Ja, Playlist löschen
+common.delete_song = Song löschen
+common.delete_playlist = Playlist löschen
+common.delete_unused = Alle Songs ohne Playlist löschen
+common.edit_song = Multitrack Song bearbeiten
+common.edit_playlist = Multitrack Playlist bearbeiten
+common.playlist_exists = Eine Playlist „{name}“ gibt es schon.
+common.update_playlist = Playlist aktualisieren
+common.import_songs = Songs importieren
+common.not_usable_wav = keine verwendbare WAV-Datei
+
+# Tabs
+tab.home = Start
+tab.rehearsal = Probe
+tab.export = Export
+tab.backup = Export Stereo-MP3
+tab.import = Import
+tab.edit_target = Ziel bearbeiten
+tab.settings = Einstellungen
+tab.support = Info
+
+# Project Explorer
+home.track_fmt = {n} Kan. - {bits} Bit
+common.encores = ZUGABEN
+mark.skip = Überspringen
+mark.quick = Schnell-Export
+mark.overwrite = Überschreiben
+mark.new = Neu exportieren
+mark.force = Alles überschreiben
+tail.title = Song-Enden
+tail.cut_done = {n} WAV-Datei(en) um {trim} ms gekürzt und über {fade} ms ausgeblendet.
+tail.fade_done = {n} WAV-Datei(en) über {fade} ms ausgeblendet.
+tail.originals_kept = \nDie Originale bleiben als *.orig.wav daneben liegen.
+tail.fade_title = Ausblenden
+home.new_playlist_name = Neue Playlist
+home.playlist_name = Playlist-Name
+home.playlist_name_invalid = Der neue Playlist-Name enthält ungültige Zeichen.
+export.nothing_selected = Nichts ausgewählt.
+export.kind_song = Multitrack Song
+export.kind_playlist = Playlist
+export.error_line = FEHLER: {err}
+settings.init_folders = Ordner anlegen
+settings.init_all_exist = Alle Ordner sind schon vorhanden.
+settings.init_created = Angelegt:\n{list}
+settings.init_failed = Die Ordner können nicht angelegt werden:\n{err}
+
+# Home
+home.check_endings = Song-Enden prüfen
+home.branch_songs = Dieser Zweig enthält {n} Songs.
+home.rates_in_use = Verwendete Sampleraten: {list}
+home.bits_in_use = Verwendete Auflösungen: {list}
+home.branch_playlists = Dieser Zweig enthält {n} Playlists.
+home.type_song = LP-16 Multitrack Song
+home.track_count = Anzahl Spuren
+home.tracks = Spuren:
+home.expected_wav = Erwartete WAV-Datei:\n{path}
+tail.no_clean = Kein sauberes Ausblenden
+home.click_fade = {what}.\nKlicken, um auszublenden.
+home.midi_file = MIDI-Datei:  {name}
+home.expected_midi = Erwartete MIDI-Datei:\n{path}
+home.update_songs = Songs aktualisieren
+home.type_playlist = Multitrack Playlist
+home.missing_files = Dateien fehlen
+home.concert_main = {total} (Hauptset {main}, {n} Zugaben; {pause} s Pause)
+home.concert = {total} ({pause} s Pause)
+home.concert_label = Konzert
+
+# Export
+export.target_location = Export-Ziel
+export.type_folder = Einen Ordner als Ziel eingeben
+export.select_drive = Wechseldatenträger wählen
+export.target_type = Zieltyp:
+export.target = Ziel:
+export.selected = Ausgewählt:
+export.to_copy = Zu kopieren:
+export.free = Frei:
+export.free_after = Frei nach dem Export:
+export.quick_tip = Nur neue und geänderte Songs werden geschrieben.
+export.force_tip = Jeder ausgewählte Song wird neu geschrieben.
+export.target_content = Inhalt des Ziels
+export.checking = Prüfe Song-Enden …
+export.batch = Export-Stapel
+export.review = Fehlende Angaben & Warnungen prüfen
+export.with_playlist = Wird mit einer ausgewählten Playlist exportiert.
+export.stereo_playlists = Stereo Playlists
+export.stereo_songs = Stereo Songs
+export.exporting = Exportiere {name}
+export.copying = Kopiere auf das Ziel, auf einem USB-Stick kann das unvorhersehbar lange dauern … noch {n} Aufträge.
+export.canceled = Export abgebrochen.
+export.finished = Export erfolgreich abgeschlossen.
+export.finished_errors = Export mit Fehlern beendet.
+export.total_time = Gesamtdauer: {time}
+export.note_speed = Hinweis: Die Kopierdauer hängt direkt vom externen Laufwerk ab. Ein USB-Stick ist deutlich langsamer als eine normale USB-Festplatte.
+
+# Import
+import.done = {n} Song(s) in die Project Library importiert.
+import.stopped = Der Import wurde abgebrochen:\n{err}\n\nSongs, die vor dem Fehler geschrieben wurden, bleiben in der Bibliothek.
+update.name_invalid = Der Playlist-Name ist leer oder enthält ungültige Zeichen.
+update.title = Playlist auf die neuesten Songs aktualisieren
+update.create = Playlist erstellen
+update.based_on = Basiert auf Playlist:
+update.new_name = Neuer Playlist-Name:
+update.replaced = {n} von {total} Songs ersetzt. Startmodus und Reihenfolge bleiben gleich.
+update.current_song = Aktueller Song
+update.new_song = Neuer Song
+update.keep = (behalten)
+update.just_imported = gerade importiert
+update.newer = neuere Version
+update.unchanged = unverändert
+update.created = Playlist „{name}“ erstellt, {n} Song(s) ersetzt.
+import.title = Songs aus der AudioLibrary importieren
+import.audiolib = AudioLibrary:
+import.not_set = (nicht gesetzt, siehe Einstellungen)
+import.update_playlist = Playlist aktualisieren…
+import.all_newest = Alle Playlists verwenden schon die neueste Version jedes Songs.
+import.layout = Aufbau: <AudioLibrary>\\<Song>\\<Datum + Notiz>\\*.wav + 1 .mid.  Neue Datumsordner (neuer als die neueste Version in der Bibliothek) ergeben einen Song namens <Song>_(<Datum + Notiz>). Ordner ohne Datum werden übersprungen.
+import.click_scan = Auf „Songs importieren“ klicken, um die AudioLibrary zu durchsuchen.
+import.summary = {n} Datumsordner:  {new} neu,  {problems} mit Problemen,  {present} in der Bibliothek,  {old} alt ohne Song
+import.show_all = Alle zeigen (auch in der Bibliothek und alte Ordner)
+import.col_song = Song (Name in der Bibliothek)
+import.col_tracks = Spuren
+import.col_status = Status
+import.fmt = {n} Kan. - {rate} - {bits} Bit
+import.fmt_ch = {n} Kan.
+import.st_new = neu{notes}
+import.st_old_newer = alter Ordner, neuere Version: {name}{notes}
+import.st_in_lib = in der Bibliothek: {name}
+import.st_invalid = kann nicht importiert werden: {err}
+import.st_old_invalid = alter Ordner, kann nicht importiert werden: {err}
+import.up_to_date = Keine neuen Datumsordner: alle Songs sind aktuell.
+import.select_new = Neue auswählen
+import.select_none = Keine auswählen
+import.import_n = {n} ausgewählte(n) Song(s) importieren
+
+# Support
+support.version = Version {v}
+support.line1 = Ein Nachbau des uTool2-Workflows für den Cymatic Audio LP-16:
+support.line2 = Projektbibliothek, Playlists und Export auf den Stick.
+support.settings_file = Einstellungsdatei: {path}
+
+# Edit Target
+et.target_explorer = Ziel-Explorer
+et.target_location = Export-Ziel:
+et.delete_songs = Songs löschen
+et.all_used = Jeder Song auf dem Stick steht in mindestens einer Playlist.
+et.playlist_unreadable = Eine Playlist auf dem Stick kann nicht gelesen werden, nichts gelöscht:\n{err}
+et.deleted_n = {n} von {total} Song(s) vom Stick gelöscht.
+et.names_it = {playlist}   ⚠ nennt ihn „{name}“
+et.channel_count = Anzahl Kanäle
+et.midi_file = MIDI-Datei
+et.type_playlist = LP-16 Multitrack Playlist
+et.folder_is = ⚠ der Ordner heißt „{name}“
+et.not_on_stick = ⚠ nicht auf dem Stick
+et.new_playlist = Neue Playlist
+et.dblclick = Doppelklick auf einen Song zeigt ihn im Project Explorer
+
+# Settings
+settings.devices = Geräte
+settings.devices_hint = Die Geräte wählen, die diese Anwendung verwalten soll.
+settings.file_location = Standard-Speicherort
+settings.library_folder = Library-Ordner:
+settings.choose_folder = Ordner wählen
+settings.library_folder_title = Library-Ordner
+settings.project_library = Project Library:
+settings.audio_library = Audio Library:
+settings.missing = (fehlt, „Ordner anlegen“ verwenden)
+settings.library_hint = Unter dem Library-Ordner: {prj} = Songs und Playlists, {audio} = <Song>\\<Datum + Notiz>\\*.wav + 1 .mid (Audiodateien und Import). Wird beim Verlassen des Felds gespeichert (lp16-tool.toml).
+settings.init_hint = Legt die fehlenden Ordner an: CymaticProjectLib (mit LP16\\Multitrack Songs, …) und AudioLibrary.
+settings.midi_unreadable = Die MIDI-Datei des geladenen Songs konnte nicht gelesen werden.
+
+# Playlist editor
+pled.rows = {n} Zeilen
+pled.settings = Playlist-Einstellungen
+pled.location = Ort:
+pled.song_count = Anzahl Songs: {n}
+pled.name = Playlist-Name:
+pled.length = Playlist-Länge: {time}
+pled.pause = Pause zwischen den Songs:
+pled.pause_tip = Gilt für die Konzertlänge aller Playlists (globale Einstellung).
+pled.all_playlists = (alle Playlists)
+pled.concert = Konzert: {time}
+pled.main_set = Hauptset: {time}   ·   Zugaben: {n}   ·
+pled.available = Verfügbare Songs
+pled.add = Hinzufügen ▶
+pled.content = Inhalt der Playlist
+pled.add_encores = + Zugaben
+pled.add_end = + Konzertende
+pled.down = Runter
+pled.up = Hoch
+pled.start_mode_label = Startmodus:
+pled.delay_tip = Wartezeit, bevor der Song von selbst startet.
+pled.apply = Auf ausgewählte Zeilen anwenden
+pled.check_first = Zuerst die Songs anhaken.
+pled.col_start_mode = Startmodus
+pled.col_song = Song-Name
+pled.col_start = Start
+pled.col_end = Ende
+pled.col_props = Eigenschaften
+pled.missing = fehlt
+
+# Song editor
+songed.files = {n} Dateien
+songed.save_failed = Der Song konnte nicht gespeichert werden:\n{err}
+
+# Dialogs
+tail.fade_btn = Ausblenden {ms} ms
+tail.not_clean = Diese WAV-Dateien enden nicht sauber (der LP-16 spielt am Ende eventuell einen Klick):
+tail.cut_label = Vor dem Ausblenden abschneiden:
+tail.suggested = (Vorschlag: das abgeschnittene Ende und die Stille danach, plus 2 ms)
+tail.explain = „{fade}“ blendet nur das Ende aus, „{cut}“ entfernt zuerst das kaputte Ende.
+tail.originals_note = Die Originale bleiben als *.orig.wav erhalten. Eine WAV, die mehrere Songs verwenden, ändert sich für alle.
+tail.cut_btn = Schneiden + Ausblenden
+dlg.export_anyway = Ja, trotzdem exportieren
+dlg.import_q = Diese {n} Song(s) in der Project Library anlegen?\n\n{list}
+dlg.yes_import = Ja, importieren
+dlg.delete_song_q = Soll der Song „{name}“ gelöscht werden?\n(nur das Song-Projekt in der Bibliothek, die Audiodateien bleiben)
+dlg.delete_playlist_q = Soll die Playlist „{name}“ gelöscht werden?
+dlg.et_delete_song_q = Soll der Song „{name}“ vom Stick gelöscht werden?
+dlg.et_still_listed = \n\nEr steht noch in diesen Playlist(s) auf dem Stick:\n{list}
+dlg.et_delete_song = Song vom Stick löschen
+dlg.et_delete_playlist = Playlist vom Stick löschen
+dlg.et_delete_playlist_q = Soll die Playlist „{name}“ vom Stick gelöscht werden?\n(die Songs bleiben auf dem Stick)
+dlg.et_delete_unused_q = Diese {n} Song(s) ({size}) vom Stick löschen?\nKeine Playlist auf dem Stick führt sie.\n\n{list}
+dlg.et_delete_unused = Songs ohne Playlist löschen
+dlg.yes_delete_songs = Ja, Songs löschen
+dlg.playlist_rename = Playlist-Name ändern
+dlg.rename_playlist_q = Soll die Playlist-Datei umbenannt oder eine Kopie angelegt werden?
+dlg.playlist_unsaved = Die Playlist hat ungespeicherte Änderungen.
+dlg.song_unsaved = Der Song hat ungespeicherte Änderungen.
+dlg.new_song_name = Name des neuen Songs:
+dlg.song_name_invalid = Der Song-Name enthält ungültige Zeichen.
+dlg.song_exists = Einen Song mit diesem Namen gibt es schon.
+dlg.sample_rate = Samplerate:
+dlg.resolution = Auflösung:
+dlg.copy_song_q = Name der Kopie des Songs „{name}“:
+dlg.copy_playlist_q = Name der Kopie der Playlist „{name}“:
+dlg.rename_song_q = Soll die Song-Datei umbenannt oder eine Kopie angelegt werden?
+dlg.song_rename = Song-Name ändern
+dlg.playlist_exists = Eine Playlist mit diesem Namen gibt es schon.
+mode.button_tip = Der LP-16 hält vor diesem Song an und wartet auf Play.
+mode.timer_tip = Der LP-16 startet diesen Song nach der Wartezeit von selbst.
+mode.nowait_tip = Der LP-16 startet diesen Song sofort von selbst.
+
+# Song editor (tracks)
+songed.rejected = {name}  ({ch} Kan., {rate}, {bits} Bit)
+songed.needs_mono = Der Song braucht Mono-WAV-Dateien mit {rate} / {bits} Bit.\nNicht hinzugefügt:\n{list}
+songed.overflow = {n} Datei(en) passten nicht mehr: der LP-16 hat 16 Spuren.
+songed.midi_unreadable = {name}\nist keine lesbare MIDI-Datei.
+songed.settings = Multitrack-Song-Einstellungen
+songed.name = Song-Name:
+songed.synched = Synchronisierte Geräte:
+songed.standalone = Einzeln (1)
+songed.rate = Samplerate:
+songed.audio_files = Audiodateien
+songed.open_folder = Den Ordner mit den WAV-Dateien öffnen
+songed.reload = Neu laden
+songed.file_name = Dateiname
+songed.up = [Hoch]
+songed.wrong_format = {ch} Kan., {rate}, {bits} Bit - der Song braucht Mono, {need_rate}, {need_bits} Bit
+songed.mixer_tip = Die Mixer-Werte des Songs im Probe-Tab bearbeiten (vorher die Änderungen speichern)
+songed.delete_tip = Die angehakten Spuren aus dem Song entfernen
+songed.midi_file = MIDI-Datei
+songed.choose_midi = Die MIDI-Datei wählen
+songed.remove_midi = Die MIDI-Datei aus dem Song entfernen
+songed.duration = Dauer: {time}
+
+# Song editor (new song)
+songed.default_name = Neuer Song
+
+# Settings: language
+settings.language = Sprache der Oberfläche:
+
+# Settings: audio output
+audio.title = Audioausgabe
+audio.host = Host:
+audio.device = Gerät:
+audio.default_device_x = Standardgerät ({name})
+audio.default_device = Standardgerät
+common.not_found = {name} (nicht gefunden)
+audio.device_ch = {name} ({n} Kan.)
+audio.left = Links:
+audio.right = Rechts:
+audio.channel = Kanal {n}
+audio.left_tip = Ausgangskanal der linken Seite des Stereo-Mixes
+audio.right_tip = Ausgangskanal der rechten Seite
+audio.buffer = Puffer:
+audio.driver_default = Treiber-Standard
+audio.frames = {n} Frames
+audio.buffer_tip = kleiner = weniger Verzögerung, größer = weniger Aussetzer
+audio.test_tone = Testton
+audio.tone_running = 1 kHz, 1 s auf dem linken Kanal, dann 1 s auf dem rechten.
+audio.not_while_playing = Nicht während ein Song läuft.
+audio.tone_tip = Spielt 1 kHz mit -20 dBFS, erst links, dann rechts, auf dem oben gewählten Ausgang.
+audio.running = Läuft: {what} ({device})
+audio.saved_note = Wird in lp16-tool.toml gespeichert. Ein laufender Stream wird beim nächsten Play mit den neuen Einstellungen neu geöffnet.
+
+# Settings: MIDI output
+midi.title = MIDI-Ausgabe
+common.none = (keiner)
+midi.port = Port:
+midi.send_test = Test senden
+midi.choose_port = Zuerst einen Port wählen.
+midi.load_song = Zuerst im Probe-Tab einen Song mit MIDI-Datei laden.
+midi.test_tip = Sendet Bank, Program Change und die Controller vom Anfang des geladenen Songs.
+
+# Rehearsal mix presets
+mixer.center = Mitte
+mixer.pan_left = Links {n}
+mixer.pan_right = Rechts {n}
+mixer.rehearsal_mix = Proben-Mix
+mixer.new = Neu
+mixer.reset = Zurücksetzen
+mixer.new_name = Neuer Name
+
+# Rehearsal playlist
+rehearsal.single_song = (einzelner Song)
+rehearsal.playlist = Playlist
+rehearsal.no_songs = Die Bibliothek hat keine Songs.
+rehearsal.choose = Eine Playlist oder (einzelner Song) wählen.
+rehearsal.skipped = Nicht abspielbar, wird übersprungen: {err}
+
+# Song endings check
+tail.all_clean = {n} Song(s) geprüft ({wavs} WAV-Dateien): alle enden sauber.
+tail.import_head = {n} der importierten Song(s) haben WAV-Dateien ohne sauberes Ausblenden:
+tail.head = {n} von {total} Song(s) haben WAV-Dateien ohne sauberes Ausblenden:
+tail.summary = {head}\n\n{list}\n\nSie sind im Start-Tab mit „!“ markiert. Einen Song wählen und auf „{badge}“ klicken, um ihn zu reparieren.
+tail.export_q = {n} der {total} zu exportierenden Song(s) haben WAV-Dateien ohne sauberes Ausblenden (der LP-16 spielt am Ende eventuell einen Klick):\n\n{list}\n\nTrotzdem exportieren?
+common.and_more_inline = … und {n} weitere
+
+# Rehearsal
+common.warning = Warnung: {text}
+rehearsal.autoplay = Autoplay nach 5 Sekunden
+rehearsal.autoplay_tip = An: nach dem Ende eines Songs startet der nächste nach 5 Sekunden von selbst.\nAus: der Player wartet auf Play.
+rehearsal.prev = Vorheriger Song
+rehearsal.pause = Pause (Leertaste)
+rehearsal.play = Play (Leertaste)
+rehearsal.stop = Stop (Esc)
+rehearsal.next = Nächster Song
+rehearsal.none_playable = Keiner der Songs dieser Playlist kann abgespielt werden.
+rehearsal.no_song = Kein Song geladen. Links eine Playlist wählen oder im Start-Tab mit Rechtsklick auf einen Song oder eine Playlist „{action}“ wählen.
+rehearsal.dropouts = Aussetzer: {n} (der Audiopuffer lief leer)
+rehearsal.output = Ausgabe: {device}, {rate} Hz – Song: {song} Hz
+rehearsal.no_output = Keine Audioausgabe offen – Play öffnet sie. Song: {song} Hz
+rehearsal.midi_off = MIDI: aus
+rehearsal.midi_no_file = MIDI: keine Datei
+rehearsal.midi_events = MIDI: {port} · {n} Events
+
+# Mixer console
+mixer.song_mix_tip = Die Mixer-Werte von „{name}“ bearbeiten (der uTool2-Mixer des Songs, wird auf den LP-16 exportiert). In der Probe kommen sie zum Proben-Mix dazu, nur für diesen Song.
+mixer.load_song = Einen Song laden, um seine Mixer-Werte zu bearbeiten
+mixer.song_mix = Song-Mix
+mixer.back = Zurück zum Proben-Mix
+mixer.save_failed = Der Song konnte nicht gespeichert werden: {err}
+mixer.song_mute = Song: stumm
+mixer.song_level = Song {db}
+mixer.no_track = Keine Spur auf diesem Ausgang im Song
+mixer.song_value_tip = Der Song hat auf diesem Ausgang einen eigenen Mixer-Wert („{mix}“); er kommt zu diesem Kanalzug dazu.
+mixer.master_limited = Der Master wurde begrenzt. Klicken zum Zurücksetzen.
+mixer.level_edit_tip = Doppelklick: Pegel eingeben (z. B. -0.5, -inf)
+mixer.level_tip = Pegel. Doppelklick: 0 dB
+mixer.pan_tip = Pan: {pan}. Nach oben oder unten ziehen, Doppelklick: Mitte
+mixer.pan_song_tip = Pan: {pan} (des Proben-Mixes; das Pan des Songs wird nicht verwendet)
+mixer.name_tip_none = Keine Spur auf diesem Ausgang in den Songs. Doppelklick: benennen
+mixer.name_tip_auto = {name}\nDoppelklick: umbenennen (für alle Songs)
+mixer.name_tip_own = {name}\nDoppelklick: umbenennen; leer = kein Name
+mixer.name_tip_both = {name}\nIn den Songs: {songs}\nDoppelklick: umbenennen; leer = der Name aus dem Song
+
+# Export Stereo-MP3
+backup.routing = Links: {left}     Rechts: {right}     Beide: {both}     Nicht benutzt: {none}
+backup.n_songs = {n} Songs
+backup.target_folder = Zielordner
+backup.choose_folder = Den Ordner für die MP3s wählen
+backup.folder_title = Zielordner für die MP3s
+backup.file_names = Dateinamen
+backup.pattern_tip = {nr} = Position in der Playlist (01, 02, ...), {song} = Song-Name, {playlist} = Playlist-Name
+backup.format = MP3 192 kbit/s CBR, Stereo, beste Qualität
+backup.export = MP3s exportieren
+backup.left_side = Linke Seite
+backup.left = Links
+backup.right_side = Rechte Seite
+backup.right = Rechts
+backup.preview = Vorhören
+backup.play = Play
+backup.play_tip = Die Playlist in den Player laden und den gewählten Song abspielen
+backup.listen = Abhören
+backup.mon_both_tip = Beide Seiten, wie im MP3
+backup.mon_left = Nur links
+backup.mon_left_tip = Nur die linke Seite, auf beiden Lautsprechern
+backup.mon_right = Nur rechts
+backup.mon_right_tip = Nur die rechte Seite, auf beiden Lautsprechern
+backup.clip_tip = Eine Seite ging über 0 dBFS (das MP3 würde übersteuern). Klicken zum Zurücksetzen.
+backup.other_playlist = Der Player spielt eine andere Playlist (Probe-Tab); Play lädt diese hier.
+backup.progress = Song {n} von {total}: {name}
+backup.cancelled = Export abgebrochen.
+backup.errors = Export mit {n} Fehler(n) beendet.
+backup.done = {n} MP3(s) in {time} nach {dir} geschrieben.
+backup.close_report = Bericht schließen
+backup.choose_playlist = Eine Playlist wählen.
+backup.choose_target = Einen Zielordner wählen.
+backup.folder_failed = Der Zielordner kann nicht angelegt werden: {err}
+backup.nothing_up = Auf der linken und der rechten Seite ist kein Ausgang aufgedreht.
+backup.clipped = Übersteuert: Spitze {peak} dBFS, {n} Samples begrenzt — den Master dieser Seite absenken und neu exportieren
+
+# Library: start modes
+mode.button = Auf Tastendruck warten
+mode.timer = Auf Timer warten
+mode.nowait = Ohne Warten
+mode.timer_s = Auf Timer warten ({s} s)
+mode.unknown = Unbekannter Startmodus „{mode}“
+
+# Library: WAV and song files
+lib.not_usable_wav = {name} ist keine verwendbare WAV-Datei
+lib.unsupported_wav = {path}: nicht unterstütztes WAV-Format
+lib.channel_n = Kanal {n}
+lib.track_bad_channel = Spur „{name}“: Ausgangskanal {ch} liegt nicht in 1-{max}, bleibt stumm
+lib.track_error = Spur „{name}“: {err}
+lib.track_not_mono = Spur „{name}“: nicht mono ({n} Kanäle), bleibt stumm
+lib.track_rate = Spur „{name}“: Samplerate {rate} Hz weicht von der Song-Rate {song} Hz ab, bleibt stumm
+lib.data_short = {path}: data-Chunk kürzer als erwartet
+lib.song_project_err = Song-Projekt {path}: {err}
+
+# Library: export plan
+plan.new_song = neuer Song
+plan.unreadable = {n} Quell-WAV-Datei(en) nicht lesbar
+plan.wav_missing = {n} WAV-Datei(en) fehlen
+plan.wav_changed = {n} WAV-Datei(en) in der Quelle geändert
+plan.midi_missing = MIDI-Datei fehlt
+plan.case = {n} Dateiname(n) auf dem Stick anders geschrieben
+plan.up_to_date = aktuell
+plan.set_changed = song.set geändert
+plan.set_missing = song.set fehlt
+plan.verify_failed = Prüfung fehlgeschlagen: {err}
+plan.differs = {path} weicht ab
+plan.size = {path} hat {n} Bytes, erwartet {want}
+plan.size_differs = {path} hat eine andere Größe als die Quelle
+
+# Library: import
+import.lib_not_found = AudioLibrary-Ordner nicht gefunden: „{path}“
+import.not_mono = {name} ist nicht mono ({n} Kan.)
+import.other_format = {name} hat ein anderes Format ({rate} Hz / {bits} Bit)
+import.no_wavs = keine WAV-Dateien
+import.too_many = {n} WAV-Dateien, der LP-16 hat 16 Spuren
+import.many_midi = {n} MIDI-Dateien, erwartet wird eine
+import.no_midi = keine MIDI-Datei
+import.midi_unreadable = MIDI-Datei ist nicht lesbar
+import.bad_name = der Ordnername enthält Zeichen, die auf dem Stick nicht erlaubt sind
+import.exists = {path} gibt es schon (nichts überschrieben)
+lib.no_project_lib = Die Project Library ist nicht gesetzt.
+
+# Library: project library
+plib.copied = {err}\nDer Song wurde nach „{name}“ kopiert; das alte Song-Projekt wurde behalten.
+plib.in_use = Der Song wird in diesen Playlists verwendet und kann nicht gelöscht werden:\n{list}
+plib.cannot_delete = {path} kann nicht gelöscht werden:\n{err}
+plib.invalid_playlist_name = „{name}“ ist kein gültiger Playlist-Name.
+plib.invalid_chars = „{name}“ enthält ungültige Zeichen.
+plib.exists = „{name}“ gibt es schon.
+plib.cannot_write = {path} kann nicht geschrieben werden:\n{err}
+
+# Library: stick and export
+sync.rename_failed = Umbenennen in {path}: {err}
+sync.not_a_song = {name} ist kein Song
+sync.song_not_found = Song „{name}“ ist nicht auf dem Stick
+sync.playlist_not_found = Playlist „{name}“ ist nicht auf dem Stick
+sync.invalid_name = ungültiger Name „{name}“
+sync.folder_spelled = der Ordner auf dem Stick heißt „{name}“
+sync.missing = fehlt
+sync.file_spelled = die Datei auf dem Stick heißt „{name}“
+sync.content_differs = Inhalt weicht ab
+sync.unreadable = {n} Song-Projekt(e) können nicht gelesen werden, nichts exportiert:\n{list}
+sync.ok_verified = OK, geprüft, {ms} ms
+sync.ok_up_to_date = OK, aktuell
+sync.ok_renamed = OK, Ordner umbenannt von „{name}“
+
+# Library: audio output
+audio.driver_default_lc = Treiber-Standard
+audio.describe = {rate} Hz, Puffer {buffer}
+audio.cannot_open = {device} kann nicht geöffnet werden: {err}. Eventuell verwendet es eine andere Anwendung (z. B. die DAW).
+audio.no_rate = {device} unterstützt {rate} Hz nicht
+audio.one_channel = {device} hat nur 1 Ausgangskanal, aber Ausgangskanal {need} ist gewählt
+audio.few_channels = {device} hat nur {max} Ausgangskanäle, aber Ausgangskanal {need} ist gewählt
+audio.asio_tip = Tipp: die Puffergröße im Control Panel des ASIO-Treibers einstellen.
+audio.host_missing = Der Audio-Host {name} ist in diesem Build nicht verfügbar.
+audio.host_failed = Der Audio-Host {name} kann nicht verwendet werden: {err}
+audio.no_asio = Kein ASIO-Treiber konnte geöffnet werden. Treiber von Geräten, die nicht angeschlossen sind (z. B. der XR18) oder die eine andere Anwendung (z. B. die DAW) verwendet, werden nicht aufgeführt.
+audio.list_failed = Die Audiogeräte können nicht aufgelistet werden: {err}
+audio.no_device = Kein Audioausgabegerät gefunden. Das Standard-Wiedergabegerät von Windows prüfen.
+audio.device_not_found = Gerät nicht gefunden
+audio.lost = Audiogerät verloren: {device}. Die Verbindung prüfen und Play drücken.
+audio.stream_error = Audio-Stream-Fehler auf {device}: {err}. Die Verbindung prüfen und Play drücken.
+audio.default_device_lc = Standardgerät
+audio.buffer_range = Der Treiber akzeptiert Puffer von {min} bis {max} Frames, nicht {n}. Er verwendet seinen Standardpuffer. {hint}
+audio.buffer_refused = Der Treiber hat einen Puffer von {n} Frames nicht akzeptiert. Er verwendet seinen Standardpuffer. {hint}
+
+# Library: mixes
+mix.name_empty = Der Name darf nicht leer sein.
+mix.name_quote = Der Name darf kein doppeltes Anführungszeichen enthalten.
+mix.name_newline = Der Name darf keinen Zeilenumbruch enthalten.
+mix.no_such = Es gibt keinen Mix „{name}“.
+mix.copy_name = {name} Kopie
+mix.exists = Es gibt schon einen Mix „{name}“.
+mix.last = Der letzte Mix kann nicht gelöscht werden.
+
+# Library: MP3 backup
+backup.midi_not_in_mp3 = Die MIDI-Datei des Songs ist nicht Teil des MP3
+backup.silent = Keine Spur erreicht die linke oder rechte Seite: das MP3 ist stumm
+backup.no_rate = der Song hat keine Samplerate
+backup.encoder = MP3-Encoder: {err}
+backup.encoder_create = kann nicht erstellt werden
+
+# Library: rehearsal player
+player.midi_unreadable = MIDI-Datei nicht lesbar: {name}
+player.reader_failed = Der Thread zum Lesen der Dateien konnte nicht gestartet werden
+player.skipped = Song {n} „{name}“ wird übersprungen: {err}
+player.rate_warning = Song-Samplerate {song} Hz weicht von der Ausgabe {output} Hz ab
+
+# Library: rehearsal session
+session.changed = Der Song wurde in der Bibliothek geändert – bitte neu laden.
+session.track = Spur
+session.playlist_deleted = Die Playlist „{name}“ wurde gelöscht – der Player hat gestoppt.
+session.playlist_changed = Die Playlist wurde geändert und der geladene Song ist nicht mehr darin – der Player hat gestoppt.
+session.library_changed = Die Bibliothek wurde geändert und der geladene Song ist nicht mehr darin – der Player hat gestoppt.
+
+# Library: rehearsal queue
+queue.next_wait = Nächster: {name} – Play drücken
+queue.next_in = Nächster: {name} in {s} s
+
+# Library: song endings
+tail.clipping = Übersteuerung in den letzten {ms} ms
+tail.abrupt = Endet abrupt bei {db} dBFS
+tail.silence = , danach {ms} ms Stille
+tail.too_short = {path}: zu kurz für {trim} ms Schnitt und {fade} ms Ausblenden
+tail.too_large = {path}: zu groß
+tail.wav_short = WAV kürzer als erwartet
+
+# Library: MIDI output
+midi.unavailable = MIDI ist nicht verfügbar: {err}
+midi.port_unavailable = MIDI-Port nicht verfügbar: {name}

@@ -57,6 +57,16 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+/// Whether `w` is the warning about a song rate that differs from the
+/// output rate (in any language: it may have been made before a switch).
+fn is_rate_warning(w: &str) -> bool {
+    crate::i18n::Lang::ALL.iter().any(|&l| {
+        let t = crate::i18n::t_in(l, "player.rate_warning");
+        let head = &t[..t.find('{').unwrap_or(t.len())];
+        !head.is_empty() && w.starts_with(head)
+    })
+}
+
 /// Frames the reader thread reads and pushes at once.
 const READ_BLOCK: usize = 4096;
 /// Frames `render` mixes per round (size of the scratch buffer of a strip).
@@ -372,7 +382,7 @@ impl LoadedSong {
                         .file_name()
                         .map(|f| f.to_string_lossy().into_owned())
                         .unwrap_or(path);
-                    warnings.push(format!("MIDI file unreadable: {}", file));
+                    warnings.push(tr!("player.midi_unreadable", name = file));
                     None
                 }
             },
@@ -412,7 +422,7 @@ impl LoadedSong {
                 .ok()
         };
         if thread.is_none() {
-            warnings.push("The file reader thread could not be started".to_string());
+            warnings.push(tr!("player.reader_failed").to_string());
         }
         LoadedSong {
             path: project.path.clone(),
@@ -640,7 +650,7 @@ fn skip_messages(queue: &[QueueEntry]) -> Vec<String> {
         .iter()
         .enumerate()
         .filter_map(|(i, e)| {
-            e.project.as_ref().err().map(|why| format!("Song {} \"{}\" is skipped: {}", i + 1, e.name, why))
+            e.project.as_ref().err().map(|why| tr!("player.skipped", n = i + 1, name = e.name, err = why))
         })
         .collect()
 }
@@ -717,9 +727,9 @@ impl Engine {
             song.midi_rate(rate);
         }
         if let Some(song) = self.song.as_mut() {
-            if song.song_rate == rate && song.warnings.iter().any(|w| w.starts_with("Song sample rate")) {
+            if song.song_rate == rate && song.warnings.iter().any(|w| is_rate_warning(w)) {
                 let kept: Vec<String> =
-                    song.warnings.iter().filter(|w| !w.starts_with("Song sample rate")).cloned().collect();
+                    song.warnings.iter().filter(|w| !is_rate_warning(w)).cloned().collect();
                 song.warnings = Arc::new(kept);
             }
         }
@@ -739,10 +749,7 @@ impl Engine {
     pub fn set_song(&mut self, mut song: LoadedSong) -> Option<LoadedSong> {
         self.leave_queue();
         if song.song_rate != self.output_rate {
-            Arc::make_mut(&mut song.warnings).push(format!(
-                "Song sample rate {} Hz differs from output {} Hz",
-                song.song_rate, self.output_rate
-            ));
+            Arc::make_mut(&mut song.warnings).push(tr!("player.rate_warning", song = song.song_rate, output = self.output_rate));
         }
         song.midi_rate(self.output_rate);
         self.state = PlayState::Stopped;

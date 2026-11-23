@@ -17,6 +17,7 @@ use crate::gui_playlist::playlist_combo;
 use crate::gui_rehearsal::{RehearsalPanel, TRANSPORT_SMALL};
 use lp16_tool::rehearsal_session::track_names;
 use eframe::egui::{self, vec2, Align2, Color32, FontId, RichText, Sense, Stroke, Ui};
+use lp16_tool::tr;
 use lp16_tool::backup::{render_song, Tags};
 use lp16_tool::backup_mix::{file_name, unique_names, BackupMix, BackupSettings};
 use lp16_tool::mix::STRIPS;
@@ -152,7 +153,7 @@ fn routing(mix: &BackupMix, names: &[String; STRIPS]) -> String {
         }
     }
     let list = |v: &Vec<String>| if v.is_empty() { "\u{2014}".to_string() } else { v.join(" ") };
-    format!("Left: {}     Right: {}     Both: {}     Not used: {}", list(&l), list(&r), list(&both), list(&none))
+    tr!("backup.routing", left = list(&l), right = list(&r), both = list(&both), none = list(&none))
 }
 
 impl BackupPanel {
@@ -209,17 +210,17 @@ impl BackupPanel {
         // ---- settings row ----
         ui.add_enabled_ui(!running, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Playlist").size(14.0).color(TEXT));
+                ui.label(RichText::new(tr!("rehearsal.playlist")).size(14.0).color(TEXT));
                 let names: Vec<String> = self.library.iter().map(|(n, _)| n.clone()).collect();
                 if let Some(p) = playlist_combo(ui, "backup_playlist", 220.0, &names, self.playlist.as_deref(), false) {
                     self.playlist = Some(p);
                     self.message = None;
                 }
-                ui.label(RichText::new(format!("{} songs", song_count)).size(12.5).color(DIM));
+                ui.label(RichText::new(tr!("backup.n_songs", n = song_count)).size(12.5).color(DIM));
                 ui.add_space(16.0);
-                ui.label(RichText::new("Target folder").size(14.0).color(TEXT));
-                if folder_btn(ui, "Choose the folder for the MP3s") {
-                    let mut dlg = rfd::FileDialog::new().set_title("Target folder for the MP3s");
+                ui.label(RichText::new(tr!("backup.target_folder")).size(14.0).color(TEXT));
+                if folder_btn(ui, tr!("backup.choose_folder")) {
+                    let mut dlg = rfd::FileDialog::new().set_title(tr!("backup.folder_title"));
                     if Path::new(&settings.dir).is_dir() {
                         dlg = dlg.set_directory(&settings.dir);
                     }
@@ -233,10 +234,10 @@ impl BackupPanel {
                 }
             });
             ui.horizontal(|ui| {
-                ui.label(RichText::new("File names").size(14.0).color(TEXT));
+                ui.label(RichText::new(tr!("backup.file_names")).size(14.0).color(TEXT));
                 if ui
                     .add(egui::TextEdit::singleline(&mut settings.pattern).desired_width(220.0))
-                    .on_hover_text("{nr} = position in the playlist (01, 02, ...), {song} = song name, {playlist} = playlist name")
+                    .on_hover_text(tr!("backup.pattern_tip"))
                     .changed()
                 {
                     changed = true;
@@ -252,7 +253,7 @@ impl BackupPanel {
                     .color(DIM),
                 );
                 ui.add_space(16.0);
-                ui.label(RichText::new("MP3 192 kbit/s CBR, stereo, best quality").size(12.5).color(DIM));
+                ui.label(RichText::new(tr!("backup.format")).size(12.5).color(DIM));
             });
         });
         ui.add_space(4.0);
@@ -260,13 +261,13 @@ impl BackupPanel {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             if running {
-                if small_btn(ui, "Cancel", true) {
+                if small_btn(ui, tr!("common.cancel"), true) {
                     if let Some(j) = &self.job {
                         j.lock().unwrap().cancel = true;
                     }
                 }
             } else if ui
-                .add_enabled(song_count > 0, egui::Button::new(RichText::new("Export MP3s").size(14.0).color(TEXT)).fill(ORANGE))
+                .add_enabled(song_count > 0, egui::Button::new(RichText::new(tr!("backup.export")).size(14.0).color(TEXT)).fill(ORANGE))
                 .clicked()
             {
                 self.start(ui.ctx(), settings);
@@ -283,7 +284,7 @@ impl BackupPanel {
         // ---- the two mixers ----
         let h = ((ui.available_height() - 2.0 * 22.0) / 2.0).max(120.0);
         egui::ScrollArea::vertical().id_source("backup_mixers").auto_shrink([false, false]).show(ui, |ui| {
-            ui.label(RichText::new("Left side").size(14.0).strong().color(TEXT));
+            ui.label(RichText::new(tr!("backup.left_side")).size(14.0).strong().color(TEXT));
             // the master meters show the side that is heard on them
             let (ml, mr) = match self.monitor {
                 Monitor::Stereo => (shown[STRIPS], shown[STRIPS + 1]),
@@ -293,10 +294,10 @@ impl BackupPanel {
             let strips: [f32; STRIPS] = std::array::from_fn(|k| shown[k]);
             let (left_strips, right_strips) = side_meters(&strips, &settings.mix, self.monitor);
             changed |=
-                backup_side(ui, "bl", "Left", h, &mut settings.mix.left, &mut settings.names, &self.names, LEFT_FILL, !running, (left_strips, ml));
-            ui.label(RichText::new("Right side").size(14.0).strong().color(TEXT));
+                backup_side(ui, "bl", tr!("backup.left"), h, &mut settings.mix.left, &mut settings.names, &self.names, LEFT_FILL, !running, (left_strips, ml));
+            ui.label(RichText::new(tr!("backup.right_side")).size(14.0).strong().color(TEXT));
             changed |=
-                backup_side(ui, "br", "Right", h, &mut settings.mix.right, &mut settings.names, &self.names, RIGHT_FILL, !running, (right_strips, mr));
+                backup_side(ui, "br", tr!("backup.right"), h, &mut settings.mix.right, &mut settings.names, &self.names, RIGHT_FILL, !running, (right_strips, mr));
         });
         changed
     }
@@ -317,7 +318,7 @@ impl BackupPanel {
         egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::same(6.0)).show(ui, |ui| {
             ui.set_min_width(ui.available_width());
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Preview").size(14.0).strong().color(ORANGE));
+                ui.label(RichText::new(tr!("backup.preview")).size(14.0).strong().color(ORANGE));
                 let shown = songs.get(current).map(|n| format!("{:02}  {}", current + 1, n)).unwrap_or_else(|| "\u{2014}".to_string());
                 let mut chosen = None;
                 egui::ComboBox::from_id_source("backup_preview_song").width(260.0).selected_text(shown).show_ui(ui, |ui| {
@@ -335,8 +336,8 @@ impl BackupPanel {
                 if ours {
                     player.transport(ui, status, TRANSPORT_SMALL);
                 } else if ui
-                    .add_enabled(song_count > 0, egui::Button::new(RichText::new("\u{25b6}  Play").size(14.0).color(TEXT)).min_size(vec2(80.0, 28.0)))
-                    .on_hover_text("Load the playlist into the player and play the chosen song")
+                    .add_enabled(song_count > 0, egui::Button::new(RichText::new(format!("\u{25b6}  {}", tr!("backup.play"))).size(14.0).color(TEXT)).min_size(vec2(80.0, 28.0)))
+                    .on_hover_text(tr!("backup.play_tip"))
                     .clicked()
                 {
                     player.session.preview_song(&playlist, current, true);
@@ -346,11 +347,11 @@ impl BackupPanel {
                     ui.label(RichText::new(text).size(15.0).monospace().color(if dragging { ORANGE } else { TEXT }));
                 }
                 ui.add_space(12.0);
-                ui.label(RichText::new("Listen to").size(13.0).color(DIM));
+                ui.label(RichText::new(tr!("backup.listen")).size(13.0).color(DIM));
                 for (m, label, tip) in [
-                    (Monitor::Stereo, "L + R", "Both sides, as in the MP3"),
-                    (Monitor::Left, "Left only", "Only the left side, on both speakers"),
-                    (Monitor::Right, "Right only", "Only the right side, on both speakers"),
+                    (Monitor::Stereo, "L + R", tr!("backup.mon_both_tip")),
+                    (Monitor::Left, tr!("backup.mon_left"), tr!("backup.mon_left_tip")),
+                    (Monitor::Right, tr!("backup.mon_right"), tr!("backup.mon_right_tip")),
                 ] {
                     if ui.selectable_label(self.monitor == m, RichText::new(label).size(13.0)).on_hover_text(tip).clicked() {
                         self.monitor = m;
@@ -361,7 +362,7 @@ impl BackupPanel {
                 let p = ui.painter();
                 p.circle_filled(egui::pos2(rect.left() + 9.0, rect.center().y), 5.0, if clip { RED } else { Color32::from_rgb(0x50, 0x28, 0x28) });
                 p.text(egui::pos2(rect.left() + 20.0, rect.center().y), Align2::LEFT_CENTER, "CLIP", FontId::proportional(11.0), if clip { RED } else { DIM });
-                if resp.on_hover_text("A side went above 0 dBFS (the MP3 would be clipped). Click to reset.").clicked() {
+                if resp.on_hover_text(tr!("backup.clip_tip")).clicked() {
                     player.session.reset_clip();
                 }
             });
@@ -374,14 +375,14 @@ impl BackupPanel {
                 ui.label(RichText::new(e).size(12.5).color(RED));
             } else if !ours && player.session.loaded_playlist().is_some() && status.map(|s| s.state == PlayState::Playing).unwrap_or(false) {
                 ui.label(
-                    RichText::new("The player is playing another playlist (Rehearsal tab); Play loads this one.")
+                    RichText::new(tr!("backup.other_playlist"))
                         .size(12.5)
                         .color(DIM),
                 );
             }
             if let Some(st) = st {
                 for w in st.warnings.iter() {
-                    ui.label(RichText::new(format!("Warning: {}", w)).size(12.5).color(ORANGE));
+                    ui.label(RichText::new(tr!("common.warning", text = w)).size(12.5).color(ORANGE));
                 }
             }
         });
@@ -402,7 +403,7 @@ impl BackupPanel {
             ui.painter().text(
                 rect.left_center() + vec2(8.0, 0.0),
                 Align2::LEFT_CENTER,
-                format!("Song {} of {}: {}", (j.done + 1).min(j.total), j.total, j.current),
+                tr!("backup.progress", n = (j.done + 1).min(j.total), total = j.total, name = j.current),
                 FontId::proportional(12.5),
                 Color32::WHITE,
             );
@@ -411,18 +412,18 @@ impl BackupPanel {
         let errors = j.lines.iter().filter(|l| !l.ok).count();
         let notes = j.lines.iter().filter(|l| !l.notes.is_empty()).count();
         let title = if j.cancel {
-            "Export cancelled.".to_string()
+            tr!("backup.cancelled").to_string()
         } else if errors > 0 {
-            format!("Export finished with {} error(s).", errors)
+            tr!("backup.errors", n = errors)
         } else {
-            format!("{} MP3(s) written to {} in {}.", j.lines.len(), j.dir, fmt_clock(j.elapsed))
+            tr!("backup.done", n = j.lines.len(), dir = j.dir, time = fmt_clock(j.elapsed))
         };
         let color = if errors > 0 || j.cancel { RED } else if notes > 0 { ORANGE } else { GREEN };
         let mut close = false;
         egui::Frame::none().fill(PANEL).inner_margin(egui::Margin::same(6.0)).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(title).size(14.0).color(color));
-                if small_btn(ui, "Close report", true) {
+                if small_btn(ui, tr!("backup.close_report"), true) {
                     close = true;
                 }
             });
@@ -449,22 +450,22 @@ impl BackupPanel {
     fn start(&mut self, ctx: &egui::Context, settings: &BackupSettings) {
         self.message = None;
         let Some(songs) = self.songs().cloned() else {
-            self.message = Some("Choose a playlist.".to_string());
+            self.message = Some(tr!("backup.choose_playlist").to_string());
             return;
         };
         let dir = settings.dir.trim().to_string();
         if dir.is_empty() {
-            self.message = Some("Choose a target folder.".to_string());
+            self.message = Some(tr!("backup.choose_target").to_string());
             return;
         }
         if let Err(e) = std::fs::create_dir_all(&dir) {
-            self.message = Some(format!("The target folder cannot be created: {}", e));
+            self.message = Some(tr!("backup.folder_failed", err = e));
             return;
         }
         let mix = settings.mix;
         let (l, r) = mix.gains();
         if l.iter().chain(r.iter()).all(|g| *g == 0.0) {
-            self.message = Some("No output is turned up on the left or the right side.".to_string());
+            self.message = Some(tr!("backup.nothing_up").to_string());
             return;
         }
         let job = Arc::new(Mutex::new(Job {
@@ -536,16 +537,13 @@ fn run(job: &Mutex<Job>, songs: &[PlaylistSong], audio_lib: &str, playlist: &str
                         if rep.clipped > 0 {
                             notes.insert(
                                 0,
-                                format!(
-                                    "Clipped: peak {:+.1} dBFS, {} samples limited \u{2014} lower the master of that side and export again",
-                                    rep.peak_db, rep.clipped
-                                ),
+                                tr!("backup.clipped", peak = format!("{:+.1}", rep.peak_db), n = rep.clipped),
                             );
                         }
                         Line { name: file, ok: true, text: fmt_clock(rep.seconds), notes }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::Interrupted => return,
-                    Err(e) => Line { name: file, ok: false, text: format!("ERROR: {}", e), notes: Vec::new() },
+                    Err(e) => Line { name: file, ok: false, text: tr!("export.error_line", err = e), notes: Vec::new() },
                 }
             }
         };

@@ -10,6 +10,9 @@ use std::fs;
 use std::path::Path;
 use std::time::UNIX_EPOCH;
 
+// first, so that tr! is known in all modules below
+#[macro_use]
+pub mod i18n;
 pub mod backup_mix;
 #[cfg(feature = "mp3")]
 pub mod backup;
@@ -432,9 +435,9 @@ impl StartMode {
     /// The name uTool2 shows.
     pub fn label(self) -> &'static str {
         match self {
-            StartMode::Button => "Wait for button press",
-            StartMode::Timer => "Wait for timer",
-            StartMode::NoWait => "No wait",
+            StartMode::Button => tr!("mode.button"),
+            StartMode::Timer => tr!("mode.timer"),
+            StartMode::NoWait => tr!("mode.nowait"),
         }
     }
 }
@@ -448,9 +451,9 @@ pub fn delay_seconds(text: &str) -> u32 {
 /// an unknown mode is shown as it is.
 pub fn start_mode_text(mode: &str, delay: &str) -> String {
     match StartMode::parse(mode) {
-        Some(StartMode::Timer) => format!("Wait for timer ({} s)", delay_seconds(delay)),
+        Some(StartMode::Timer) => tr!("mode.timer_s", s = delay_seconds(delay)),
         Some(m) => m.label().to_string(),
-        None => format!("Unknown start mode \"{}\"", mode),
+        None => tr!("mode.unknown", mode = mode),
     }
 }
 
@@ -574,7 +577,7 @@ impl WavInfo {
         let bad = || {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("{} is not a usable WAV file", src),
+                tr!("lib.not_usable_wav", name = src),
             )
         };
         let mut f = fs::File::open(src)?;
@@ -685,7 +688,7 @@ impl WavReader {
         if !supported {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("{}: unsupported WAV format", path),
+                tr!("lib.unsupported_wav", path = path),
             ));
         }
         let file = fs::File::open(path).map_err(named)?;
@@ -783,33 +786,23 @@ pub fn open_song_tracks(project: &SongProject) -> SongTracks {
     let mut warnings = Vec::new();
     let mut readers: Vec<(String, usize, WavReader)> = Vec::new();
     for (i, t) in project.tracks.iter().enumerate() {
-        let name = if t.name.is_empty() { format!("channel {}", i + 1) } else { t.name.clone() };
+        let name = if t.name.is_empty() { tr!("lib.channel_n", n = i + 1) } else { t.name.clone() };
         if t.channel < 0 || t.channel as usize >= OUTPUTS {
-            warnings.push(format!(
-                "Track \"{}\": output channel {} is not in 1-{}, left silent",
-                name,
-                t.channel as i64 + 1,
-                OUTPUTS
-            ));
+            warnings.push(tr!("lib.track_bad_channel", name = name, ch = t.channel as i64 + 1, max = OUTPUTS));
             continue;
         }
         match WavReader::open(&project.wav(t)) {
             Ok(r) => readers.push((name, t.channel as usize, r)),
-            Err(e) => warnings.push(format!("Track \"{}\": {}", name, e)),
+            Err(e) => warnings.push(tr!("lib.track_error", name = name, err = e)),
         }
     }
     let rate = readers.first().map(|(_, _, r)| r.rate()).unwrap_or(project.sampling_rate);
     let mut tracks = Vec::new();
     for (name, channel, r) in readers {
         if r.channels() != 1 {
-            warnings.push(format!("Track \"{}\": not mono ({} channels), left silent", name, r.channels()));
+            warnings.push(tr!("lib.track_not_mono", name = name, n = r.channels()));
         } else if r.rate() != rate {
-            warnings.push(format!(
-                "Track \"{}\": sample rate {} Hz differs from the song rate {} Hz, left silent",
-                name,
-                r.rate(),
-                rate
-            ));
+            warnings.push(tr!("lib.track_rate", name = name, rate = r.rate(), song = rate));
         } else {
             tracks.push((channel, r));
         }
@@ -950,7 +943,7 @@ pub fn export_wav(src: &str, dest: &str) -> std::io::Result<()> {
         if copied != data_len {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
-                format!("{}: data chunk shorter than expected", src),
+                tr!("lib.data_short", path = src),
             ));
         }
         if pad == 1 {
@@ -1077,30 +1070,30 @@ pub fn plan_song(project: &SongProject, songs_root: &str) -> SongPlan {
         .filter(|p| name_case_differs(p).is_some())
         .count();
     let (needs_export, reason) = if !Path::new(&songs_root).join(&name).exists() {
-        (true, "new song".to_string())
+        (true, tr!("plan.new_song").to_string())
     } else if unreadable_source > 0 {
         (
             true,
-            format!("{} source wav file(s) unreadable", unreadable_source),
+            tr!("plan.unreadable", n = unreadable_source),
         )
     } else if missing_wav > 0 {
-        (true, format!("{} wav file(s) missing", missing_wav))
+        (true, tr!("plan.wav_missing", n = missing_wav))
     } else if stale_wav > 0 {
-        (true, format!("{} wav file(s) changed on source", stale_wav))
+        (true, tr!("plan.wav_changed", n = stale_wav))
     } else if midi_missing {
-        (true, "midi file missing".to_string())
+        (true, tr!("plan.midi_missing").to_string())
     } else if case_wrong > 0 {
-        (true, format!("{} file name(s) spelled differently on the stick", case_wrong))
+        (true, tr!("plan.case", n = case_wrong))
     } else {
         match fs::read_to_string(&song_set) {
             Ok(existing) => {
                 if existing == text {
-                    (false, "up to date".to_string())
+                    (false, tr!("plan.up_to_date").to_string())
                 } else {
-                    (true, "song.set changed".to_string())
+                    (true, tr!("plan.set_changed").to_string())
                 }
             }
-            Err(_) => (true, "song.set missing".to_string()),
+            Err(_) => (true, tr!("plan.set_missing").to_string()),
         }
     };
 
@@ -1133,7 +1126,7 @@ pub fn export_plan(plan: &SongPlan, songs_root: &str) -> std::io::Result<()> {
     verify_plan(plan, songs_root).map_err(|msg| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("verification failed: {}", msg),
+            tr!("plan.verify_failed", err = msg),
         )
     })
 }
@@ -1145,7 +1138,7 @@ pub fn verify_plan(plan: &SongPlan, songs_root: &str) -> Result<(), String> {
     let set_path = dir.join("song.set");
     match fs::read(&set_path) {
         Ok(bytes) if bytes == plan.text.as_bytes() => {}
-        Ok(_) => return Err(format!("{} differs", set_path.display())),
+        Ok(_) => return Err(tr!("plan.differs", path = set_path.display())),
         Err(e) => return Err(format!("{}: {}", set_path.display(), e)),
     }
     for (src, dest) in &plan.wav {
@@ -1153,12 +1146,7 @@ pub fn verify_plan(plan: &SongPlan, songs_root: &str) -> Result<(), String> {
         match fs::metadata(dest) {
             Ok(m) if m.len() == expected => {}
             Ok(m) => {
-                return Err(format!(
-                    "{} has {} bytes, expected {}",
-                    dest,
-                    m.len(),
-                    expected
-                ))
+                return Err(tr!("plan.size", path = dest, n = m.len(), want = expected))
             }
             Err(e) => return Err(format!("{}: {}", dest, e)),
         }
@@ -1169,7 +1157,7 @@ pub fn verify_plan(plan: &SongPlan, songs_root: &str) -> Result<(), String> {
             .map_err(|e| format!("{}: {}", src, e))?;
         match fs::metadata(dest) {
             Ok(m) if m.len() == want => {}
-            Ok(_) => return Err(format!("{} differs in size from its source", dest)),
+            Ok(_) => return Err(tr!("plan.size_differs", path = dest)),
             Err(e) => return Err(format!("{}: {}", dest, e)),
         }
     }
@@ -1530,7 +1518,7 @@ impl SongProject {
     /// Read a .songprj. The error names the file.
     pub fn load(path: &str, audio_lib: &str) -> std::io::Result<Self> {
         let xml = fs::read_to_string(path).map_err(|e| {
-            std::io::Error::new(e.kind(), format!("song project {}: {}", path, e))
+            std::io::Error::new(e.kind(), tr!("lib.song_project_err", path = path, err = e))
         })?;
         let stem = Path::new(path)
             .file_stem()
@@ -1968,7 +1956,7 @@ fn has_ext(p: &Path, exts: &[&str]) -> bool {
 pub fn scan_import(import_lib: &str, library: &[LibrarySong]) -> Result<Vec<ImportItem>, String> {
     let root = Path::new(import_lib);
     if import_lib.trim().is_empty() || !root.is_dir() {
-        return Err(format!("AudioLibrary folder not found: \"{}\"", import_lib));
+        return Err(tr!("import.lib_not_found", path = import_lib));
     }
     let mut items = Vec::new();
     for song_dir in sorted_dir(root).into_iter().filter(|p| p.is_dir()) {
@@ -2031,32 +2019,29 @@ pub fn scan_import(import_lib: &str, library: &[LibrarySong]) -> Result<Vec<Impo
                         }
                         let fname = Path::new(w).file_name().unwrap_or_default().to_string_lossy().into_owned();
                         if i.channels != 1 {
-                            problems.push(format!("{} is not mono ({} ch)", fname, i.channels));
+                            problems.push(tr!("import.not_mono", name = fname, n = i.channels));
                         } else if i.rate != item.rate || i.bits as u32 != item.bits {
-                            problems.push(format!("{} has a different format ({} Hz / {}-bit)", fname, i.rate, i.bits));
+                            problems.push(tr!("import.other_format", name = fname, rate = i.rate, bits = i.bits));
                         }
                         item.duration = item.duration.max(i.seconds());
                     }
-                    Err(_) => problems.push(format!(
-                        "{} is not a usable WAV file",
-                        Path::new(w).file_name().unwrap_or_default().to_string_lossy()
-                    )),
+                    Err(_) => problems.push(tr!("lib.not_usable_wav", name = Path::new(w).file_name().unwrap_or_default().to_string_lossy())),
                 }
             }
             if item.wavs.is_empty() {
-                problems.push("no WAV files".into());
+                problems.push(tr!("import.no_wavs").into());
             } else if item.wavs.len() > 16 {
-                problems.push(format!("{} WAV files, the LP-16 has 16 tracks", item.wavs.len()));
+                problems.push(tr!("import.too_many", n = item.wavs.len()));
             }
             if midis.len() > 1 {
-                problems.push(format!("{} MIDI files, expected one", midis.len()));
+                problems.push(tr!("import.many_midi", n = midis.len()));
             } else if midis.is_empty() {
-                item.notes.push("no MIDI file".into());
+                item.notes.push(tr!("import.no_midi").into());
             } else if midi_duration(&midis[0]).is_none() {
-                problems.push("MIDI file is not readable".into());
+                problems.push(tr!("import.midi_unreadable").into());
             }
             if !valid_fat32_name(&item.name) {
-                problems.push("folder name contains characters not allowed on the stick".into());
+                problems.push(tr!("import.bad_name").into());
             }
             item.status = match covering.len() {
                 0 if problems.is_empty() => ImportStatus::Missing,
@@ -2115,7 +2100,7 @@ pub fn import_songs(items: &[&ImportItem], songs_dir: &Path, audio_lib: &str) ->
     for item in items {
         let dest = songs_dir.join(format!("{}.songprj", item.name));
         if dest.exists() {
-            return Err(format!("{} already exists (nothing overwritten)", dest.display()));
+            return Err(tr!("import.exists", path = dest.display()));
         }
         let text = import_songprj(item, audio_lib, now_ms());
         write_bytes_atomic(&dest, text.as_bytes()).map_err(|e| format!("{}: {}", dest.display(), e))?;
@@ -2138,7 +2123,7 @@ pub const PROJECT_LIB_DIRS: [&str; 5] = [
 pub fn init_folders(config: &Config) -> Result<Vec<String>, String> {
     let mut wanted: Vec<std::path::PathBuf> = Vec::new();
     if config.project_lib.trim().is_empty() {
-        return Err("The Project Library is not set.".into());
+        return Err(tr!("lib.no_project_lib").into());
     }
     for d in PROJECT_LIB_DIRS {
         wanted.push(Path::new(&config.project_lib).join(d));
@@ -2213,6 +2198,8 @@ pub struct Config {
     pub mixes: mix::MixLibrary,
     /// the stereo MP3 backup export (`backup*` in the file)
     pub backup: backup_mix::BackupSettings,
+    /// language of the user interface ("en", "de"); empty = English
+    pub language: String,
 }
 
 /// The buffer sizes (frames) the settings offer; 0 = driver default.
@@ -2242,6 +2229,7 @@ impl Default for Config {
             set_pause: DEFAULT_SET_PAUSE,
             mixes: mix::MixLibrary::default(),
             backup: backup_mix::BackupSettings::default(),
+            language: String::new(),
         }
     }
 }
@@ -2288,6 +2276,7 @@ pub fn load_config(path: &std::path::Path) -> Config {
                     "audio_host" => config.audio_host = value,
                     "audio_device" => config.audio_device = value,
                     "midi_port" => config.midi_port = value,
+                    "language" => config.language = value,
                     "rehearsal_autoplay" => {
                         config.rehearsal_autoplay = matches!(value.to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on");
                     }
@@ -2349,7 +2338,7 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
     let text = format!(
         "{}stick_root = \"{}\"\r\n\
          audio_host = \"{}\"\r\naudio_device = \"{}\"\r\n\
-         audio_out_left = \"{}\"\r\naudio_out_right = \"{}\"\r\naudio_buffer = \"{}\"\r\nmidi_port = \"{}\"\r\nrehearsal_autoplay = \"{}\"\r\nset_pause = \"{}\"\r\n{}{}",
+         audio_out_left = \"{}\"\r\naudio_out_right = \"{}\"\r\naudio_buffer = \"{}\"\r\nmidi_port = \"{}\"\r\nrehearsal_autoplay = \"{}\"\r\nset_pause = \"{}\"\r\nlanguage = \"{}\"\r\n{}{}",
         paths,
         config.stick_root,
         config.audio_host,
@@ -2360,6 +2349,7 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
         config.midi_port,
         config.rehearsal_autoplay,
         config.set_pause,
+        config.language,
         config.mixes.to_config_text(),
         config.backup.to_config_text()
     );
@@ -3318,6 +3308,7 @@ mod tests {
         assert_eq!(old.midi_port, "", "an old config without the field: MIDI is off");
         assert!(!old.rehearsal_autoplay, "an old config without the field: autoplay is off");
         assert_eq!(old.set_pause, 60, "an old config without the field: 60 s pause");
+        assert_eq!(old.language, "", "an old config without the field: English");
         assert_eq!(old.stick_root, "F:\\");
 
         // roundtrip of all fields, together with both path styles
@@ -3339,6 +3330,7 @@ mod tests {
                 set_pause: 45,
                 mixes: mix::MixLibrary::default(),
                 backup: backup_mix::BackupSettings::default(),
+                language: "de".into(),
             };
             save_config(&path, &c).unwrap();
             let text = fs::read_to_string(&path).unwrap();
@@ -3351,6 +3343,7 @@ mod tests {
             assert!(text.contains("midi_port = \"MIDI \u{fc}ber USB 2\""));
             assert!(b.rehearsal_autoplay && text.contains("rehearsal_autoplay = \"true\""));
             assert_eq!(b.set_pause, 45);
+            assert_eq!(b.language, "de");
             assert_eq!(b.stick_root, "F:\\");
             assert_eq!(b.audio_lib, if own { "A:\\audio" } else { "E:\\x\\LIB\\AudioLibrary" });
             assert_eq!(b.project_lib, if own { "P:\\prj" } else { "E:\\x\\LIB\\CymaticProjectLib" });

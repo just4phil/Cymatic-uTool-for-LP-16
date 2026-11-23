@@ -6,6 +6,7 @@
 
 use crate::gui_app::{panel_body, panel_tab, small_btn, DIM, ORANGE, RED};
 use eframe::egui::{self, RichText, Ui};
+use lp16_tool::tr;
 use lp16_tool::midi_out::{list_midi_outputs, PortStatus};
 use lp16_tool::Config;
 use std::time::Duration;
@@ -58,20 +59,20 @@ impl MidiPanel {
             self.refresh();
         }
         let mut refresh = false;
-        panel_tab(ui, "MIDI output", false);
+        panel_tab(ui, tr!("midi.title"), false);
         panel_body(ui, false, |ui| {
             let chosen = config.midi_port.clone();
             let shown = if chosen.is_empty() {
-                "(none)".to_string()
+                tr!("common.none").to_string()
             } else if self.ports.contains(&chosen) {
                 chosen.clone()
             } else {
-                format!("{} (not found)", chosen)
+                tr!("common.not_found", name = chosen)
             };
             ui.horizontal(|ui| {
-                ui.label("Port:");
+                ui.label(tr!("midi.port"));
                 egui::ComboBox::from_id_source("midi_port").selected_text(shown).width(300.0).show_ui(ui, |ui| {
-                    if ui.selectable_label(chosen.is_empty(), "(none)").clicked() && !chosen.is_empty() {
+                    if ui.selectable_label(chosen.is_empty(), tr!("common.none")).clicked() && !chosen.is_empty() {
                         config.midi_port.clear();
                         out.changed = true;
                     }
@@ -82,21 +83,21 @@ impl MidiPanel {
                         }
                     }
                 });
-                if small_btn(ui, "Refresh", true) {
+                if small_btn(ui, tr!("common.refresh"), true) {
                     refresh = true;
                 }
             });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if small_btn(ui, "Send test", can_test && !config.midi_port.is_empty()) {
+                if small_btn(ui, tr!("midi.send_test"), can_test && !config.midi_port.is_empty()) {
                     out.test = true;
                 }
                 let note = if config.midi_port.is_empty() {
-                    "Choose a port first."
+                    tr!("midi.choose_port")
                 } else if !can_test {
-                    "Load a song with a MIDI file in the Rehearsal tab first."
+                    tr!("midi.load_song")
                 } else {
-                    "Sends bank, program change and the controllers at the start of the loaded song."
+                    tr!("midi.test_tip")
                 };
                 ui.label(RichText::new(note).size(11.0).color(DIM));
             });

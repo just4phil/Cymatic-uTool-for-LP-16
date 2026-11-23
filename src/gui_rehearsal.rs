@@ -11,6 +11,7 @@ use crate::gui_mixer::MixerOutcome;
 use crate::gui_mixer_tab::{ConsoleMode, MixerConsole};
 use crate::gui_playlist;
 use eframe::egui::{self, vec2, Align, Color32, Key, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui};
+use lp16_tool::tr;
 use lp16_tool::mix::{song_strips, MixLibrary, SongStrip, STRIPS};
 use lp16_tool::rehearsal::{fmt_clock, Levels, PlayState, Status};
 use lp16_tool::rehearsal_queue::next_caption;
@@ -64,7 +65,7 @@ fn list_warnings(ui: &mut Ui, status: Option<&Status>) {
     if let Some(st) = status {
         for w in st.queue_warnings.iter() {
             ui.add_space(4.0);
-            ui.add(egui::Label::new(RichText::new(format!("Warning: {}", w)).size(12.0).color(ORANGE)).wrap(true));
+            ui.add(egui::Label::new(RichText::new(tr!("common.warning", text = w)).size(12.0).color(ORANGE)).wrap(true));
         }
     }
 }
@@ -79,9 +80,8 @@ impl RehearsalPanel {
     /// The checkbox "Autoplay after 5 seconds"; the same one in every tab.
     pub fn autoplay_option(&mut self, ui: &mut Ui) {
         let mut on = self.session.autoplay();
-        let resp = ui.checkbox(&mut on, "Autoplay after 5 seconds").on_hover_text(
-            "On: after a song ends, the next one starts by itself after 5 seconds.\n\
-             Off: the player waits for Play.",
+        let resp = ui.checkbox(&mut on, tr!("rehearsal.autoplay")).on_hover_text(
+            tr!("rehearsal.autoplay_tip"),
         );
         if resp.changed() {
             self.session.set_autoplay(on);
@@ -305,13 +305,13 @@ impl RehearsalPanel {
             let has_prev = st.map(|s| s.index.map(|i| i > 0).unwrap_or(false) || s.position_seconds > 0.0).unwrap_or(false);
             let has_next = st.map(|s| s.next_index.is_some()).unwrap_or(false);
             let playing = st.map(|s| s.state == PlayState::Playing).unwrap_or(false);
-            prev = btn(ui, "\u{23ee}", has_prev, small).on_hover_text("Previous song").clicked();
+            prev = btn(ui, "\u{23ee}", has_prev, small).on_hover_text(tr!("rehearsal.prev")).clicked();
             back = btn(ui, "\u{2212}10 s", st.is_some(), w).clicked();
-            let (icon, tip) = if playing { (Icon::Pause, "Pause (Space)") } else { (Icon::Play, "Play (Space)") };
+            let (icon, tip) = if playing { (Icon::Pause, tr!("rehearsal.pause")) } else { (Icon::Play, tr!("rehearsal.play")) };
             toggle = icon_button(ui, icon, can_play, w, style.height).on_hover_text(tip).clicked();
-            stop = icon_button(ui, Icon::Stop, st.is_some(), w, style.height).on_hover_text("Stop (Esc)").clicked();
+            stop = icon_button(ui, Icon::Stop, st.is_some(), w, style.height).on_hover_text(tr!("rehearsal.stop")).clicked();
             forward = btn(ui, "+10 s", st.is_some(), w).clicked();
-            next = btn(ui, "\u{23ed}", has_next, small).on_hover_text("Next song").clicked();
+            next = btn(ui, "\u{23ed}", has_next, small).on_hover_text(tr!("rehearsal.next")).clicked();
         });
         if prev {
             self.session.prev_song();
@@ -359,7 +359,7 @@ impl RehearsalPanel {
             if loaded && !st.warnings.is_empty() {
                 ui.add_space(14.0);
                 for w in st.warnings.iter() {
-                    ui.add(egui::Label::new(RichText::new(format!("Warning: {}", w)).size(13.0).color(ORANGE)).wrap(true));
+                    ui.add(egui::Label::new(RichText::new(tr!("common.warning", text = w)).size(13.0).color(ORANGE)).wrap(true));
                 }
             } else if !loaded {
                 for w in st.warnings.iter() {
@@ -370,25 +370,24 @@ impl RehearsalPanel {
     }
 
     fn empty_view(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new("Rehearsal").size(30.0).color(TEXT));
+        ui.label(RichText::new(tr!("tab.rehearsal")).size(30.0).color(TEXT));
         ui.add_space(16.0);
         let has_queue = self.session.has_queue();
         if has_queue && !self.session.can_start() {
             ui.add(
-                egui::Label::new(RichText::new("None of the songs of this playlist can be played.").size(15.0).color(RED))
+                egui::Label::new(RichText::new(tr!("rehearsal.none_playable")).size(15.0).color(RED))
                     .wrap(true),
             );
         } else if has_queue {
             // a playlist is chosen, nothing is loaded yet
-            if icon_button(ui, Icon::Play, true, 110.0, 44.0).on_hover_text("Play (Space)").clicked() {
+            if icon_button(ui, Icon::Play, true, 110.0, 44.0).on_hover_text(tr!("rehearsal.play")).clicked() {
                 self.session.play_first();
             }
         } else if self.session.notice().is_none() {
             ui.add(
                 egui::Label::new(
                     RichText::new(
-                        "No song loaded. Choose a playlist on the left, or right-click a song or a playlist in Home \
-                         and choose \"Play in Rehearsal\".",
+                        tr!("rehearsal.no_song", action = tr!("common.play_in_rehearsal")),
                     )
                     .size(15.0)
                     .color(DIM),
@@ -428,16 +427,16 @@ impl RehearsalPanel {
         ui.add_space(14.0);
         if st.underruns > 0 {
             ui.label(
-                RichText::new(format!("Dropouts: {} (the audio buffer ran empty)", st.underruns))
+                RichText::new(tr!("rehearsal.dropouts", n = st.underruns))
                     .size(14.0)
                     .color(RED),
             );
         }
         let output = match self.session.stream_info() {
             Some(info) => {
-                format!("Output: {}, {} Hz \u{2013} song: {} Hz", info.device, st.output_rate, st.song_rate)
+                tr!("rehearsal.output", device = info.device, rate = st.output_rate, song = st.song_rate)
             }
-            None => format!("No audio output open \u{2013} Play opens it. Song: {} Hz", st.song_rate),
+            None => tr!("rehearsal.no_output", song = st.song_rate),
         };
         ui.label(RichText::new(output).size(12.0).color(DIM));
         self.midi_line(ui, st);
@@ -468,13 +467,13 @@ impl RehearsalPanel {
 /// The MIDI line of the status, and how much longer the indicator is lit.
 fn midi_summary(port: &str, st: &Status) -> (String, Option<Duration>) {
     if port.is_empty() {
-        return ("MIDI: off".to_string(), None);
+        return (tr!("rehearsal.midi_off").to_string(), None);
     }
     if !st.midi.has_file {
-        return ("MIDI: no file".to_string(), None);
+        return (tr!("rehearsal.midi_no_file").to_string(), None);
     }
     let lit = st.midi.last_event.and_then(|t| MIDI_FLASH.checked_sub(t.elapsed())).filter(|d| !d.is_zero());
-    (format!("MIDI: {} \u{b7} {} events", port, st.midi.events_sent), lit)
+    (tr!("rehearsal.midi_events", port = port, n = st.midi.events_sent), lit)
 }
 
 fn sized_button(ui: &mut Ui, text: &str, enabled: bool, width: f32, font: f32, height: f32) -> egui::Response {

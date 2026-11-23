@@ -21,3 +21,5 @@ stick_root = "F:\"
 # ({nr}, {song}, {playlist}); the left/right mixers are written as backup.left.* / backup.right.*
 # backup_dir = "D:\Backup-MP3"
 # backup_pattern = "{nr} {song}"
+# language of the user interface (Settings > Language): "en" or "de"; empty = English
+# language = "en"

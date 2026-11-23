@@ -5,11 +5,12 @@
 
 use crate::gui_app::{DIM, LINE, MARKER_FILL, ORANGE, PANEL, RED, TEXT};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Sense, Stroke, Ui};
+use lp16_tool::tr;
 use lp16_tool::rehearsal_queue::SongRow;
 use lp16_tool::setlist::SetMarkers;
 
 /// Label of the combo entry for a single song.
-pub const SINGLE_SONG: &str = "(single song)";
+pub fn single_song() -> &'static str { tr!("rehearsal.single_song") }
 
 /// What the user did in the list during this frame.
 #[derive(Default)]
@@ -39,16 +40,16 @@ pub fn ui(
     markers: SetMarkers,
 ) -> ListOutcome {
     let mut out = ListOutcome::default();
-    ui.label(egui::RichText::new("Playlist").size(13.0).color(DIM));
+    ui.label(egui::RichText::new(tr!("rehearsal.playlist")).size(13.0).color(DIM));
     let width = ui.available_width() - 8.0;
     let shown = match (selected, single) {
         (Some(n), _) => n.to_string(),
-        (None, true) => SINGLE_SONG.to_string(),
-        (None, false) => "(none)".to_string(),
+        (None, true) => single_song().to_string(),
+        (None, false) => tr!("common.none").to_string(),
     };
     egui::ComboBox::from_id_source("rehearsal_playlist").width(width).selected_text(shown).show_ui(ui, |ui| {
         let on = single && selected.is_none();
-        if (has_songs || on) && ui.selectable_label(on, SINGLE_SONG).clicked() && !on {
+        if (has_songs || on) && ui.selectable_label(on, single_song()).clicked() && !on {
             out.library = true;
         }
         for name in playlists {
@@ -60,19 +61,19 @@ pub fn ui(
     ui.add_space(8.0);
     if rows.is_empty() {
         let text = if playlists.is_empty() && !has_songs {
-            "The library has no songs."
+            tr!("rehearsal.no_songs")
         } else {
-            "Choose a playlist or (single song)."
+            tr!("rehearsal.choose")
         };
         ui.label(egui::RichText::new(text).size(13.0).color(DIM));
         return out;
     }
     for g in 0..=rows.len() {
         if markers.encore == Some(g) {
-            marker_row(ui, "ENCORES");
+            marker_row(ui, tr!("common.encores"));
         }
         if markers.end == Some(g) {
-            marker_row(ui, "END OF CONCERT");
+            marker_row(ui, tr!("common.end_of_concert"));
         }
         let Some(row) = rows.get(g) else { break };
         // after the end of the concert: still played, but shown dimmed
@@ -101,12 +102,12 @@ pub fn playlist_combo(
     let mut chosen = None;
     let shown = match (selected, single) {
         (Some(n), _) => n.to_string(),
-        (None, true) => SINGLE_SONG.to_string(),
-        (None, false) => "(none)".to_string(),
+        (None, true) => single_song().to_string(),
+        (None, false) => tr!("common.none").to_string(),
     };
     egui::ComboBox::from_id_source(id).width(width).selected_text(shown).show_ui(ui, |ui| {
         if single && selected.is_none() {
-            let _ = ui.selectable_label(true, SINGLE_SONG);
+            let _ = ui.selectable_label(true, single_song());
         }
         for name in playlists {
             if ui.selectable_label(selected == Some(name.as_str()), name).clicked() && selected != Some(name.as_str()) {
@@ -181,7 +182,7 @@ fn song_row(ui: &mut Ui, row: &SongRow, after_end: bool) -> (Option<usize>, Opti
     );
     p.line_segment([rect.left_bottom(), rect.right_bottom()], Stroke::new(0.5_f32, LINE));
     let resp = match &row.error {
-        Some(e) => resp.on_hover_text(format!("Cannot be played, skipped: {}", e)),
+        Some(e) => resp.on_hover_text(tr!("rehearsal.skipped", err = e)),
         None => resp,
     };
     if row.error.is_some() {
