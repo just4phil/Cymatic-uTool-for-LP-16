@@ -29,7 +29,7 @@
 //! The manifest is UTF-8 text, one entry per line, fields separated by tabs:
 //!
 //! ```text
-//! lp16pack <TAB> 1
+//! lp16pack <TAB> 2               (see FORMAT)
 //! app <TAB> lp16-tool 0.2.0
 //! created <TAB> <ms since 1970>
 //! playlist <TAB> <name>         (one line per playlist)
@@ -53,8 +53,11 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 /// File extension of a band package.
 pub const EXT: &str = "lp16pack";
-/// Version of the package layout this program writes and reads.
-pub const FORMAT: u32 = 1;
+/// Version of the package layout this program writes (and the newest it
+/// reads). 1: one playlist; 2: several `playlist` lines. A reader of
+/// format 1 would keep only the last playlist without a word, so packages
+/// are written as 2 and such a reader refuses them ("please update").
+pub const FORMAT: u32 = 2;
 
 const MANIFEST: &str = "manifest.txt";
 const PLAYLISTS: &str = "Playlists/";
@@ -741,6 +744,36 @@ mod tests {
     }
 
     #[test]
+    fn the_format_version_is_checked() {
+        let root = temp_dir("pack-format");
+        let from = sender(&root);
+        let pack = root.join("p.lp16pack");
+        write_package(&plan_export(&from, &names(&["Probe"])).unwrap(), &pack, &mut |_, _| true).unwrap();
+        let mut z = ZipArchive::new(fs::File::open(&pack).unwrap()).unwrap();
+        assert!(read_text(&mut z, MANIFEST).unwrap().starts_with(&format!("lp16pack\t{}\r\n", FORMAT)));
+        assert!(FORMAT >= 2, "several playlists need format 2: older readers keep only the last one");
+
+        // a package of the first version (one playlist) is still read
+        let one = root.join("one.lp16pack");
+        let mut w = ZipWriter::new(fs::File::create(&one).unwrap());
+        w.start_file(MANIFEST, SimpleFileOptions::default()).unwrap();
+        w.write_all(b"lp16pack\t1\r\nplaylist\tP\r\n").unwrap();
+        w.start_file("Playlists/P.playlistprj", SimpleFileOptions::default()).unwrap();
+        w.finish().unwrap();
+        assert!(open_package(&one).is_ok());
+
+        // a newer one is refused instead of being read half
+        let newer = root.join("newer.lp16pack");
+        let mut w = ZipWriter::new(fs::File::create(&newer).unwrap());
+        w.start_file(MANIFEST, SimpleFileOptions::default()).unwrap();
+        w.write_all(format!("lp16pack\t{}\r\nplaylist\tP\r\n", FORMAT + 1).as_bytes()).unwrap();
+        w.finish().unwrap();
+        let e = open_package(&newer).err().unwrap();
+        assert!(e.contains("newer lp16-tool"), "{}", e);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn canceled_export_leaves_no_file() {
         let root = temp_dir("pack-cancel");
         let from = sender(&root);
@@ -753,4 +786,3 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 }
-
