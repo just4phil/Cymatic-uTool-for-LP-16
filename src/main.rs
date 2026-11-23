@@ -32,6 +32,8 @@ mod gui_playlist;
 #[cfg(feature = "gui")]
 mod gui_rehearsal;
 #[cfg(feature = "gui")]
+mod gui_setlist_print;
+#[cfg(feature = "gui")]
 mod gui_tail;
 
 #[cfg(feature = "gui")]

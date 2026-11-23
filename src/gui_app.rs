@@ -16,6 +16,7 @@ use crate::gui_backup::BackupPanel;
 use crate::gui_bandpack::BandPack;
 use crate::gui_midi::MidiPanel;
 use crate::gui_rehearsal::RehearsalPanel;
+use crate::gui_setlist_print::SetlistPrint;
 use crate::gui_tail::{TailCheck, TailCheckKind};
 use eframe::egui::{
     self, pos2, vec2, Align, Align2, Color32, FontId, Layout, Margin, Rect, RichText, Sense,
@@ -25,6 +26,7 @@ use lp16_tool::audio_out::AudioSettings;
 use lp16_tool::mix::MixSaver;
 use lp16_tool::project_lib::ProjectLibrary;
 use lp16_tool::setlist::{self, SetMarkers, Timeline};
+use lp16_tool::song_info::{self, SongInfo as SongFacts};
 use lp16_tool::sync::{self, Action, ExportMode, Progress};
 use lp16_tool::wav_tail::{self, TailReport};
 use lp16_tool::i18n::{self, Lang};
@@ -32,7 +34,7 @@ use lp16_tool::tr;
 use lp16_tool::{
     import_songs, init_folders,
     library_songs, midi_duration, natural_cmp, newest_version, scan_import, ImportItem, ImportStatus, LibrarySong,
-    now_ms, resolve, save_backup, save_config, save_mixes, save_set_pause, MAX_SET_PAUSE,
+    now_ms, resolve, save_backup, save_config, save_mixes, save_set_pause, save_setlist_logo, MAX_SET_PAUSE,
     unresolve, valid_fat32_name, Config,
     delay_seconds, start_mode_text, PlaylistSong, ProjectTrack, SongProject, StartMode, WavInfo,
 };
@@ -122,6 +124,8 @@ struct SongInfo {
     midi_exists: bool,
     /// the song has its own mixer values (`mix::has_song_mix`)
     song_mix: bool,
+    /// name on the printed setlist (`.songinfo`); empty = not set
+    print_title: String,
     size: u64,
     modified: i64,
 }
@@ -455,6 +459,8 @@ pub struct Lp16App {
     backup_saver: MixSaver,
     /// band package export / import (`.lp16pack`)
     bandpack: BandPack,
+    /// "Print setlist" of a playlist (Word file)
+    setlist_print: SetlistPrint,
     // settings: the "Audio output" area
     audio: AudioPanel,
     // settings: the "MIDI output" area
@@ -797,6 +803,7 @@ fn load_song(path: &Path, audio_lib: &str) -> SongInfo {
         midi_exists: !midi_full.is_empty() && Path::new(&midi_full).exists(),
         midi_full,
         song_mix: lp16_tool::mix::has_song_mix(&prj),
+        print_title: song_info::load(path).print_title,
         size,
         modified: mtime(path),
         path: p,
@@ -1236,6 +1243,7 @@ impl Lp16App {
             backup: BackupPanel::default(),
             backup_saver: MixSaver::default(),
             bandpack: BandPack::default(),
+            setlist_print: SetlistPrint::default(),
             audio: AudioPanel::default(),
             midi: MidiPanel::default(),
             tail_check: None,
@@ -1886,6 +1894,16 @@ impl eframe::App for Lp16App {
                 self.select_playlist_name(&playlist);
             }
         }
+        let printed = self.setlist_print.ui(ctx, &lib, &self.config.setlist_logo);
+        if let Some(logo) = printed.logo {
+            self.config.setlist_logo = logo;
+            if let Err(e) = save_setlist_logo(&config_path(), &self.config.setlist_logo) {
+                self.message(tr!("common.settings"), tr!("common.cannot_save", path = config_path().display(), err = e));
+            }
+        }
+        if printed.titles_changed {
+            self.refresh();
+        }
         self.dialogs(ctx);
         // rehearsal mix: saved at most once a second, bundled
         let now = std::time::Instant::now();
@@ -2215,6 +2233,12 @@ impl Lp16App {
                     field_box(ui, tr!("common.target_disk_location"), &stick_location(&s.name));
                     ui.add_space(14.0);
                     kv(ui, tr!("common.type"), tr!("home.type_song"));
+                    let print = if s.print_title.is_empty() {
+                        tr!("home.print_title_unset", name = song_info::default_print_title(&s.name))
+                    } else {
+                        s.print_title.clone()
+                    };
+                    kv(ui, tr!("common.print_title"), &print);
                     kv(ui, tr!("common.sample_rate"), &fmt_sr(s.sr));
                     kv(ui, tr!("common.resolution"), &tr!("common.bits", n = s.bits));
                     kv(ui, tr!("home.track_count"), &s.tracks.len().to_string());
@@ -2315,6 +2339,9 @@ impl Lp16App {
                         }
                         if small_btn(ui, tr!("pack.export_btn"), !pl.songs.is_empty()) {
                             act = 7;
+                        }
+                        if small_btn(ui, tr!("print.btn"), !pl.songs.is_empty()) {
+                            act = 8;
                         }
                     });
                     ui.add_space(8.0);
@@ -2419,6 +2446,11 @@ impl Lp16App {
                     7 => {
                         let names = self.playlists.iter().map(|p| p.name.clone()).collect();
                         self.bandpack.choose(names, Some(&self.playlists[i].name));
+                    }
+                    8 => {
+                        let pl = &self.playlists[i];
+                        let songs: Vec<String> = pl.songs.iter().map(|s| s.prj.clone()).collect();
+                        self.setlist_print.open(&pl.name, &songs, pl.markers);
                     }
                     _ => {}
                 }
@@ -4784,6 +4816,11 @@ struct SongEditor {
     /// the project as loaded; save() writes the slots and the MIDI file into it
     prj: SongProject,
     name: String,
+    /// name on the printed setlist (stored in the `.songinfo`); without a
+    /// stored one the name made from the song name, as editable text
+    print_title: String,
+    /// `print_title` when the editor was opened (only a change is stored)
+    print_title_initial: String,
     sr: u32,
     bits: u32,
     /// slot n (0-based) = output n+1
@@ -4860,6 +4897,8 @@ impl SongEditor {
         let mut ed = SongEditor {
             path: path.to_string(),
             name: prj.name.clone(),
+            print_title: String::new(),
+            print_title_initial: String::new(),
             sr: prj.sampling_rate,
             bits: prj.resolution,
             midi: prj.midi_file.clone(),
@@ -4879,6 +4918,9 @@ impl SongEditor {
             message: None,
             open_mixer: false,
         };
+        let stored = song_info::load(Path::new(path)).print_title;
+        ed.print_title = if stored.is_empty() { song_info::default_print_title(&ed.name) } else { stored };
+        ed.print_title_initial = ed.print_title.clone();
         ed.open_folder(folder);
         ed.recalc(audio_lib);
         Ok(ed)
@@ -5022,6 +5064,12 @@ impl SongEditor {
         // the Song Mix in the file wins (see ProjectLibrary::save_song)
         let prj = lib.save_song(&prj)?;
         self.prj = prj;
+        let title = self.print_title.trim().to_string();
+        if title != self.print_title_initial.trim() {
+            lib.save_song_info(Path::new(&self.path), &SongFacts { print_title: title.clone() })?;
+            self.print_title_initial = title.clone();
+        }
+        self.print_title = title;
         self.dirty = false;
         Ok(())
     }
@@ -5085,6 +5133,13 @@ fn song_editor_body(ui: &mut Ui, ed: &mut SongEditor, audio_lib: &str, frame: &e
             ui.label(format!("   {}", tr!("songed.name")));
             let mut n = ed.name.clone();
             ui.add_enabled(false, egui::TextEdit::singleline(&mut n).desired_width(ui.available_width() - 20.0));
+        });
+        ui.horizontal(|ui| {
+            ui.label(format!("   {}", tr!("common.print_title")));
+            let edit = egui::TextEdit::singleline(&mut ed.print_title).desired_width(ui.available_width() - 20.0);
+            if ui.add(edit).on_hover_text(tr!("songed.print_title_hint")).changed() {
+                ed.dirty = true;
+            }
         });
         ui.horizontal(|ui| {
             ui.label(RichText::new(tr!("songed.synched")).color(DIM));

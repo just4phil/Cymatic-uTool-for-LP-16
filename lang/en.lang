@@ -631,3 +631,26 @@ pack.select_all = Select all
 pack.choose_none = Choose at least one playlist.
 pack.choose_sum = {playlists} playlists, {songs} songs, {files} files, {size}
 pack.export_btn_go = Export…
+
+# Print title of a song, printed setlist (Word file)
+common.print_title = Print title
+home.print_title_unset = not set (prints "{name}")
+songed.print_title_hint = Name of the song on the printed setlist, e.g. "I love it (Icona Pop)": the part in brackets is printed normal, the rest bold. A new version of the song (new date folder) takes it over.
+print.btn = Print setlist…
+print.title = Print setlist
+print.heading = Heading
+print.logo = Logo
+print.logo_pick = Choose logo…
+print.logo_none = No logo
+print.no_logo = (no logo)
+print.hint = The songs of the concert (up to the end of the concert). Print title "Title (Artist)": the part in brackets is printed normal, the rest bold. Empty = the name made from the song name. Changed titles are stored at the song.
+print.encore_line = Encores (line on the setlist)
+print.include = print this song
+print.save = Save Word file…
+print.image_filter = Image
+print.docx_filter = Word document
+print.cannot_write = {file} cannot be written (is it open in Word?):\n{err}
+print.done = Setlist saved:\n{file}
+print.open = Open
+print.bad_logo = {path} is not a PNG or JPEG image.
+print.cannot_open = {file} could not be opened (error {err}). Is Word or LibreOffice installed?

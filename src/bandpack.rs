@@ -9,6 +9,7 @@
 //! Playlists/<name>.playlistprj  every playlist
 //! Playlists/<name>.setlist      encore / end of concert markers (if any)
 //! Songs/<song>.songprj          every song of the playlists (once)
+//! Songs/<song>.songinfo         its print title (if any; older readers skip it)
 //! AudioLibrary/<path>           every WAV and MIDI file a song uses
 //! ```
 //!
@@ -39,6 +40,7 @@
 
 use crate::project_lib::{copy_song_mix, ProjectLibrary};
 use crate::setlist::SetMarkers;
+use crate::song_info::{self, SongInfo};
 use crate::{
     generate_playlistprj, mtime_ms, now_ms, parse_playlist, valid_fat32_name, write_atomic,
     write_bytes_atomic, PlaylistSong, SongProject,
@@ -93,6 +95,8 @@ pub struct ExportPlan {
     playlists: Vec<PackPlaylist>,
     /// (file stem, .songprj text with the paths of the package)
     songs: Vec<(String, String)>,
+    /// (file stem, .songinfo text) of the songs that have one
+    infos: Vec<(String, String)>,
     /// (full path on this computer, file in the package)
     files: Vec<(String, PackFile)>,
 }
@@ -138,6 +142,7 @@ pub fn plan_export(lib: &ProjectLibrary, names: &[String]) -> Result<ExportPlan,
     let mut playlists = Vec::new();
     let mut problems: Vec<String> = Vec::new();
     let mut songs: Vec<(String, String)> = Vec::new();
+    let mut infos: Vec<(String, String)> = Vec::new();
     let mut seen_songs: HashSet<String> = HashSet::new();
     let mut files: Vec<(String, PackFile)> = Vec::new();
     // full path (key) -> path in the package
@@ -205,6 +210,10 @@ pub fn plan_export(lib: &ProjectLibrary, names: &[String]) -> Result<ExportPlan,
             if !prj.midi_file.is_empty() {
                 prj.midi_file = pack(&prj.midi_file, &mut problems);
             }
+            let info = song_info::load(Path::new(&s.songprj));
+            if !info.is_empty() {
+                infos.push((stem.clone(), info.generate()));
+            }
             songs.push((stem, prj.to_xml()));
         }
         let xml = generate_playlistprj(&pl.name, now_ms(), lib.root(), &entries);
@@ -213,7 +222,7 @@ pub fn plan_export(lib: &ProjectLibrary, names: &[String]) -> Result<ExportPlan,
     if !problems.is_empty() {
         return Err(tr!("pack.incomplete", list = problems.join("\n")));
     }
-    Ok(ExportPlan { playlists, songs, files })
+    Ok(ExportPlan { playlists, songs, infos, files })
 }
 
 fn manifest(plan: &ExportPlan) -> String {
@@ -254,6 +263,10 @@ pub fn write_package(plan: &ExportPlan, dest: &Path, progress: &mut dyn FnMut(u6
         for (stem, xml) in &plan.songs {
             zip.start_file(format!("{}{}.songprj", SONGS, stem), small).map_err(io::Error::other)?;
             zip.write_all(xml.as_bytes())?;
+        }
+        for (stem, text) in &plan.infos {
+            zip.start_file(format!("{}{}.{}", SONGS, stem, song_info::EXT), small).map_err(io::Error::other)?;
+            zip.write_all(text.as_bytes())?;
         }
         let mut done = 0u64;
         let mut buf = vec![0u8; BUF];
@@ -298,6 +311,8 @@ pub struct Package {
     playlists: Vec<PackPlaylist>,
     /// (file stem, .songprj text)
     songs: Vec<(String, String)>,
+    /// (file stem, facts) of the songs that come with a .songinfo
+    infos: Vec<(String, SongInfo)>,
     files: Vec<PackFile>,
 }
 
@@ -347,11 +362,15 @@ pub fn open_package(path: &Path) -> Result<Package, String> {
         playlists.push(PackPlaylist { name, xml, markers });
     }
     let mut songs = Vec::new();
+    let mut infos = Vec::new();
     for stem in stems {
         if !valid_fat32_name(&stem) {
             return Err(err(&tr!("pack.bad_name", name = stem)));
         }
         let xml = read_text(&mut zip, &format!("{}{}.songprj", SONGS, stem)).map_err(|e| err(&e))?;
+        if let Ok(text) = read_text(&mut zip, &format!("{}{}.{}", SONGS, stem, song_info::EXT)) {
+            infos.push((stem.clone(), SongInfo::parse(&text)));
+        }
         songs.push((stem, xml));
     }
     for f in &files {
@@ -363,7 +382,7 @@ pub fn open_package(path: &Path) -> Result<Package, String> {
             return Err(err(&tr!("pack.file_missing", name = f.rel)));
         }
     }
-    Ok(Package { path: path.to_path_buf(), app, created, playlists, songs, files })
+    Ok(Package { path: path.to_path_buf(), app, created, playlists, songs, infos, files })
 }
 
 fn read_text<R: Read + Seek>(zip: &mut ZipArchive<R>, name: &str) -> Result<String, String> {
@@ -518,6 +537,11 @@ pub fn run_import(pkg: &Package, plan: &ImportPlan, lib: &ProjectLibrary, progre
         let path = lib.song_path(&s.name);
         write_bytes_atomic(&path, s.xml.as_bytes()).map_err(|e| io::Error::new(e.kind(), format!("{}: {}", path.display(), e)))?;
     }
+    // the print titles of the sender; a song without one keeps the receiver's
+    for (stem, info) in pkg.infos.iter().filter(|(_, i)| !i.is_empty()) {
+        let path = lib.song_path(stem);
+        song_info::save(&path, info).map_err(|e| io::Error::new(e.kind(), format!("{}: {}", path.display(), e)))?;
+    }
     for pl in &pkg.playlists {
         let (_, songs) = parse_playlist(&pl.xml, lib.root());
         let songs: Vec<PlaylistSong> = songs
@@ -590,6 +614,8 @@ mod tests {
     fn export_and_import_a_playlist() {
         let root = temp_dir("pack-roundtrip");
         let from = sender(&root);
+        let title = SongInfo { print_title: "Intro (Band)".into() };
+        song_info::save(&from.song_path("Intro"), &title).unwrap();
         let plan = plan_export(&from, &names(&["Probe"])).unwrap();
         assert_eq!((plan.song_count(), plan.file_count()), (2, 3), "songs once, files once");
         let pack = root.join("Probe.lp16pack");
@@ -617,6 +643,9 @@ mod tests {
             assert_eq!(mtime_ms(&wav), t.vts, "{}", wav);
         }
         assert!(Path::new(&prj.midi_path().unwrap()).exists());
+        // the print title comes along
+        assert_eq!(song_info::load(&to.song_path("Intro")), title);
+        assert!(song_info::load(&to.song_path("Ballad")).is_empty());
 
         // a second import copies nothing
         let again = import(&pack, &to);

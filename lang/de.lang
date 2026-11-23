@@ -631,3 +631,26 @@ pack.select_all = Alle auswählen
 pack.choose_none = Mindestens eine Playlist auswählen.
 pack.choose_sum = {playlists} Playlists, {songs} Songs, {files} Dateien, {size}
 pack.export_btn_go = Exportieren…
+
+# Drucktitel eines Songs, gedruckte Setlist (Word-Datei)
+common.print_title = Drucktitel
+home.print_title_unset = nicht gesetzt (gedruckt wird „{name}“)
+songed.print_title_hint = Name des Songs auf der gedruckten Setlist, z. B. „I love it (Icona Pop)“: der Teil in Klammern wird normal gedruckt, der Rest fett. Eine neue Version des Songs (neuer Datumsordner) übernimmt ihn.
+print.btn = Setlist drucken…
+print.title = Setlist drucken
+print.heading = Überschrift
+print.logo = Logo
+print.logo_pick = Logo wählen…
+print.logo_none = Ohne Logo
+print.no_logo = (kein Logo)
+print.hint = Die Songs des Konzerts (bis zum Konzertende). Drucktitel „Titel (Interpret)“: der Teil in Klammern wird normal gedruckt, der Rest fett. Leer = der aus dem Songnamen gebildete Name. Geänderte Titel werden beim Song gespeichert.
+print.encore_line = Zugaben (Linie auf der Setlist)
+print.include = diesen Song drucken
+print.save = Word-Datei speichern…
+print.image_filter = Bild
+print.docx_filter = Word-Dokument
+print.cannot_write = {file} kann nicht geschrieben werden (in Word geöffnet?):\n{err}
+print.done = Setlist gespeichert:\n{file}
+print.open = Öffnen
+print.bad_logo = {path} ist kein PNG- oder JPEG-Bild.
+print.cannot_open = {file} konnte nicht geöffnet werden (Fehler {err}). Ist Word oder LibreOffice installiert?

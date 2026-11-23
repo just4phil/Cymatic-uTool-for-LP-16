@@ -17,6 +17,7 @@
 //!   ([`ProjectLibrary::save_song`], [`save_song_mix`])
 
 use crate::setlist::SetMarkers;
+use crate::song_info;
 use crate::{
     generate_playlistprj, generate_songprj, now_ms, parse_playlist, valid_fat32_name,
     write_bytes_atomic, PlaylistSong, ProjectTrack, SongProject,
@@ -145,6 +146,7 @@ impl ProjectLibrary {
         let new_path = self.song_path(new_name);
         check_new_name(new_name, &new_path, Some(song))?;
         self.write_song_as(song, new_name, &new_path)?;
+        self.copy_info(song, &new_path)?;
         Ok(new_path)
     }
 
@@ -157,6 +159,7 @@ impl ProjectLibrary {
         check_new_name(new_name, &new_path, Some(song))?;
         let playlists = self.read_playlists()?;
         self.write_song_as(song, new_name, &new_path)?;
+        self.copy_info(song, &new_path)?;
         let old = key(song);
         for pl in playlists.iter().filter(|pl| pl.songs.iter().any(|s| key(Path::new(&s.songprj)) == old)) {
             let songs: Vec<PlaylistSong> = pl
@@ -177,6 +180,7 @@ impl ProjectLibrary {
         }
         if key(song) != key(&new_path) {
             fs::remove_file(song).map_err(|e| format!("{}: {}", song.display(), e))?;
+            remove_if_there(&song_info::path_of(song))?;
         }
         Ok(new_path)
     }
@@ -188,7 +192,23 @@ impl ProjectLibrary {
         if !used.is_empty() {
             return Err(tr!("plib.in_use", list = used.join(", ")));
         }
-        fs::remove_file(song).map_err(|e| tr!("plib.cannot_delete", path = song.display(), err = e))
+        fs::remove_file(song).map_err(|e| tr!("plib.cannot_delete", path = song.display(), err = e))?;
+        remove_if_there(&song_info::path_of(song))
+    }
+
+    /// Store the print title (and later other facts) of `song`.
+    pub fn save_song_info(&self, song: &Path, info: &song_info::SongInfo) -> Result<(), String> {
+        let path = song_info::path_of(song);
+        song_info::save(song, info).map_err(|e| tr!("plib.cannot_write", path = path.display(), err = e))
+    }
+
+    /// The .songinfo of `from` for the new song file `to` (rename, copy).
+    fn copy_info(&self, from: &Path, to: &Path) -> Result<(), String> {
+        let info = song_info::load(from);
+        if info.is_empty() {
+            return Ok(());
+        }
+        self.save_song_info(to, &info)
     }
 
     /// Write playlist `name` with `songs` and `markers` (new or replacing
@@ -563,6 +583,43 @@ mod tests {
         fs::remove_file(&path).unwrap();
         assert!(save_song_mix(&rehearsal).is_err());
         assert!(!Path::new(&path).exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn print_title_follows_the_song_and_new_versions_take_it_over() {
+        let (root, lib) = setup("plib-songinfo");
+        let intro = lib.song_path("Intro");
+        let title = song_info::SongInfo { print_title: "Intro (Band)".into() };
+        lib.save_song_info(&intro, &title).unwrap();
+        let copy = lib.copy_song(&intro, "Intro2").unwrap();
+        assert_eq!(song_info::load(&copy), title);
+        let renamed = lib.rename_song(&intro, "Opener").unwrap();
+        assert_eq!(song_info::load(&renamed), title);
+        assert!(!song_info::path_of(&intro).exists());
+        lib.delete_song(&copy).unwrap();
+        assert!(!song_info::path_of(&copy).exists());
+
+        // a new date folder of the same song folder takes the title over
+        let xml = fs::read_to_string(&renamed).unwrap();
+        let v2 = Path::new(lib.audio_lib()).join("Song").join("v2");
+        let new = lib.song_path("Opener_v2");
+        fs::write(&new, xml.replace("\\v1\\", "\\v2\\")).unwrap();
+        assert!(song_info::inherit(&new, &v2, lib.audio_lib()).unwrap());
+        assert_eq!(song_info::load(&new), title);
+        // a song with its own title keeps it
+        let own = song_info::SongInfo { print_title: "Own".into() };
+        lib.save_song_info(&new, &own).unwrap();
+        assert!(!song_info::inherit(&new, &v2, lib.audio_lib()).unwrap());
+        assert_eq!(song_info::load(&new), own);
+        // another song folder takes nothing
+        let other = lib.song_path("Other_v1");
+        fs::write(&other, xml.replace("\\Song\\", "\\Other\\")).unwrap();
+        let other_dir = Path::new(lib.audio_lib()).join("Other").join("v1");
+        assert!(!song_info::inherit(&other, &other_dir, lib.audio_lib()).unwrap());
+        // an empty title removes the file
+        lib.save_song_info(&new, &song_info::SongInfo::default()).unwrap();
+        assert!(!song_info::path_of(&new).exists());
         let _ = fs::remove_dir_all(&root);
     }
 }

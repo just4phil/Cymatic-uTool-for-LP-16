@@ -21,6 +21,8 @@ pub mod path_key;
 pub mod bandpack;
 pub mod project_lib;
 pub mod setlist;
+pub mod song_info;
+pub mod setlist_doc;
 #[cfg(feature = "player")]
 pub mod audio_out;
 #[cfg(feature = "player")]
@@ -2105,6 +2107,9 @@ pub fn import_songs(items: &[&ImportItem], songs_dir: &Path, audio_lib: &str) ->
         }
         let text = import_songprj(item, audio_lib, now_ms());
         write_bytes_atomic(&dest, text.as_bytes()).map_err(|e| format!("{}: {}", dest.display(), e))?;
+        // a new version of a song keeps its print title; the song itself is
+        // imported even if that fails
+        let _ = song_info::inherit(&dest, Path::new(&item.dir), audio_lib);
         written.push(dest.to_string_lossy().into_owned());
     }
     Ok(written)
@@ -2201,6 +2206,8 @@ pub struct Config {
     pub backup: backup_mix::BackupSettings,
     /// language of the user interface ("en", "de"); empty = English
     pub language: String,
+    /// band logo (PNG/JPEG) of the printed setlist; empty = none
+    pub setlist_logo: String,
 }
 
 /// The buffer sizes (frames) the settings offer; 0 = driver default.
@@ -2231,6 +2238,7 @@ impl Default for Config {
             mixes: mix::MixLibrary::default(),
             backup: backup_mix::BackupSettings::default(),
             language: String::new(),
+            setlist_logo: String::new(),
         }
     }
 }
@@ -2278,6 +2286,7 @@ pub fn load_config(path: &std::path::Path) -> Config {
                     "audio_device" => config.audio_device = value,
                     "midi_port" => config.midi_port = value,
                     "language" => config.language = value,
+                    "setlist_logo" => config.setlist_logo = value,
                     "rehearsal_autoplay" => {
                         config.rehearsal_autoplay = matches!(value.to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on");
                     }
@@ -2339,7 +2348,7 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
     let text = format!(
         "{}stick_root = \"{}\"\r\n\
          audio_host = \"{}\"\r\naudio_device = \"{}\"\r\n\
-         audio_out_left = \"{}\"\r\naudio_out_right = \"{}\"\r\naudio_buffer = \"{}\"\r\nmidi_port = \"{}\"\r\nrehearsal_autoplay = \"{}\"\r\nset_pause = \"{}\"\r\nlanguage = \"{}\"\r\n{}{}",
+         audio_out_left = \"{}\"\r\naudio_out_right = \"{}\"\r\naudio_buffer = \"{}\"\r\nmidi_port = \"{}\"\r\nrehearsal_autoplay = \"{}\"\r\nset_pause = \"{}\"\r\nlanguage = \"{}\"\r\nsetlist_logo = \"{}\"\r\n{}{}",
         paths,
         config.stick_root,
         config.audio_host,
@@ -2351,6 +2360,7 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
         config.rehearsal_autoplay,
         config.set_pause,
         config.language,
+        config.setlist_logo,
         config.mixes.to_config_text(),
         config.backup.to_config_text()
     );
@@ -2370,6 +2380,13 @@ pub fn save_backup(path: &std::path::Path, backup: &backup_mix::BackupSettings) 
 pub fn save_set_pause(path: &std::path::Path, pause: u32) -> std::io::Result<()> {
     let mut config = load_config(path);
     config.set_pause = pause.min(MAX_SET_PAUSE);
+    save_config(path, &config)
+}
+
+/// Write only the logo of the printed setlist into the config file.
+pub fn save_setlist_logo(path: &std::path::Path, logo: &str) -> std::io::Result<()> {
+    let mut config = load_config(path);
+    config.setlist_logo = logo.to_string();
     save_config(path, &config)
 }
 
@@ -3332,6 +3349,7 @@ mod tests {
                 mixes: mix::MixLibrary::default(),
                 backup: backup_mix::BackupSettings::default(),
                 language: "de".into(),
+                setlist_logo: "E:\\Band\\logo.png".into(),
             };
             save_config(&path, &c).unwrap();
             let text = fs::read_to_string(&path).unwrap();
@@ -3345,6 +3363,7 @@ mod tests {
             assert!(b.rehearsal_autoplay && text.contains("rehearsal_autoplay = \"true\""));
             assert_eq!(b.set_pause, 45);
             assert_eq!(b.language, "de");
+            assert_eq!(b.setlist_logo, "E:\\Band\\logo.png");
             assert_eq!(b.stick_root, "F:\\");
             assert_eq!(b.audio_lib, if own { "A:\\audio" } else { "E:\\x\\LIB\\AudioLibrary" });
             assert_eq!(b.project_lib, if own { "P:\\prj" } else { "E:\\x\\LIB\\CymaticProjectLib" });
