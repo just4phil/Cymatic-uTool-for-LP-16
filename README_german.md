@@ -26,31 +26,29 @@ Das **Handbuch** mit dem ganzen Funktionsumfang liegt als einzelne HTML-Datei in
 - **Stick-Export wie uTool2:** `song.set` (inklusive `validationcode`), `.play` und die WAVs
   (Header neu aufgebaut, Audiodaten unverändert, Namen `_<quelle>_<NN>.wav`) sind byte-gleich
   mit dem, was uTool2 schreibt.
-- **Quick Export und Force Overwrite:** Quick Export schreibt nur neue und geänderte Songs,
-  Force Overwrite schreibt alle ausgewählten Songs neu. Die Vorschau zeigt pro Song
-  *New Export*, *Overwrite*, *Skip* oder *Force Overwrite* und die Datenmenge („To Copy“).
+- **Schnell-Export und Alles überschreiben:** Der Schnell-Export schreibt nur neue und geänderte Songs, Alles überschreiben schreibt alle ausgewählten Songs neu. Die Vorschau zeigt pro Song
+  *Neu exportieren*, *Überschreiben*, *Überspringen* oder *Alles überschreiben* und die Datenmenge („Zu kopieren“).
 - **Sicher schreiben:** Jede Datei wird erst als `.lp16tmp` geschrieben und dann umbenannt.
   Nach jedem Song wird das Ergebnis auf dem Ziel geprüft. Ein abgebrochener Export hinterlässt
   nie eine halbe Datei.
 - **Prüfen ohne zu schreiben:** `verify` vergleicht einen Stick mit der Bibliothek und endet mit
   Exit-Code 0 nur, wenn alles aktuell ist. Gut vor jedem Gig.
-- **Start Mode pro Song:** im Playlist-Editor die Songs anhaken, Start Mode wählen („Wait for
-  button press“, „Wait for timer“ mit Delay in Sekunden, „No wait“) und „Apply to selected rows“.
+- **Startmodus pro Song:** im Playlist-Editor die Songs anhaken, den Startmodus wählen („Auf Tastendruck warten“, „Auf Timer warten“ mit Wartezeit in Sekunden, „Ohne Warten“) und „Auf ausgewählte Zeilen anwenden“.
   Der LP-16 wartet dann auf Play oder startet den Song von selbst. Die Werte sind dieselben wie in
   uTool2 (`wait_for_button_press`, `wait_period`, `no_wait`).
 - **Bibliothek bearbeiten:** Playlists anlegen, umsortieren, umbenennen, kopieren und löschen;
   Songs anlegen und im Song-Editor WAVs per Drag & Drop auf die 16 Spuren ziehen, MIDI-Datei
   wählen.
 - **Sauberes Songende:** erkennt WAVs, die mit digitalem Clipping enden oder hart abbrechen
-  (Hinweis *No clean fade-out* in den Song-Details; geprüft beim Anzeigen eines Songs, nach jedem
-  Import und für die ganze Bibliothek per *Check song endings*), und repariert sie auf Klick mit einem
+  (Hinweis *Kein sauberes Ausblenden* in den Song-Details; geprüft beim Anzeigen eines Songs, nach jedem
+  Import und für die ganze Bibliothek per *Song-Enden prüfen*), und repariert sie auf Klick mit einem
   50-ms-Fade-out, auf Wunsch nach dem Abschneiden des kaputten Endes. Das Original bleibt als
   `.orig.wav` erhalten.
 - **Batch-Import von Songs:** legt aus neuen Ordnern der AudioLibrary auf einen Schlag Songs an,
   siehe [Import](#import-batch-import-von-songs).
-- **Edit Target:** Inhalt des Sticks als Baum, mit Details zu Songs und Playlists.
+- **Ziel bearbeiten:** Inhalt des Sticks als Baum, mit Details zu Songs und Playlists.
   Songs und Playlists lassen sich auf dem Stick löschen (Entf-Taste, Kontextmenü oder Button
-  „Delete“); „Delete all songs not in playlists“ löscht alle Songordner, die keine Playlist
+  „Löschen“); „Alle Songs ohne Playlist löschen“ löscht alle Songordner, die keine Playlist
   auf dem Stick enthält.
 - **Probe-Player:** spielt Songs und Playlists der Bibliothek über einen wählbaren
   Audioausgang ab, mit einem 16-Kanal-Proben-Mix, siehe [Probe-Player](#probe-player).
@@ -98,7 +96,7 @@ Der Standard-Build gibt über WASAPI aus und braucht weder das ASIO-SDK noch LLV
    cargo build --release --features asio
    ```
 
-Mit dem Feature erscheint „ASIO“ in der Host-Liste im Reiter Settings, und die Geräteliste zeigt die
+Mit dem Feature erscheint „ASIO“ in der Host-Liste im Reiter Einstellungen, und die Geräteliste zeigt die
 installierten ASIO-Treiber.
 
 ## Einrichtung
@@ -113,7 +111,7 @@ copy lp16-tool.example.toml lp16-tool.toml
 
 `lp16-tool.toml` enthält eigene Pfade und ist deshalb nicht im Repo (`.gitignore`). Fehlt die
 Datei, legt die Oberfläche sie beim ersten Ändern der Einstellungen neben der exe an. Am einfachsten setzt man
-im Reiter **Settings** den **Library Folder**; „Initialize Folders“ legt fehlende Ordner an.
+im Reiter **Einstellungen** den **Library-Ordner**; „Ordner anlegen“ legt fehlende Ordner an.
 
 ```toml
 # Basisordner: <library>\CymaticProjectLib = Projektbibliothek,
@@ -121,13 +119,13 @@ im Reiter **Settings** den **Library Folder**; „Initialize Folders“ legt feh
 library = "E:\LP16_LIBRARY"
 # Export-Ziel (wird im Export-Reiter gewählt und gemerkt)
 stick_root = "F:\"
-# Audioausgang des Probe-Players (Settings > Audio output, siehe unten)
+# Audioausgang des Probe-Players (Einstellungen > Audioausgabe, siehe unten)
 audio_host = "WASAPI"
 audio_device = ""
 audio_out_left = "1"
 audio_out_right = "2"
 audio_buffer = "0"
-# MIDI-Ausgang des Probe-Players (Settings > MIDI output); leer = aus
+# MIDI-Ausgang des Probe-Players (Einstellungen > MIDI-Ausgabe); leer = aus
 midi_port = ""
 # Sprache der Oberfläche (Einstellungen > Sprache): "en" oder "de"; leer = Englisch
 language = "de"
@@ -157,14 +155,11 @@ Vor dem ersten Export auf einen echten Stick `Recording\` sichern.
 
 ## Probe-Player
 
-Der Player spielt einen Song der Projektbibliothek über den **Audioausgang** ab, den man im Reiter
-Settings wählt (WASAPI oder ASIO), zum Proben zu Hause. Er schickt außerdem die MIDI-Datei des Songs an einen
-**MIDI-Ausgang** (siehe [MIDI-Ausgang](#midi-ausgang-reiter-settings)).
+Der Player spielt einen Song der Projektbibliothek über den **Audioausgang** ab, den man im Reiter Einstellungen wählt (WASAPI oder ASIO), zum Proben zu Hause. Er schickt außerdem die MIDI-Datei des Songs an einen
+**MIDI-Ausgang** (siehe [MIDI-Ausgabe](#midi-ausgabe-reiter-einstellungen)).
 
-- Im Home-Reiter mit der rechten Maustaste auf einen Song klicken und **Play in Rehearsal**
-  wählen. Das lädt den Song, wechselt in den Reiter **Rehearsal** und startet die Wiedergabe.
-- Für eine Playlist: im Home-Reiter mit der rechten Maustaste auf sie klicken und **Play in
-  Rehearsal** wählen, oder sie im Combo **Playlist** links im Reiter Rehearsal auswählen. Das lädt den
+- Im Reiter Start mit der rechten Maustaste auf einen Song klicken und **In der Probe abspielen** wählen. Das lädt den Song, wechselt in den Reiter **Probe** und startet die Wiedergabe.
+- Für eine Playlist: im Reiter Start mit der rechten Maustaste auf sie klicken und **In der Probe abspielen** wählen, oder sie im Combo **Playlist** links im Reiter Probe auswählen. Das lädt den
   ersten Song und wechselt in den Reiter; es startet **nicht** von selbst, weil der erste Song live
   auch auf die Taste wartet. Das Combo zeigt außerdem „(single song)“, solange ein einzelner Song
   geladen ist.
@@ -174,7 +169,7 @@ Settings wählt (WASAPI oder ASIO), zum Proben zu Hause. Er schickt außerdem di
   trotzdem mit den übrigen Spuren.
 - Springen während der Wiedergabe blendet über 5 ms aus und wieder ein, damit nichts knackt.
   Beim Ziehen des Fortschrittsbalkens zeigt die Zeit das Ziel; gesprungen wird beim Loslassen.
-- Tastenkürzel gelten, solange der Reiter Rehearsal angezeigt wird und kein Textfeld den Fokus hat:
+- Tastenkürzel gelten, solange der Reiter Probe angezeigt wird und kein Textfeld den Fokus hat:
 
   | Taste | Funktion |
   |---|---|
@@ -208,10 +203,10 @@ Settings wählt (WASAPI oder ASIO), zum Proben zu Hause. Er schickt außerdem di
       geladen und bleibt gestoppt. Beim letzten Song passiert nichts.
     - Voriger: Weiter als 3 s im Song springt er an seinen Anfang, sonst wird der Song davor geladen
       (und startet sofort, wenn der Player gespielt hat).
-- **Autoplay after 5 seconds** (Kontrollkästchen über der Songliste, gespeichert als `rehearsal_autoplay` in `lp16-tool.toml`, standardmäßig aus). Aus: Endet
-  ein Song, ist der nächste markiert und geladen, und der Player wartet (der Reiter zeigt „Next: <Song>
+- **Autoplay nach 5 Sekunden** (Kontrollkästchen über der Songliste, gespeichert als `rehearsal_autoplay` in `lp16-tool.toml`, standardmäßig aus). Aus: Endet
+  ein Song, ist der nächste markiert und geladen, und der Player wartet (der Reiter zeigt „Nächster: <Song>
   – press Play“). An: Der nächste Song startet von selbst nach 5 Sekunden Stille (der Reiter zeigt
-  „Next: <Song> in <n> s“). Play während des Countdowns startet sofort, Pause bricht ihn ab, Autoplay
+  „Nächster: <Song> in <n> s“). Play während des Countdowns startet sofort, Pause bricht ihn ab, Autoplay
   ausschalten beendet ihn. Die Einstellung ersetzt den Startmodus der Playlist: Der Player wertet
   `start_mode` und `start_mode_delay` in der `.playlistprj` nicht mehr aus (die Datei wird nicht
   verändert). Ein einzelner Song hat keinen nächsten.
@@ -240,7 +235,7 @@ Settings wählt (WASAPI oder ASIO), zum Proben zu Hause. Er schickt außerdem di
 
 ### Proben-Mix
 
-Unter dem Player im Reiter Rehearsal liegt der **Mixer**: 16 Kanalzüge (LP-16-Ausgang 1 bis 16)
+Unter dem Player im Reiter Probe liegt der **Mixer**: 16 Kanalzüge (LP-16-Ausgang 1 bis 16)
 und ein Master im Stil des uTool2-Mixers. Songliste, Player und Mixer sind Bereiche, deren Größe
 man ändern kann: Die Linie zwischen Liste und Player bzw. zwischen Player und Mixer lässt sich
 ziehen. Die Kanalzüge füllen Breite und Höhe des Mixers (sie werden mit ihm breiter und die Fader
@@ -266,8 +261,7 @@ ausgegraut („—“), lässt sich aber trotzdem bedienen.
 - Die Pegelanzeigen zeigen den Spitzenwert nach Fader und Mute (Song-Mix eingeschlossen), vor dem
   Panorama; sie fallen mit 20 dB pro Sekunde ab.
 - Änderungen wirken sofort während der Wiedergabe und ohne Knacken (die Pegel laufen über 10 ms).
-- **Presets** sind benannte Mixe: in der Liste wählen, **New** (neutral, „Mix N“), **Copy**,
-  **Rename**, **Delete** (das letzte lässt sich nicht löschen) und **Reset** (zurück auf neutral:
+- **Presets** sind benannte Mixe: in der Liste wählen, **Neu** (neutral, „Mix N“), **Kopieren**, **Umbenennen**, **Löschen** (das letzte lässt sich nicht löschen) und **Zurücksetzen** (zurück auf neutral:
   alle Kanalzüge 0 dB, Mitte, kein Mute/Solo, Master 0 dB). Namen müssen eindeutig und nicht leer
   sein und dürfen kein Anführungszeichen `"` und keinen Zeilenumbruch enthalten.
 - Die Presets werden automatisch in `lp16-tool.toml` gespeichert (nach einer Änderung höchstens
@@ -284,30 +278,29 @@ Der **Song-Mix** ist der uTool2-Mixer eines Songs: Pegel und Mute pro Spur (`mon
 (`output_level`, `channel_mute` in der `song.set`). Damit lässt sich ein einzelner Song schnell
 korrigieren, z. B. eine Backing-Track-Spur, die etwas zu laut ist.
 
-- **Öffnen:** Im Home-Reiter lädt die Taste **Mixer** eines Songs (auch im Song-Editor) den Song in
-  den Player (ohne zu starten) und zeigt seinen Song-Mix im Mixer des Reiters Rehearsal. Oder
-  **Song mix** neben der Preset-Leiste anklicken: Das bearbeitet den geladenen Song. Im Song-Modus
-  sind die Kanalzüge braun, und die Kopfzeile zeigt „Song mix“ und den Song; der Modus folgt dem
+- **Öffnen:** Im Reiter Start lädt die Taste **Mixer** eines Songs (auch im Song-Editor) den Song in
+  den Player (ohne zu starten) und zeigt seinen Song-Mix im Mixer des Reiters Probe. Oder
+  **Song-Mix** neben der Preset-Leiste anklicken: Das bearbeitet den geladenen Song. Im Song-Modus
+  sind die Kanalzüge braun, und die Kopfzeile zeigt „Song-Mix“ und den Song; der Modus folgt dem
   geladenen Song (ein anderer Song der Liste, der nächste Song der Playlist).
 - Im Song-Modus sind Fader und dB-Wert der Pegel des Songs (0 dB = keine Änderung, angezeigt als
   `+2.0 dB` usw.; −60 bis +6 dB, ein „off“ gibt es nicht: dafür Mute) und **M** ist das Mute des
   Songs. Solo und Panorama bleiben die des Proben-Mixes (der Drehregler ist ausgegraut): Der LP-16
   setzt das Panorama nur am Kopfhörerausgang um. Kanalzüge ohne Spur im Song lassen sich nicht
-  ändern. **Reset** setzt alles auf 0 dB und nicht stumm; **Back to the rehearsal mix** beendet den
+  ändern. **Zurücksetzen** setzt alles auf 0 dB und nicht stumm; **Zurück zum Proben-Mix** beendet den
   Song-Modus.
 - **Bei der Probe** kommt der Song-Mix zum Proben-Mix hinzu, nur für diesen Song: Pegel =
   Proben-Pegel + Song-Pegel (z. B. Bass im Proben-Mix −3 dB, im Song +2 dB: −1 dB), und eine im Song
   stummgeschaltete Spur bleibt still. Er gilt ab dem ersten Sample des Songs, auch wenn Autoplay zum
   nächsten Song geht. Änderungen wirken sofort, während der Song läuft.
 - Im Proben-Mix zeigt ein Kanalzug, auf dem der geladene Song einen eigenen Wert hat, diesen in
-  Orange unter dem Spurnamen („song +2.0“, „song: mute“).
+  Orange unter dem Spurnamen („Song +2.0“, „Song: stumm“).
 - Änderungen werden kurz nach der letzten Änderung in die `.songprj` geschrieben (und wenn der Song
   wechselt, der Song-Modus endet oder das Programm schließt). Alle Spuren eines Ausgangs bekommen
   dieselben Werte; das Panorama des Songs bleibt, wie es ist. Speichern im Song-Editor behält den
   Song-Mix in der Datei.
 - Ein Song, dessen Mixer-Werte von den uTool2-Standardwerten abweichen (0 dB, Mitte, nicht stumm),
-  hat ein **Mixer-Symbol** (drei kleine Fader) in der Songliste des Home-Reiters und des Reiters
-  Rehearsal.
+  hat ein **Mixer-Symbol** (drei kleine Fader) in der Songliste der Reiter Start und Probe.
 
 ### Sprache (Reiter Einstellungen)
 
@@ -317,22 +310,22 @@ gespeichert. Die Texte stehen in `lang/en.lang` und `lang/de.lang` (in die exe k
 die Meldungen der Bibliothek (Fehler, Export-Bericht) folgen der Einstellung. Die Kommandozeile
 bleibt englisch.
 
-### Audio output (Reiter Settings)
+### Audioausgabe (Reiter Einstellungen)
 
-Der Bereich **Audio output** im Reiter Settings legt fest, wohin der Stereo-Mix geht. Änderungen
+Der Bereich **Audioausgabe** im Reiter Einstellungen legt fest, wohin der Stereo-Mix geht. Änderungen
 werden sofort in `lp16-tool.toml` gespeichert und beim nächsten Öffnen des Streams verwendet (ein
 laufender Song wird nicht unterbrochen). Das Programm startet ohne Meldung, auch wenn das gespeicherte
-Gerät fehlt; die Meldung kommt bei Play oder Test tone.
+Gerät fehlt; die Meldung kommt bei Play oder Testton.
 
 | Einstellung | Schlüssel in `lp16-tool.toml` | Bedeutung | Standard |
 |---|---|---|---|
 | Host | `audio_host` | Audiosystem: `WASAPI`, und `ASIO` in einem Build mit dem Feature `asio` | Standard-Host |
-| Device | `audio_device` | Name des Ausgabegeräts | leer = Standardgerät |
+| Gerät | `audio_device` | Name des Ausgabegeräts | leer = Standardgerät |
 | Left / Right | `audio_out_left`, `audio_out_right` | Ausgangskanäle (ab 1) für die linke und rechte Seite des Stereo-Mix; derselbe Kanal zweimal bekommt (L+R)/2 | 1 / 2 |
-| Buffer | `audio_buffer` | Frames: 0 = Treiber-Standard, 64, 128, 256, 512, 1024, 2048 | 0 |
+| Puffer | `audio_buffer` | Frames: 0 = Treiber-Standard, 64, 128, 256, 512, 1024, 2048 | 0 |
 
-- **Refresh** liest die Geräteliste neu (z. B. nach dem Anstecken eines Geräts).
-- **Test tone** spielt einen 1-kHz-Ton mit -20 dBFS, 1 s auf dem linken, dann 1 s auf dem rechten
+- **Aktualisieren** liest die Geräteliste neu (z. B. nach dem Anstecken eines Geräts).
+- **Testton** spielt einen 1-kHz-Ton mit -20 dBFS, 1 s auf dem linken, dann 1 s auf dem rechten
   Kanal, mit den obigen Einstellungen (48 kHz, oder die Standardrate des Geräts, falls es 48 kHz nicht
   kann). Der Button ist deaktiviert, solange ein Song spielt.
 - Läuft ein Stream, zeigt der Bereich „Running: <Rate> Hz, buffer <N> frames“. Lehnt das Gerät die
@@ -350,22 +343,22 @@ Treibers werden alle unterstützt.
 **Behringer XR18:** den Stereo-Mix auf zwei USB-Kanäle legen (z. B. 17 und 18, beim X-AIR-Treiber die
 USB-Return-Kanäle) und in X Air Edit einen Kanal oder Aux-Return mit Quelle USB auf diese Kanäle routen.
 
-### MIDI-Ausgang (Reiter Settings)
+### MIDI-Ausgabe (Reiter Einstellungen)
 
-Im Bereich **MIDI output** des Reiters Settings wählt man den MIDI-Port, an den die MIDI-Datei des
+Im Bereich **MIDI-Ausgabe** des Reiters Einstellungen wählt man den MIDI-Port, an den die MIDI-Datei des
 Songs geschickt wird. Die Wahl wird sofort als `midi_port` in `lp16-tool.toml` gespeichert (leer =
 kein MIDI-Ausgang, das ist der Standard; eine alte Datei ohne den Schlüssel bedeutet ebenfalls aus).
 
-- Die Combo zeigt **(none)** und alle MIDI-Ausgänge des Systems (unter Windows gibt es immer
-  „Microsoft GS Wavetable Synth“); **Refresh** liest die Liste neu.
-- **Send test** schickt den Zustand, den ein Gerät direkt nach dem Start des geladenen Songs
+- Die Combo zeigt **(keiner)** und alle MIDI-Ausgänge des Systems (unter Windows gibt es immer
+  „Microsoft GS Wavetable Synth“); **Aktualisieren** liest die Liste neu.
+- **Test senden** schickt den Zustand, den ein Gerät direkt nach dem Start des geladenen Songs
   bekäme: Bank Select, Program Change und die Controller, die ganz am Songanfang liegen. Der Modeler
   bekommt so nur, was er beim Songstart ohnehin bekäme. Der Button braucht einen Port und einen
   geladenen Song mit MIDI-Datei.
 - Der Port wird bei Play (oder beim Test) geöffnet, nicht beim Programmstart. Fehlt der gespeicherte
-  Port oder lässt er sich nicht öffnen, steht im Reiter Rehearsal und in den Einstellungen „MIDI
+  Port oder lässt er sich nicht öffnen, steht im Reiter Probe und in den Einstellungen „MIDI
   port not available: <Name>“, das Audio spielt trotzdem, und das nächste Play versucht es erneut.
-- Der Reiter Rehearsal zeigt unter dem Audioausgang „MIDI: <Port> · <n> events“, mit einem Punkt,
+- Der Reiter Probe zeigt unter dem Audioausgang „MIDI: <Port> · <n> Events“, mit einem Punkt,
   der bei jeder gesendeten Nachricht 150 ms aufleuchtet. „MIDI: no file“ heißt: Der Song hat keine
   (lesbare) MIDI-Datei, „MIDI: off“: Es ist kein Port gewählt. Die Songliste zeigt ein MIDI-Symbol
   bei Songs mit Datei.
@@ -400,19 +393,19 @@ Seiten zwei getrennte Mono-Mischungen der 16 LP-16-Ausgänge sind – typischerw
 Backings** (Synths, Samples …) und **rechts Klick und Cues**. So bekommt das Publikum die
 Backings über die PA und der Drummer den Klick auf den Kopfhörer.
 
-- **Zwei Mixer:** „Left side“ und „Right side“ haben je 16 Kanalzüge (Pegel, Mute) und einen
+- **Zwei Mixer:** „Linke Seite“ und „Rechte Seite“ haben je 16 Kanalzüge (Pegel, Mute) und einen
   Master. Am Anfang ist alles *off*; was auf eine Seite soll, wird hochgezogen. Ein Kanal kann auf
   beiden Seiten liegen. Züge, die auf einer Seite ankommen, sind farbig, und die Zeile über den
   Mixern zeigt, welche Ausgänge links, rechts, auf beiden oder gar nicht landen. Die Namen der
   Züge stammen aus den Songs der gewählten Playlist und werden umgebrochen, damit sie ganz lesbar
   sind; ein Doppelklick auf einen Namen benennt den Kanal um (für beide Seiten, gespeichert;
   leer = wieder der Name aus den Songs). Die Mischung ist global (für alle Songs).
-- **Vorhören:** Die Leiste „Preview“ oben ist der Probe-Player: Song wählen, Play/Pause, Stop,
+- **Vorhören:** Die Leiste „Vorhören“ oben ist der Probe-Player: Song wählen, Play/Pause, Stop,
   ±10 s, vorheriger/nächster Song, und in der Zeitleiste klicken oder ziehen, um zu springen.
   Solange der Reiter offen ist, spielt der Player mit dem Backup-Mix – also genau das, was in die
-  MP3 kommt. Mit „L + R“, „Left only“ und „Right only“ hört man beide Seiten wie in der MP3 oder
+  MP3 kommt. Mit „L + R“, „Nur links“ und „Nur rechts“ hört man beide Seiten wie in der MP3 oder
   nur eine Seite auf beiden Lautsprechern. Die Kanalzüge zeigen Pegel, die CLIP-Anzeige leuchtet,
-  wenn eine Seite übersteuern würde. Im Reiter Rehearsal gilt wieder der Proben-Mix.
+  wenn eine Seite übersteuern würde. Im Reiter Probe gilt wieder der Proben-Mix.
 - **Song-Mix:** Die uTool2-Mixerwerte eines Songs (siehe [Song-Mix](#song-mix)) wirken wie im
   Probe-Player: Pegel des Backup-Mixers + Pegel des Songs, eine gemutete Spur bleibt stumm.
 - **Format:** MP3, 192 kbit/s CBR, LAME-Qualität 0 (die beste), echtes Stereo (kein
@@ -447,7 +440,7 @@ lp16-tool gui
 |---|---|
 | `song` | schreibt `<ausgabe>\<Song>\song.set` und zeigt den `validationcode` |
 | `playlist` | schreibt `<ausgabe>\#PLAYLISTS\<Playlist>.play` |
-| `export` | bringt eine Playlist mit allen Songs auf den Stick (`<stick>\Recording\…`); `--dry-run` zeigt nur an, `--force` = Force Overwrite |
+| `export` | bringt eine Playlist mit allen Songs auf den Stick (`<stick>\Recording\…`); `--dry-run` zeigt nur an, `--force` = Alles überschreiben |
 | `verify` | prüft den Stick nur lesend; Exit-Code 0 = aktuell |
 
 - `audio-lib` ersetzt `{$AudioLib}` in der `.songprj` (bei uTool2 `AudioFileLibraryPath` in
@@ -481,28 +474,28 @@ Der Reiter **Import** hat mit dem Import von uTool2 nur den Namen gemeinsam.
   AudioLibrary\<Song>\<YYYY-MM-DD…>\   bis zu 16 Mono-WAVs, höchstens eine .mid
   ```
 
-  „Import Songs“ durchsucht die AudioLibrary und schlägt alle Versionsordner vor, für die es noch
+  „Songs importieren“ durchsucht die AudioLibrary und schlägt alle Versionsordner vor, für die es noch
   keinen Song gibt und die neuer sind als die neueste Version in der Bibliothek. Nach der
   Bestätigung entsteht pro Ordner eine `.songprj` mit den WAVs auf den Spuren 1…n (natürlich
   sortiert) und der MIDI-Datei. Fehlerhafte Ordner (nicht mono, gemischte Formate, mehr als
   16 WAVs, mehrere MIDI-Dateien) werden angezeigt, aber nicht importiert. Vorhandene Dateien
   werden nie überschrieben.
 
-**Update Playlist** gehört dazu: Es baut aus einer bestehenden Playlist eine neue, in der jeder
+**Playlist aktualisieren** gehört dazu: Es baut aus einer bestehenden Playlist eine neue, in der jeder
 Song durch seine neueste Version ersetzt ist. Nach einem Import wird das passend vorgeschlagen.
 
 ## Wann ein Song neu exportiert wird
 
-Quick Export schreibt einen Song, wenn
+Der Schnell-Export schreibt einen Song, wenn
 
-- sein Ordner auf dem Stick fehlt (*New Export*),
+- sein Ordner auf dem Stick fehlt (*Neu exportieren*),
 - eine WAV fehlt oder nicht mehr die Größe hat, die die aktuelle Quelle ergibt,
 - die MIDI-Datei fehlt, oder
 - die `song.set` abweicht. Der `validationcode` darin enthält Pfade und Änderungszeiten der
   Quelldateien, so fallen auch neu gerenderte WAVs gleicher Länge und geänderte MIDI-Dateien auf.
 
-Sonst wird er übersprungen (*Skip*). Die `.play` einer ausgewählten Playlist wird bei jedem
-Export geschrieben. Force Overwrite schreibt alle ausgewählten Songs neu; das hilft, wenn
+Sonst wird er übersprungen (*Überspringen*). Die `.play` einer ausgewählten Playlist wird bei jedem
+Export geschrieben. Alles überschreiben schreibt alle ausgewählten Songs neu; das hilft, wenn
 Dateien auf dem Stick beschädigt sein könnten. Gelöscht wird auf dem Stick nichts.
 
 ## Aufbau des Codes
@@ -523,13 +516,13 @@ Dateien auf dem Stick beschädigt sein könnten. Gelöscht wird auf dem Stick ni
 | `src/audio_out.rs` | Adapter für den Audioausgang: Hosts, Geräte und Streams über `cpal`, Kanalverteilung, Testton, Befehle und Status zwischen Oberfläche und Audio-Callback (Feature `player`) |
 | `src/main.rs` | Kommandozeile |
 | `src/gui_app.rs` | Oberfläche (egui 0.27) |
-| `src/gui_rehearsal.rs` | Der Reiter Rehearsal |
-| `src/gui_tail.rs` | Prüfung der Songenden im Hintergrund (Taste in Home, nach dem Import) |
-| `src/gui_playlist.rs` | Playlist-Combo und Songliste im Reiter Rehearsal |
+| `src/gui_rehearsal.rs` | Der Reiter Probe |
+| `src/gui_tail.rs` | Prüfung der Songenden im Hintergrund (Taste im Reiter Start, nach dem Import) |
+| `src/gui_playlist.rs` | Playlist-Combo und Songliste im Reiter Probe |
 | `src/gui_mixer.rs` | Preset-Leiste, Pegelanzeigen, S/M-Tasten und das Mixer-Symbol des Mixers |
-| `src/gui_mixer_tab.rs` | Der Mixer im Reiter Rehearsal: Kanalzüge im uTool2-Stil, die mit dem Bereich skalieren, Proben-Mix und Song-Modus |
-| `src/gui_audio.rs` | Der Bereich „Audio output“ im Reiter Settings |
-| `src/gui_midi.rs` | Der Bereich „MIDI output“ im Reiter Settings |
+| `src/gui_mixer_tab.rs` | Der Mixer im Reiter Probe: Kanalzüge im uTool2-Stil, die mit dem Bereich skalieren, Proben-Mix und Song-Modus |
+| `src/gui_audio.rs` | Der Bereich „Audioausgabe“ im Reiter Einstellungen |
+| `src/gui_midi.rs` | Der Bereich „MIDI-Ausgabe“ im Reiter Einstellungen |
 | `src/i18n.rs` | Übersetzungen: `tr!("key")` holt die Texte aus `lang/*.lang` in der gewählten Sprache |
 | `src/gui_backup.rs` | Der Reiter Export Stereo-MP3 |
 
@@ -568,26 +561,25 @@ Tests erwarten bestimmte Songs und Playlists aus der Referenzbibliothek (siehe `
 
 ## Was fehlt und was anders ist
 
-**Nur der LP-16.** Andere Geräte, die uTool2 kennt, werden nicht unterstützt. Als Target Type
-gibt es nur „LP-16“.
+**Nur der LP-16.** Andere Geräte, die uTool2 kennt, werden nicht unterstützt. Als Zieltyp gibt es nur „LP-16“.
 
 **Noch nicht umgesetzt:**
 
 - Stereo-Songs und -Playlists (nur Multitrack)
 - Panorama pro Spur im Song (der [Song-Mix](#song-mix) bearbeitet Pegel und Mute; das in der
   `.songprj` gespeicherte Panorama bleibt erhalten).
-- Song-Editor: Name, Sampling Rate und Resolution eines bestehenden Songs ändern
+- Song-Editor: Name, Samplerate und Auflösung eines bestehenden Songs ändern
 - Undo/Redo, Ordner in der Bibliothek („New folder“)
-- Bearbeiten auf dem Stick (Edit Target kann nur löschen)
-- Export Batch
+- Bearbeiten auf dem Stick (Ziel bearbeiten kann nur löschen)
+- Export-Stapel
 - Der Import von uTool2 (aus Ordner oder externem Laufwerk, „Split at Markers“)
 
 **Anders als im Original:**
 
 - **Import** ist ein Batch-Import von Songs aus der AudioLibrary, siehe
   [Import](#import-batch-import-von-songs).
-- **Quick Export** schreibt nur, was sich geändert hat. uTool2 schreibt jede `song.set` neu.
-- **Settings** kennt nur den Library Folder; das Export-Ziel wird im Export-Reiter gewählt.
+- **Schnell-Export** schreibt nur, was sich geändert hat. uTool2 schreibt jede `song.set` neu.
+- **Einstellungen** kennt nur Sprache und Library-Ordner (plus Audio und MIDI); das Export-Ziel wird im Export-Reiter gewählt.
 
 Ob der LP-16 den `validationcode` prüft, ist nicht bekannt; lp16-tool erzeugt ihn wie uTool2.
 
