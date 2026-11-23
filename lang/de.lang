@@ -39,7 +39,7 @@ common.missing_wav = WAV-Datei fehlt
 common.missing_midi = MIDI-Datei fehlt
 common.missing_song = Song fehlt
 common.no_target = Kein Export-Ziel ausgewählt.
-common.project_explorer = Project Explorer
+common.project_explorer = Dateimanager
 common.details = Details
 common.settings = Einstellungen
 common.encores_n = ZUGABEN  ({n} Songs)
@@ -203,7 +203,7 @@ et.type_playlist = LP-16 Multitrack Playlist
 et.folder_is = ⚠ der Ordner heißt „{name}“
 et.not_on_stick = ⚠ nicht auf dem Stick
 et.new_playlist = Neue Playlist
-et.dblclick = Doppelklick auf einen Song zeigt ihn im Project Explorer
+et.dblclick = Doppelklick auf einen Song zeigt ihn im Dateimanager
 
 # Settings
 settings.devices = Geräte
