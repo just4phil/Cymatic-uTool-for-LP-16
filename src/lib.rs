@@ -15,6 +15,7 @@ pub mod backup_mix;
 pub mod backup;
 pub mod mix;
 pub mod project_lib;
+pub mod setlist;
 #[cfg(feature = "player")]
 pub mod audio_out;
 #[cfg(feature = "player")]
@@ -2149,6 +2150,8 @@ pub struct Config {
     /// rehearsal player: the next song starts 5 s after the end of a song
     /// (off: it waits for Play)
     pub rehearsal_autoplay: bool,
+    /// playlist editor: pause between two songs in seconds (concert length)
+    pub set_pause: u32,
     /// the rehearsal mix presets (`mix.*` and `mix_active` in the file)
     pub mixes: mix::MixLibrary,
     /// the stereo MP3 backup export (`backup*` in the file)
@@ -2157,6 +2160,10 @@ pub struct Config {
 
 /// The buffer sizes (frames) the settings offer; 0 = driver default.
 pub const AUDIO_BUFFERS: [u32; 7] = [0, 64, 128, 256, 512, 1024, 2048];
+/// Default pause between two songs of a concert (seconds).
+pub const DEFAULT_SET_PAUSE: u32 = 60;
+/// Largest pause between two songs accepted (seconds).
+pub const MAX_SET_PAUSE: u32 = 600;
 /// Largest channel number accepted for `audio_out_left` / `audio_out_right`.
 pub const AUDIO_MAX_CHANNEL: u16 = 128;
 
@@ -2175,6 +2182,7 @@ impl Default for Config {
             audio_buffer: 0,
             midi_port: String::new(),
             rehearsal_autoplay: false,
+            set_pause: DEFAULT_SET_PAUSE,
             mixes: mix::MixLibrary::default(),
             backup: backup_mix::BackupSettings::default(),
         }
@@ -2226,6 +2234,11 @@ pub fn load_config(path: &std::path::Path) -> Config {
                         config.rehearsal_autoplay = matches!(value.to_ascii_lowercase().as_str(), "true" | "1" | "yes" | "on");
                     }
                     // invalid values keep the default
+                    "set_pause" => {
+                        if let Some(p) = value.parse::<u32>().ok().filter(|p| *p <= MAX_SET_PAUSE) {
+                            config.set_pause = p;
+                        }
+                    }
                     "audio_out_left" => {
                         if let Some(c) = parse_audio_channel(&value) {
                             config.audio_out_left = c;
@@ -2278,7 +2291,7 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
     let text = format!(
         "{}stick_root = \"{}\"\r\n\
          audio_host = \"{}\"\r\naudio_device = \"{}\"\r\n\
-         audio_out_left = \"{}\"\r\naudio_out_right = \"{}\"\r\naudio_buffer = \"{}\"\r\nmidi_port = \"{}\"\r\nrehearsal_autoplay = \"{}\"\r\n{}{}",
+         audio_out_left = \"{}\"\r\naudio_out_right = \"{}\"\r\naudio_buffer = \"{}\"\r\nmidi_port = \"{}\"\r\nrehearsal_autoplay = \"{}\"\r\nset_pause = \"{}\"\r\n{}{}",
         paths,
         config.stick_root,
         config.audio_host,
@@ -2288,6 +2301,7 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
         config.audio_buffer,
         config.midi_port,
         config.rehearsal_autoplay,
+        config.set_pause,
         config.mixes.to_config_text(),
         config.backup.to_config_text()
     );
@@ -2299,6 +2313,14 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
 pub fn save_backup(path: &std::path::Path, backup: &backup_mix::BackupSettings) -> std::io::Result<()> {
     let mut config = load_config(path);
     config.backup = backup.clone();
+    save_config(path, &config)
+}
+
+/// Write only the pause between two songs (playlist editor) into the
+/// config file; everything else in it stays as it is on disk.
+pub fn save_set_pause(path: &std::path::Path, pause: u32) -> std::io::Result<()> {
+    let mut config = load_config(path);
+    config.set_pause = pause.min(MAX_SET_PAUSE);
     save_config(path, &config)
 }
 
@@ -3212,6 +3234,7 @@ mod tests {
         assert_eq!((old.audio_out_left, old.audio_out_right, old.audio_buffer), (1, 2, 0));
         assert_eq!(old.midi_port, "", "an old config without the field: MIDI is off");
         assert!(!old.rehearsal_autoplay, "an old config without the field: autoplay is off");
+        assert_eq!(old.set_pause, 60, "an old config without the field: 60 s pause");
         assert_eq!(old.stick_root, "F:\\");
 
         // roundtrip of all fields, together with both path styles
@@ -3230,6 +3253,7 @@ mod tests {
                 audio_buffer: 256,
                 midi_port: "MIDI \u{fc}ber USB 2".into(),
                 rehearsal_autoplay: true,
+                set_pause: 45,
                 mixes: mix::MixLibrary::default(),
                 backup: backup_mix::BackupSettings::default(),
             };
@@ -3243,6 +3267,7 @@ mod tests {
             assert_eq!(b.midi_port, "MIDI \u{fc}ber USB 2");
             assert!(text.contains("midi_port = \"MIDI \u{fc}ber USB 2\""));
             assert!(b.rehearsal_autoplay && text.contains("rehearsal_autoplay = \"true\""));
+            assert_eq!(b.set_pause, 45);
             assert_eq!(b.stick_root, "F:\\");
             assert_eq!(b.audio_lib, if own { "A:\\audio" } else { "E:\\x\\LIB\\AudioLibrary" });
             assert_eq!(b.project_lib, if own { "P:\\prj" } else { "E:\\x\\LIB\\CymaticProjectLib" });

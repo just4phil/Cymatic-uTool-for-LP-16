@@ -10,7 +10,10 @@
 //!   deleting refuses a song that a playlist on disk still uses)
 //! - every file is written atomically (temporary file + rename)
 //! - names are valid FAT32 names and never overwrite another song/playlist
+//! - the concert markers of a playlist (`<name>.setlist`, see
+//!   [`crate::setlist`]) follow it when it is renamed, copied or deleted
 
+use crate::setlist::SetMarkers;
 use crate::{
     generate_playlistprj, generate_songprj, now_ms, parse_playlist, valid_fat32_name,
     write_bytes_atomic, PlaylistSong, SongProject,
@@ -31,6 +34,8 @@ pub struct Playlist {
     pub path: PathBuf,
     /// songs with `songprj` resolved to full paths
     pub songs: Vec<PlaylistSong>,
+    /// encore / end of concert markers (from the .setlist next to it)
+    pub markers: SetMarkers,
 }
 
 #[derive(Clone, Debug)]
@@ -59,6 +64,12 @@ impl ProjectLibrary {
 
     pub fn playlist_path(&self, name: &str) -> PathBuf {
         self.playlists_dir().join(format!("{}.playlistprj", name))
+    }
+
+    /// The concert markers of playlist `name` (uTool2 only lists
+    /// *.playlistprj, so it ignores this file).
+    pub fn markers_path(&self, name: &str) -> PathBuf {
+        self.playlists_dir().join(format!("{}.setlist", name))
     }
 
     /// All .songprj files, sorted by path (case-insensitive).
@@ -91,7 +102,10 @@ impl ProjectLibrary {
 
     fn playlist_from(&self, path: PathBuf, xml: &str) -> Playlist {
         let (_, songs) = parse_playlist(xml, &self.root);
-        Playlist { name: stem(&path), path, songs }
+        let markers = fs::read_to_string(path.with_extension("setlist"))
+            .map(|t| SetMarkers::parse(&t).clamp(songs.len()))
+            .unwrap_or_default();
+        Playlist { name: stem(&path), path, songs, markers }
     }
 
     /// Names of the playlists that contain `song` (a .songprj path).
@@ -169,21 +183,22 @@ impl ProjectLibrary {
         fs::remove_file(song).map_err(|e| format!("Cannot delete {}:\n{}", song.display(), e))
     }
 
-    /// Write playlist `name` with `songs` (new or replacing the playlist of
-    /// that name).
-    pub fn save_playlist(&self, name: &str, songs: &[PlaylistSong]) -> Result<PathBuf, String> {
+    /// Write playlist `name` with `songs` and `markers` (new or replacing
+    /// the playlist of that name).
+    pub fn save_playlist(&self, name: &str, songs: &[PlaylistSong], markers: &SetMarkers) -> Result<PathBuf, String> {
         if !valid_fat32_name(name) {
             return Err(format!("\"{}\" is not a valid Playlist Name.", name));
         }
         let path = self.playlist_path(name);
         self.write_playlist(&path, name, songs)?;
+        self.write_markers(name, &markers.clamp(songs.len()))?;
         Ok(path)
     }
 
     /// Write playlist `new_name` with `songs`, refusing an existing one.
-    pub fn create_playlist(&self, new_name: &str, songs: &[PlaylistSong]) -> Result<PathBuf, String> {
+    pub fn create_playlist(&self, new_name: &str, songs: &[PlaylistSong], markers: &SetMarkers) -> Result<PathBuf, String> {
         check_new_name(new_name, &self.playlist_path(new_name), None)?;
-        self.save_playlist(new_name, songs)
+        self.save_playlist(new_name, songs, markers)
     }
 
     /// Save `songs` under `new_name` and remove the playlist `old_name`
@@ -193,14 +208,16 @@ impl ProjectLibrary {
         old_name: &str,
         new_name: &str,
         songs: &[PlaylistSong],
+        markers: &SetMarkers,
         copy: bool,
     ) -> Result<PathBuf, String> {
         let old_path = self.playlist_path(old_name);
         let new_path = self.playlist_path(new_name);
         check_new_name(new_name, &new_path, Some(&old_path))?;
-        self.save_playlist(new_name, songs)?;
+        self.save_playlist(new_name, songs, markers)?;
         if !copy && key(&old_path) != key(&new_path) {
             fs::remove_file(&old_path).map_err(|e| format!("{}: {}", old_path.display(), e))?;
+            remove_if_there(&self.markers_path(old_name))?;
         }
         Ok(new_path)
     }
@@ -209,13 +226,14 @@ impl ProjectLibrary {
     pub fn rename_playlist(&self, old_name: &str, new_name: &str, copy: bool) -> Result<PathBuf, String> {
         let old_path = self.playlist_path(old_name);
         let xml = fs::read_to_string(&old_path).map_err(|e| format!("{}: {}", old_path.display(), e))?;
-        let songs = self.playlist_from(old_path, &xml).songs;
-        self.save_playlist_as(old_name, new_name, &songs, copy)
+        let pl = self.playlist_from(old_path, &xml);
+        self.save_playlist_as(old_name, new_name, &pl.songs, &pl.markers, copy)
     }
 
     pub fn delete_playlist(&self, name: &str) -> Result<(), String> {
         let path = self.playlist_path(name);
-        fs::remove_file(&path).map_err(|e| format!("Cannot delete {}:\n{}", path.display(), e))
+        fs::remove_file(&path).map_err(|e| format!("Cannot delete {}:\n{}", path.display(), e))?;
+        remove_if_there(&self.markers_path(name))
     }
 
     /// Load `song` and save it as `new_name` at `new_path`. An unreadable
@@ -229,6 +247,23 @@ impl ProjectLibrary {
     fn write_playlist(&self, path: &Path, name: &str, songs: &[PlaylistSong]) -> Result<(), String> {
         let xml = generate_playlistprj(name, now_ms(), &self.root, songs);
         write_new(path, &xml)
+    }
+
+    /// Write the .setlist of playlist `name`; without markers there is none.
+    fn write_markers(&self, name: &str, markers: &SetMarkers) -> Result<(), String> {
+        let path = self.markers_path(name);
+        if markers.is_empty() {
+            remove_if_there(&path)
+        } else {
+            write_new(&path, &markers.generate())
+        }
+    }
+}
+
+fn remove_if_there(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("Cannot delete {}:\n{}", path.display(), e)),
+        _ => Ok(()),
     }
 }
 
@@ -304,8 +339,8 @@ mod tests {
             mode: "wait_for_button_press".into(),
             delay: "0".into(),
         };
-        lib.create_playlist("Set", &[entry("Intro"), entry("Ballad")]).unwrap();
-        lib.create_playlist("Short", &[entry("Intro")]).unwrap();
+        lib.create_playlist("Set", &[entry("Intro"), entry("Ballad")], &SetMarkers::default()).unwrap();
+        lib.create_playlist("Short", &[entry("Intro")], &SetMarkers::default()).unwrap();
         (root, lib)
     }
 
@@ -376,7 +411,7 @@ mod tests {
         assert!(err.contains("Set") && err.contains("Short"), "{}", err);
         assert!(lib.song_path("Intro").exists());
         lib.delete_playlist("Short").unwrap();
-        lib.save_playlist("Set", &[]).unwrap();
+        lib.save_playlist("Set", &[], &SetMarkers::default()).unwrap();
         lib.delete_song(&lib.song_path("Intro")).unwrap();
         assert!(!lib.song_path("Intro").exists());
         let _ = fs::remove_dir_all(&root);
@@ -393,8 +428,44 @@ mod tests {
         lib.rename_playlist("Encore", "Encore 2", true).unwrap();
         assert!(lib.playlist_path("Encore").exists());
         assert!(lib.rename_playlist("Encore", "Set", false).unwrap_err().contains("already exists"));
-        assert!(lib.create_playlist("Bad:Name", &[]).is_err());
+        assert!(lib.create_playlist("Bad:Name", &[], &SetMarkers::default()).is_err());
         assert!(lib.create_song("Set?", 48000, 24).is_err());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn markers_of(lib: &ProjectLibrary, playlist: &str) -> SetMarkers {
+        lib.playlists().into_iter().find(|p| p.name == playlist).unwrap().markers
+    }
+
+    #[test]
+    fn markers_follow_the_playlist() {
+        let (root, lib) = setup("plib-markers");
+        let set = lib.playlists().into_iter().find(|p| p.name == "Set").unwrap();
+        let m = SetMarkers { encore: Some(1), end: Some(2) };
+        lib.save_playlist("Set", &set.songs, &m).unwrap();
+        assert!(lib.markers_path("Set").exists());
+        assert_eq!(markers_of(&lib, "Set"), m);
+        // the .playlistprj stays as uTool2 writes it
+        let xml = fs::read_to_string(lib.playlist_path("Set")).unwrap();
+        assert!(!xml.contains("encore"));
+        // a renamed song keeps the markers
+        lib.rename_song(&lib.song_path("Ballad"), "Slow").unwrap();
+        assert_eq!(markers_of(&lib, "Set"), m);
+        lib.rename_playlist("Set", "Gig", true).unwrap();
+        assert_eq!(markers_of(&lib, "Gig"), m);
+        assert_eq!(markers_of(&lib, "Set"), m);
+        lib.rename_playlist("Set", "Tour", false).unwrap();
+        assert!(!lib.markers_path("Set").exists());
+        assert_eq!(markers_of(&lib, "Tour"), m);
+        lib.delete_playlist("Tour").unwrap();
+        assert!(!lib.markers_path("Tour").exists());
+        // saved without markers: no file
+        let gig = lib.playlists().into_iter().find(|p| p.name == "Gig").unwrap();
+        lib.save_playlist("Gig", &gig.songs, &SetMarkers::default()).unwrap();
+        assert!(!lib.markers_path("Gig").exists());
+        // markers beyond the songs are clamped
+        fs::write(lib.markers_path("Short"), "encore = 9\r\n").unwrap();
+        assert_eq!(markers_of(&lib, "Short").encore, Some(1));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -412,6 +483,7 @@ mod tests {
                 mode: "wait_for_button_press".into(),
                 delay: "0".into(),
             }],
+            &SetMarkers::default(),
         )
         .unwrap();
         // trailing "\" in project_lib: the reference still matches

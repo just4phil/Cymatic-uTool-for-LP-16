@@ -23,12 +23,13 @@ use eframe::egui::{
 use lp16_tool::audio_out::AudioSettings;
 use lp16_tool::mix::MixSaver;
 use lp16_tool::project_lib::ProjectLibrary;
+use lp16_tool::setlist::{self, SetMarkers, Timeline};
 use lp16_tool::sync::{self, Action, ExportMode, Progress};
 use lp16_tool::wav_tail::{self, TailReport};
 use lp16_tool::{
     import_songs, init_folders,
     library_songs, midi_duration, natural_cmp, newest_version, scan_import, ImportItem, ImportStatus, LibrarySong,
-    now_ms, resolve, save_backup, save_config, save_mixes,
+    now_ms, resolve, save_backup, save_config, save_mixes, save_set_pause, MAX_SET_PAUSE,
     plain_tag, xml_unescape, unresolve, valid_fat32_name, Config,
     PlaylistSong, ProjectTrack, SongProject, WavInfo, STICK_WAV_HEADER_LEN,
 };
@@ -59,6 +60,12 @@ pub(crate) const RED: Color32 = Color32::from_rgb(0xf0, 0x5a, 0x5a);
 const MARK_FILL: Color32 = Color32::from_rgb(0xfb, 0xd9, 0xc4);
 
 const ROW_H: f32 = 22.0;
+/// playlist editor: marker rows (encores, end of concert)
+const MARKER_FILL: Color32 = Color32::from_rgb(0x5a, 0x40, 0x32);
+const MARKER_SEL: Color32 = Color32::from_rgb(0x7a, 0x52, 0x3a);
+/// playlist editor: centre of the Start and End columns, from the right edge
+const COL_START: f32 = 320.0;
+const COL_END: f32 = 262.0;
 
 // ---------------------------------------------------------------------------
 // data
@@ -127,7 +134,7 @@ impl SongInfo {
 }
 
 /// One song entry of a playlist.
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct PlSong {
     /// full path of the .songprj
     prj: String,
@@ -138,6 +145,8 @@ struct PlSong {
 struct PlaylistInfo {
     name: String,
     songs: Vec<PlSong>,
+    /// encores / end of concert
+    markers: SetMarkers,
     size: u64,
     modified: i64,
 }
@@ -207,8 +216,11 @@ struct PlaylistEditor {
     /// None = new playlist
     index: Option<usize>,
     name: String,
-    songs: Vec<PlSong>,
+    /// songs and the two concert markers, in list order
+    items: Vec<PlItem>,
     checked: Vec<bool>,
+    /// pause between two songs (the global setting, edited here)
+    pause: u32,
     dirty: bool,
     avail_open: bool,
     avail_sel: Option<usize>,
@@ -216,6 +228,60 @@ struct PlaylistEditor {
     anchor: Option<usize>,
     /// what is being dragged onto the Playlist Content
     drag: Option<PlDrag>,
+}
+
+/// A row of the Playlist Content.
+#[derive(Clone, PartialEq)]
+enum PlItem {
+    Song(PlSong),
+    /// the encores start here
+    Encore,
+    /// the concert ends here; the songs below are for information only
+    End,
+}
+
+/// The editor rows of a playlist: its songs with the markers in between.
+fn items_from(songs: &[PlSong], m: &SetMarkers) -> Vec<PlItem> {
+    let mut items = Vec::with_capacity(songs.len() + 2);
+    for g in 0..=songs.len() {
+        if m.encore == Some(g) {
+            items.push(PlItem::Encore);
+        }
+        if m.end == Some(g) {
+            items.push(PlItem::End);
+        }
+        if let Some(s) = songs.get(g) {
+            items.push(PlItem::Song(s.clone()));
+        }
+    }
+    items
+}
+
+/// The songs of the editor rows, and the markers as gap indices.
+fn split_items(items: &[PlItem]) -> (Vec<PlSong>, SetMarkers) {
+    let mut songs = Vec::new();
+    let mut m = SetMarkers::default();
+    for it in items {
+        match it {
+            PlItem::Song(s) => songs.push(s.clone()),
+            PlItem::Encore => m.encore = Some(songs.len()),
+            PlItem::End => m.end = Some(songs.len()),
+        }
+    }
+    (songs, m)
+}
+
+fn item_label(item: &PlItem) -> String {
+    match item {
+        PlItem::Song(s) => stem(&s.prj),
+        PlItem::Encore => "ENCORES".into(),
+        PlItem::End => "END OF CONCERT".into(),
+    }
+}
+
+/// A song added in the playlist editor.
+fn new_pl_song(prj: &str) -> PlSong {
+    PlSong { prj: prj.to_string(), mode: "wait_for_button_press".into(), delay: "0".into() }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -433,6 +499,12 @@ fn fmt_len(sec: f64) -> String {
     } else {
         format!("{:02}:{:02}", s / 60, s % 60)
     }
+}
+
+/// A point in time of the concert, always h:mm:ss (like the old sheet).
+fn fmt_clock(sec: f64) -> String {
+    let s = sec.max(0.0).round() as u64;
+    format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
 }
 
 fn fmt_size(b: u64) -> String {
@@ -1343,6 +1415,7 @@ impl Lp16App {
                     .iter()
                     .map(|s| PlSong { prj: s.songprj.clone(), mode: s.mode.clone(), delay: s.delay.clone() })
                     .collect(),
+                markers: pl.markers,
                 size: fs::metadata(&pl.path).map(|m| m.len()).unwrap_or(0),
                 modified: mtime(&pl.path),
             })
@@ -1392,6 +1465,12 @@ impl Lp16App {
             .filter_map(|s| self.song_of(&s.prj))
             .map(|s| s.duration)
             .sum()
+    }
+
+    /// Start and end of the songs of a concert (missing songs count 0 s).
+    fn concert_timeline(&self, songs: &[PlSong], markers: &SetMarkers, pause: u32) -> Timeline {
+        let durations: Vec<f64> = songs.iter().map(|s| self.song_of(&s.prj).map(|x| x.duration).unwrap_or(0.0)).collect();
+        setlist::timeline(&durations, markers, pause as f64)
     }
 
     fn select_song_path(&mut self, path: &Path) {
@@ -1470,15 +1549,16 @@ impl Lp16App {
     }
 
     fn open_playlist_editor(&mut self, index: Option<usize>) {
-        let (name, songs) = match index {
-            Some(i) => (self.playlists[i].name.clone(), self.playlists[i].songs.clone()),
+        let (name, items) = match index {
+            Some(i) => (self.playlists[i].name.clone(), items_from(&self.playlists[i].songs, &self.playlists[i].markers)),
             None => ("New Playlist".to_string(), Vec::new()),
         };
         self.pl_editor = Some(PlaylistEditor {
             index,
             name,
-            checked: vec![false; songs.len()],
-            songs,
+            checked: vec![false; items.len()],
+            items,
+            pause: self.config.set_pause,
             dirty: index.is_none(),
             avail_open: true,
             avail_sel: None,
@@ -1491,7 +1571,7 @@ impl Lp16App {
     fn editor_save(&mut self, copy_or_rename: Option<bool>) {
         let Some(ed) = self.pl_editor.as_ref() else { return };
         let name = ed.name.trim().to_string();
-        let songs = ed.songs.clone();
+        let (songs, markers) = split_items(&ed.items);
         let index = ed.index;
         if !valid_fat32_name(&name) {
             self.message("Playlist Name", "The new Playlist Name contains invalid characters.");
@@ -1514,9 +1594,9 @@ impl Lp16App {
         let lib = self.lib();
         let songs = to_pl_songs(&songs);
         let result = match (index, same_name, copy_or_rename) {
-            (Some(i), false, Some(copy)) => lib.save_playlist_as(&self.playlists[i].name, &name, &songs, copy),
-            (None, _, _) => lib.create_playlist(&name, &songs),
-            _ => lib.save_playlist(&name, &songs),
+            (Some(i), false, Some(copy)) => lib.save_playlist_as(&self.playlists[i].name, &name, &songs, &markers, copy),
+            (None, _, _) => lib.create_playlist(&name, &songs, &markers),
+            _ => lib.save_playlist(&name, &songs, &markers),
         };
         if !self.lib_ok(result) {
             return;
@@ -2275,28 +2355,76 @@ impl Lp16App {
                     ui.add_space(14.0);
                     kv(ui, "Type", " multitrack Playlist");
                     kv(ui, "Song count", &pl.songs.len().to_string());
+                    let tl = self.concert_timeline(&pl.songs, &pl.markers, self.config.set_pause);
+                    let times_font = FontId::proportional(11.5);
                     list_box(ui, |ui| {
-                        for (n, s) in pl.songs.iter().enumerate() {
-                            let info = self.song_of(&s.prj);
-                            ui.horizontal(|ui| {
-                                ui.label(format!("{:>3}: {}", n + 1, stem(&s.prj)));
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    pause_widget(ui)
-                                        .on_hover_text(&s.mode);
-                                    match info {
-                                        None => {
-                                            badge(ui, "Missing Song").on_hover_text(&s.prj);
+                        // number of songs before the current row
+                        let mut n = 0usize;
+                        for item in items_from(&pl.songs, &pl.markers) {
+                            match item {
+                                PlItem::Song(s) => {
+                                    let info = self.song_of(&s.prj);
+                                    let times = tl.rows.get(n).copied().flatten();
+                                    // after the end of the concert: for information only
+                                    let color = if times.is_some() { TEXT } else { DIM };
+                                    n += 1;
+                                    ui.horizontal(|ui| {
+                                        ui.label(RichText::new(format!("{:>3}: {}", n, stem(&s.prj))).color(color));
+                                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                            pause_widget(ui).on_hover_text(&s.mode);
+                                            if let Some((start, end)) = times {
+                                                time_col(ui, &fmt_clock(end), TEXT);
+                                                ui.label(RichText::new("–").font(times_font.clone()).color(DIM));
+                                                time_col(ui, &fmt_clock(start), TEXT);
+                                            }
+                                            match info {
+                                                None => {
+                                                    badge(ui, "Missing Song").on_hover_text(&s.prj);
+                                                }
+                                                Some(x) if x.warn() => {
+                                                    badge(ui, "Missing files");
+                                                }
+                                                _ => {}
+                                            }
+                                        });
+                                    });
+                                }
+                                marker => {
+                                    // a marker row, tinted like in the playlist editor
+                                    let (text, time) = match marker {
+                                        PlItem::Encore => {
+                                            let t = if tl.main_set.is_some() {
+                                                format!("ENCORES  ({} songs)", tl.encore_count)
+                                            } else {
+                                                "ENCORES  (after the end of the concert)".into()
+                                            };
+                                            (t, tl.main_set)
                                         }
-                                        Some(x) if x.warn() => {
-                                            badge(ui, "Missing files");
-                                        }
-                                        _ => {}
-                                    }
-                                });
-                            });
+                                        _ => ("END OF CONCERT".to_string(), Some(tl.concert)),
+                                    };
+                                    egui::Frame::none().fill(MARKER_FILL).outer_margin(Margin::symmetric(-16.0, 0.0)).inner_margin(Margin::symmetric(16.0, 2.0)).show(ui, |ui| {
+                                        ui.set_min_width(ui.available_width());
+                                        ui.horizontal(|ui| {
+                                            ui.label(RichText::new(format!("       {}", text)).color(ORANGE));
+                                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                                // the width of the start mode icon of the song rows
+                                                ui.add_space(16.0 + ui.spacing().item_spacing.x);
+                                                if let Some(t) = time {
+                                                    time_col(ui, &fmt_clock(t), ORANGE);
+                                                }
+                                            });
+                                        });
+                                    });
+                                }
+                            }
                         }
                     });
                     kv(ui, "Length", &fmt_len(self.playlist_len(&pl.songs)));
+                    let concert = match tl.main_set {
+                        Some(main) => format!("{} (main set {}, {} encores; {} s pause)", fmt_clock(tl.concert), fmt_clock(main), tl.encore_count, self.config.set_pause),
+                        None => format!("{} ({} s pause)", fmt_clock(tl.concert), self.config.set_pause),
+                    };
+                    kv(ui, "Concert", &concert);
                     kv(ui, "Size", &fmt_size(pl.size));
                     kv(ui, "Modification date", &fmt_date(pl.modified));
                 }
@@ -2976,7 +3104,8 @@ impl Lp16App {
             self.message("Update Playlist", format!("A Playlist \"{}\" already exists.", name));
             return;
         }
-        let result = self.lib().create_playlist(&name, &to_pl_songs(&songs));
+        let markers = pl.markers;
+        let result = self.lib().create_playlist(&name, &to_pl_songs(&songs), &markers);
         if self.lib_ok(result) {
             self.refresh();
             self.select_playlist_name(&name);
@@ -3709,8 +3838,8 @@ impl Lp16App {
         );
         match ed.drag {
             Some(PlDrag::Rows) => {
-                let sel: Vec<usize> = (0..ed.songs.len()).filter(|&k| ed.checked[k]).collect();
-                let text = if sel.len() == 1 { stem(&ed.songs[sel[0]].prj) } else { format!("{} songs", sel.len()) };
+                let sel: Vec<usize> = (0..ed.items.len()).filter(|&k| ed.checked[k]).collect();
+                let text = if sel.len() == 1 { item_label(&ed.items[sel[0]]) } else { format!("{} rows", sel.len()) };
                 paint_drag_ghost(ctx, text);
             }
             Some(PlDrag::Song(i)) => {
@@ -3719,6 +3848,13 @@ impl Lp16App {
                 }
             }
             None => {}
+        }
+        // the pause is a global setting: saved once the value stops changing
+        if ed.pause != self.config.set_pause && !ctx.input(|i| i.pointer.any_down()) {
+            self.config.set_pause = ed.pause;
+            if let Err(e) = save_set_pause(&config_path(), ed.pause) {
+                self.message("Settings", format!("Cannot save {}:\n{}", config_path().display(), e));
+            }
         }
         self.pl_editor = Some(ed);
         match clicked {
@@ -3735,6 +3871,8 @@ impl Lp16App {
     }
 
     fn playlist_editor_body(&self, ui: &mut Ui, ed: &mut PlaylistEditor) {
+        let (songs, markers) = split_items(&ed.items);
+        let tl = self.concert_timeline(&songs, &markers, ed.pause);
         // Playlist Settings
         panel_tab(ui, "Playlist Settings", false);
         panel_body(ui, false, |ui| {
@@ -3743,7 +3881,7 @@ impl Lp16App {
                 ui.label("LP16\\Multitrack Playlists");
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add_space(140.0);
-                    ui.label(format!("Song Count: {}", ed.songs.len()));
+                    ui.label(format!("Song Count: {}", songs.len()));
                 });
             });
             ui.horizontal(|ui| {
@@ -3754,7 +3892,20 @@ impl Lp16App {
                 }
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                     ui.add_space(100.0);
-                    ui.label(format!("Playlist Length: {}", fmt_len(self.playlist_len(&ed.songs))));
+                    ui.label(format!("Playlist Length: {}", fmt_len(self.playlist_len(&songs))));
+                });
+            });
+            ui.horizontal(|ui| {
+                ui.label("Pause between songs:");
+                ui.add(egui::DragValue::new(&mut ed.pause).clamp_range(0..=MAX_SET_PAUSE).suffix(" s"))
+                    .on_hover_text("Used for the concert length of every playlist (a global setting).");
+                ui.label(RichText::new("(all playlists)").color(DIM));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.add_space(100.0);
+                    ui.label(RichText::new(format!("Concert: {}", fmt_clock(tl.concert))).color(ORANGE));
+                    if let Some(main) = tl.main_set {
+                        ui.label(format!("Main Set: {}   ·   Encores: {}   ·", fmt_clock(main), tl.encore_count));
+                    }
                 });
             });
         });
@@ -3799,6 +3950,7 @@ impl Lp16App {
         });
         // Playlist Content
         let mut delete = false;
+        let mut new_marker: Option<PlItem> = None;
         // gap (0..=len) under the mouse while something is dragged over the content
         let mut gap: Option<usize> = None;
         let mut move_by: i32 = 0;
@@ -3807,6 +3959,12 @@ impl Lp16App {
             panel_body(ui, true, |ui| {
                 let any = ed.checked.iter().any(|&c| c);
                 ui.horizontal(|ui| {
+                    if small_btn(ui, "+ Encores", markers.encore.is_none()) {
+                        new_marker = Some(PlItem::Encore);
+                    }
+                    if small_btn(ui, "+ End of Concert", markers.end.is_none()) {
+                        new_marker = Some(PlItem::End);
+                    }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         delete = small_btn(ui, "Delete", any);
                         if small_btn(ui, "Down", any) {
@@ -3825,7 +3983,9 @@ impl Lp16App {
                 paint_check(&p, Rect::from_center_size(pos2(hr.left() + 12.0, hr.center().y), vec2(14.0, 14.0)), state, true);
                 let f = FontId::proportional(11.0);
                 p.text(pos2(hr.left() + 70.0, hr.center().y), Align2::CENTER_CENTER, "Start Mode", f.clone(), TEXT);
-                p.text(pos2((hr.left() + hr.right() - 170.0) / 2.0, hr.center().y), Align2::CENTER_CENTER, "Song Name", f.clone(), TEXT);
+                p.text(pos2((hr.left() + hr.right() - 350.0) / 2.0, hr.center().y), Align2::CENTER_CENTER, "Song Name", f.clone(), TEXT);
+                p.text(pos2(hr.right() - COL_START, hr.center().y), Align2::CENTER_CENTER, "Start", f.clone(), TEXT);
+                p.text(pos2(hr.right() - COL_END, hr.center().y), Align2::CENTER_CENTER, "End", f.clone(), TEXT);
                 p.text(pos2(hr.right() - 120.0, hr.center().y), Align2::CENTER_CENTER, "Properties", f.clone(), TEXT);
                 p.text(pos2(hr.right() - 40.0, hr.center().y), Align2::CENTER_CENTER, "Length", f, TEXT);
                 if hresp.clicked() && hresp.interact_pointer_pos().map(|q| q.x < hr.left() + 24.0).unwrap_or(false) {
@@ -3857,8 +4017,9 @@ impl Lp16App {
                         }
                     }
                     let mut gap_y: Option<f32> = None;
-                    for k in 0..ed.songs.len() {
-                        let s = &ed.songs[k];
+                    // number of songs before the current row
+                    let mut n = 0usize;
+                    for k in 0..ed.items.len() {
                         let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click_and_drag());
                         if let Some(q) = over {
                             if gap.is_none() && q.y < rect.center().y {
@@ -3867,21 +4028,53 @@ impl Lp16App {
                             }
                         }
                         let p = ui.painter_at(rect);
-                        if ed.checked[k] {
-                            p.rect_filled(rect, 0.0, SEL);
-                        } else if resp.hovered() {
-                            p.rect_filled(rect, 0.0, HOVER);
-                        }
                         let cy = rect.center().y;
-                        paint_check(&p, Rect::from_center_size(pos2(rect.left() + 12.0, cy), vec2(14.0, 14.0)), if ed.checked[k] { Check::On } else { Check::Off }, true);
-                        p.text(pos2(rect.left() + 22.0, cy), Align2::LEFT_CENTER, (k + 1).to_string(), FontId::proportional(13.0), TEXT);
-                        paint_mode(&p, pos2(rect.left() + 70.0, cy), &s.mode);
-                        p.text(pos2(rect.left() + 102.0, cy), Align2::LEFT_CENTER, stem(&s.prj), FontId::proportional(13.5), TEXT);
-                        match self.song_of(&s.prj) {
-                            Some(info) => paint_song_cols(&p, rect, info),
-                            None => {
-                                p.text(pos2(rect.right() - 120.0, cy), Align2::CENTER_CENTER, "missing", FontId::proportional(11.0), ORANGE);
-                                paint_warn(&p, rect);
+                        match &ed.items[k] {
+                            PlItem::Song(s) => {
+                                if ed.checked[k] {
+                                    p.rect_filled(rect, 0.0, SEL);
+                                } else if resp.hovered() {
+                                    p.rect_filled(rect, 0.0, HOVER);
+                                }
+                                let times = tl.rows.get(n).copied().flatten();
+                                // after the end of the concert: for information only
+                                let color = if times.is_some() { TEXT } else { DIM };
+                                n += 1;
+                                paint_check(&p, Rect::from_center_size(pos2(rect.left() + 12.0, cy), vec2(14.0, 14.0)), if ed.checked[k] { Check::On } else { Check::Off }, true);
+                                p.text(pos2(rect.left() + 22.0, cy), Align2::LEFT_CENTER, n.to_string(), FontId::proportional(13.0), color);
+                                paint_mode(&p, pos2(rect.left() + 70.0, cy), &s.mode);
+                                let name_clip = Rect::from_min_max(rect.min, pos2(rect.right() - COL_START - 32.0, rect.bottom()));
+                                p.with_clip_rect(name_clip).text(pos2(rect.left() + 102.0, cy), Align2::LEFT_CENTER, stem(&s.prj), FontId::proportional(13.5), color);
+                                if let Some((start, end)) = times {
+                                    p.text(pos2(rect.right() - COL_START, cy), Align2::CENTER_CENTER, fmt_clock(start), FontId::proportional(11.5), TEXT);
+                                    p.text(pos2(rect.right() - COL_END, cy), Align2::CENTER_CENTER, fmt_clock(end), FontId::proportional(11.5), TEXT);
+                                }
+                                match self.song_of(&s.prj) {
+                                    Some(info) => paint_song_cols(&p, rect, info),
+                                    None => {
+                                        p.text(pos2(rect.right() - 120.0, cy), Align2::CENTER_CENTER, "missing", FontId::proportional(11.0), ORANGE);
+                                        paint_warn(&p, rect);
+                                    }
+                                }
+                            }
+                            item => {
+                                // a marker row, tinted like the ZUGABEN row of the old sheet
+                                p.rect_filled(rect, 0.0, if ed.checked[k] { MARKER_SEL } else { MARKER_FILL });
+                                if resp.hovered() && !ed.checked[k] {
+                                    p.rect_stroke(rect.shrink(0.5), 0.0, Stroke::new(1.0_f32, ORANGE));
+                                }
+                                paint_check(&p, Rect::from_center_size(pos2(rect.left() + 12.0, cy), vec2(14.0, 14.0)), if ed.checked[k] { Check::On } else { Check::Off }, true);
+                                let (text, time) = match item {
+                                    PlItem::Encore => {
+                                        let t = if tl.main_set.is_some() { format!("ENCORES  ({} songs)", tl.encore_count) } else { "ENCORES  (after the end of the concert)".into() };
+                                        (t, tl.main_set)
+                                    }
+                                    _ => ("END OF CONCERT".to_string(), Some(tl.concert)),
+                                };
+                                p.text(pos2(rect.left() + 102.0, cy), Align2::LEFT_CENTER, text, FontId::proportional(13.0), ORANGE);
+                                if let Some(t) = time {
+                                    p.text(pos2(rect.right() - COL_END, cy), Align2::CENTER_CENTER, fmt_clock(t), FontId::proportional(11.5), ORANGE);
+                                }
                             }
                         }
                         if resp.drag_started() {
@@ -3896,7 +4089,7 @@ impl Lp16App {
                         }
                     }
                     if over.is_some() && gap.is_none() {
-                        gap = Some(ed.songs.len());
+                        gap = Some(ed.items.len());
                         gap_y = Some(ui.cursor().top());
                     }
                     // insertion mark
@@ -3916,23 +4109,16 @@ impl Lp16App {
         if ed.drag.is_some() && ui.input(|i| i.pointer.any_released()) {
             match (ed.drag.take(), gap) {
                 (Some(PlDrag::Rows), Some(g)) => {
-                    let before: Vec<String> = ed.songs.iter().map(|s| s.prj.clone()).collect();
-                    ed.checked = move_checked(&mut ed.songs, &ed.checked, g);
+                    let before = ed.items.clone();
+                    ed.checked = move_checked(&mut ed.items, &ed.checked, g);
                     ed.anchor = ed.checked.iter().position(|&c| c);
-                    if ed.songs.iter().map(|s| &s.prj).ne(before.iter()) {
+                    if ed.items != before {
                         ed.dirty = true;
                     }
                 }
                 (Some(PlDrag::Song(i)), Some(g)) => {
-                    ed.songs.insert(
-                        g,
-                        PlSong {
-                            prj: self.songs[i].path.clone(),
-                            mode: "wait_for_button_press".into(),
-                            delay: "0".into(),
-                        },
-                    );
-                    ed.checked = (0..ed.songs.len()).map(|k| k == g).collect();
+                    ed.items.insert(g, PlItem::Song(new_pl_song(&self.songs[i].path)));
+                    ed.checked = (0..ed.items.len()).map(|k| k == g).collect();
                     ed.anchor = Some(g);
                     ed.dirty = true;
                 }
@@ -3940,32 +4126,36 @@ impl Lp16App {
             }
         }
         if let Some(i) = add {
-            ed.songs.push(PlSong {
-                prj: self.songs[i].path.clone(),
-                mode: "wait_for_button_press".into(),
-                delay: "0".into(),
-            });
+            ed.items.push(PlItem::Song(new_pl_song(&self.songs[i].path)));
             ed.checked.push(false);
+            ed.dirty = true;
+        }
+        if let Some(m) = new_marker {
+            // after the last checked row, else at the end
+            let at = ed.checked.iter().rposition(|&c| c).map(|k| k + 1).unwrap_or(ed.items.len());
+            ed.items.insert(at, m);
+            ed.checked = (0..ed.items.len()).map(|k| k == at).collect();
+            ed.anchor = Some(at);
             ed.dirty = true;
         }
         if delete {
             let mut k = 0;
-            ed.songs.retain(|_| {
+            ed.items.retain(|_| {
                 let keep = !ed.checked[k];
                 k += 1;
                 keep
             });
-            ed.checked = vec![false; ed.songs.len()];
+            ed.checked = vec![false; ed.items.len()];
             ed.anchor = None;
             ed.dirty = true;
         }
         if move_by != 0 {
-            let n = ed.songs.len();
+            let n = ed.items.len();
             let order: Vec<usize> = if move_by < 0 { (1..n).collect() } else { (0..n.saturating_sub(1)).rev().collect() };
             for i in order {
                 let j = (i as i32 + move_by) as usize;
                 if ed.checked[i] && !ed.checked[j] {
-                    ed.songs.swap(i, j);
+                    ed.items.swap(i, j);
                     ed.checked.swap(i, j);
                 }
             }
@@ -4552,6 +4742,11 @@ fn paint_mode(p: &egui::Painter, c: egui::Pos2, mode: &str) {
             Stroke::NONE,
         ));
     }
+}
+
+/// Home > playlist: a running time in a fixed-width column.
+fn time_col(ui: &mut Ui, text: &str, color: Color32) {
+    ui.add_sized(vec2(52.0, 16.0), egui::Label::new(RichText::new(text).font(FontId::proportional(11.5)).color(color)));
 }
 
 fn pause_widget(ui: &mut Ui) -> egui::Response {
