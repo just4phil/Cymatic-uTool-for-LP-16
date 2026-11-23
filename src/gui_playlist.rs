@@ -1,10 +1,12 @@
 //! The left part of the Rehearsal tab: the playlist combo and the song
 //! list. The rows come from the library (`rehearsal_queue::song_rows`); this
-//! only draws them and reports what was clicked.
+//! only draws them and reports what was clicked. Between the songs it shows
+//! the concert markers of the playlist (encores, end of concert).
 
-use crate::gui_app::{DIM, LINE, ORANGE, PANEL, RED, TEXT};
+use crate::gui_app::{DIM, LINE, MARKER_FILL, ORANGE, PANEL, RED, TEXT};
 use eframe::egui::{self, pos2, vec2, Align2, Color32, FontId, Sense, Stroke, Ui};
 use lp16_tool::rehearsal_queue::SongRow;
+use lp16_tool::setlist::SetMarkers;
 
 /// Label of the combo entry for a single song.
 pub const SINGLE_SONG: &str = "(single song)";
@@ -25,7 +27,8 @@ pub struct ListOutcome {
 /// Combo and song list. `playlists` are the names of the library,
 /// `selected` the loaded one (None: single songs, or nothing); `single`:
 /// single songs are loaded; `has_songs`: the library has songs, so
-/// "(single song)" can be chosen.
+/// "(single song)" can be chosen. `markers` are the concert markers of
+/// the loaded playlist (gap indices into `rows`).
 pub fn ui(
     ui: &mut Ui,
     playlists: &[String],
@@ -33,6 +36,7 @@ pub fn ui(
     single: bool,
     has_songs: bool,
     rows: &[SongRow],
+    markers: SetMarkers,
 ) -> ListOutcome {
     let mut out = ListOutcome::default();
     ui.label(egui::RichText::new("Playlist").size(13.0).color(DIM));
@@ -63,8 +67,17 @@ pub fn ui(
         ui.label(egui::RichText::new(text).size(13.0).color(DIM));
         return out;
     }
-    for row in rows {
-        let (click, play) = song_row(ui, row);
+    for g in 0..=rows.len() {
+        if markers.encore == Some(g) {
+            marker_row(ui, "ENCORES");
+        }
+        if markers.end == Some(g) {
+            marker_row(ui, "END OF CONCERT");
+        }
+        let Some(row) = rows.get(g) else { break };
+        // after the end of the concert: still played, but shown dimmed
+        let after_end = markers.end.map(|e| g >= e).unwrap_or(false);
+        let (click, play) = song_row(ui, row, after_end);
         if click.is_some() {
             out.click = click;
         }
@@ -104,9 +117,19 @@ pub fn playlist_combo(
     chosen
 }
 
+/// A marker row between two songs, tinted like in the playlist editor.
+fn marker_row(ui: &mut Ui, text: &str) {
+    let w = ui.available_width() - 8.0;
+    let (rect, _) = ui.allocate_exact_size(vec2(w, 22.0), Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(rect, 0.0, MARKER_FILL);
+    p.text(pos2(rect.left() + 32.0, rect.center().y), Align2::LEFT_CENTER, text, FontId::proportional(12.5), ORANGE);
+}
+
 /// One row; returns its index (0-based) when clicked, and when
-/// double-clicked (then not as a click).
-fn song_row(ui: &mut Ui, row: &SongRow) -> (Option<usize>, Option<usize>) {
+/// double-clicked (then not as a click). `after_end`: the song comes after
+/// the end of the concert (dimmed).
+fn song_row(ui: &mut Ui, row: &SongRow, after_end: bool) -> (Option<usize>, Option<usize>) {
     let w = ui.available_width() - 8.0;
     let (rect, resp) = ui.allocate_exact_size(vec2(w, 26.0), Sense::click());
     let p = ui.painter();
@@ -119,7 +142,11 @@ fn song_row(ui: &mut Ui, row: &SongRow) -> (Option<usize>, Option<usize>) {
     if row.next && !row.marked {
         p.rect_stroke(rect.shrink(1.0), 3.0, Stroke::new(1.5_f32, ORANGE));
     }
-    let color = if row.error.is_some() { RED } else { TEXT };
+    let color = match (&row.error, after_end && !row.marked && !row.current) {
+        (Some(_), _) => RED,
+        (None, true) => DIM,
+        (None, false) => TEXT,
+    };
     let mid = rect.center().y;
     p.text(pos2(rect.left() + 8.0, mid), Align2::LEFT_CENTER, row.number.to_string(), FontId::proportional(13.0), DIM);
     // right side first: length, MIDI symbol

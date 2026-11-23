@@ -14,7 +14,7 @@ mp3 = ["dep:mp3lame-encoder"]
 asio = ["player", "cpal/asio"]
 
 [dependencies]
-eframe = { version = "0.27", optional = true }
+eframe = { version = "0.27", optional = true, features = ["persistence"] }
 rfd = { version = "0.14", default-features = false, optional = true }
 cpal = { version = "0.15", optional = true }
 rtrb = { version = "0.3", optional = true }

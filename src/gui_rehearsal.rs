@@ -15,6 +15,8 @@ use lp16_tool::mix::{song_strips, MixLibrary, SongStrip, STRIPS};
 use lp16_tool::rehearsal::{fmt_clock, Levels, PlayState, Status};
 use lp16_tool::rehearsal_queue::next_caption;
 use lp16_tool::rehearsal_session::{Session, SONG_SAVE_DELAY};
+use lp16_tool::setlist::SetMarkers;
+use std::collections::HashMap;
 use std::time::Duration;
 
 /// Seconds a key press or button jumps by (Shift: the long jump).
@@ -43,6 +45,8 @@ pub struct RehearsalPanel {
     mixer: MixerConsole,
     /// the autoplay checkbox was changed (see `take_autoplay_change`)
     autoplay_changed: bool,
+    /// encore / end of concert markers of the playlists, by name
+    markers: HashMap<String, SetMarkers>,
 }
 
 /// The range the list can be dragged in, for a tab `total` wide.
@@ -131,7 +135,8 @@ impl RehearsalPanel {
 
     /// Draw the tab: the song list on the left, the player, below it the
     /// rehearsal mix `mixes`. The list and the mixer are panels the user can
-    /// drag wider and taller (egui keeps their size while the program runs).
+    /// drag wider and taller (egui memory keeps their size; eframe saves it
+    /// and restores it at the next start).
     /// Returns true if the mix (values or presets) was changed, so the
     /// caller saves the config.
     pub fn ui(&mut self, ui: &mut Ui, mixes: &mut MixLibrary) -> bool {
@@ -235,13 +240,22 @@ impl RehearsalPanel {
         self.session.take_levels()
     }
 
+    /// The markers of the playlists of the library (called whenever the
+    /// library is read again).
+    pub fn set_markers(&mut self, markers: Vec<(String, SetMarkers)>) {
+        self.markers = markers.into_iter().collect();
+    }
+
     /// Playlist combo and song list.
     fn list_area(&mut self, ui: &mut Ui, status: Option<&Status>) {
         let rows = self.session.rows(status);
         let names = self.session.playlist_names();
         let single = self.session.is_single();
         let has_songs = self.session.has_library_songs();
-        let out = gui_playlist::ui(ui, &names, self.session.loaded_playlist(), single, has_songs, &rows);
+        let loaded = self.session.loaded_playlist();
+        // single songs have no markers
+        let markers = loaded.and_then(|n| self.markers.get(n)).copied().unwrap_or_default().clamp(rows.len());
+        let out = gui_playlist::ui(ui, &names, loaded, single, has_songs, &rows, markers);
         if let Some(name) = out.select {
             self.session.play_playlist(&name);
         }
@@ -600,7 +614,7 @@ mod tests {
             egui::CentralPanel::default().show(ctx, |ui| {
                 egui::SidePanel::left("list").default_width(LIST_WIDTH).show_inside(ui, |ui| {
                     let out = egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                        gui_playlist::ui(ui, &[], None, false, false, &rows(n));
+                        gui_playlist::ui(ui, &[], None, false, false, &rows(n), Default::default());
                     });
                     result = (out.inner_rect.height(), out.content_size.y);
                 });

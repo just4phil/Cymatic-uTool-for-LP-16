@@ -61,7 +61,7 @@ const MARK_FILL: Color32 = Color32::from_rgb(0xfb, 0xd9, 0xc4);
 
 const ROW_H: f32 = 22.0;
 /// playlist editor: marker rows (encores, end of concert)
-const MARKER_FILL: Color32 = Color32::from_rgb(0x5a, 0x40, 0x32);
+pub const MARKER_FILL: Color32 = Color32::from_rgb(0x5a, 0x40, 0x32);
 const MARKER_SEL: Color32 = Color32::from_rgb(0x7a, 0x52, 0x3a);
 /// playlist editor: centre of the Start and End columns, from the right edge
 const COL_START: f32 = 320.0;
@@ -1413,6 +1413,7 @@ impl Lp16App {
         let for_player: Vec<_> = self.playlists.iter().map(|p| (p.name.clone(), to_pl_songs(&p.songs))).collect();
         self.backup.set_library(&audio_lib, for_player.clone());
         self.rehearsal.session.set_library(&audio_lib, for_player);
+        self.rehearsal.set_markers(self.playlists.iter().map(|p| (p.name.clone(), p.markers)).collect());
         // "(single song)" lists all songs of the library
         let all_songs: Vec<PlaylistSong> = self
             .songs
@@ -1882,6 +1883,14 @@ impl eframe::App for Lp16App {
         if self.rehearsal.session.is_playing() {
             ctx.request_repaint_after(std::time::Duration::from_millis(33));
         }
+    }
+
+    /// eframe stores the window size and position, the UI zoom (Ctrl +/-)
+    /// and the panel sizes (egui memory) and restores them at the next
+    /// start. It writes the file only when something changed, so a short
+    /// interval costs nothing while nothing moves.
+    fn auto_save_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(1)
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
