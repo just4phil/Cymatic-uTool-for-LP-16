@@ -12,12 +12,19 @@
 
 use crate::{
     export_plan, generate_play, now_ms, plain_tag, plan_song, write_bytes_atomic,
-    PlaylistSong, SongPlan, SongProject,
+    PlaylistSong, SongPlan, SongProject, STICK_WAV_HEADER_LEN,
 };
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
+
+/// `<root>\Recording`: the LP-16's multitrack songs and playlists
+pub const RECORDING: &str = "Recording";
+/// the playlist folder inside `Recording` (and inside `Music`)
+pub const PLAYLISTS: &str = "#PLAYLISTS";
+/// `<root>\Music`: the LP-16's stereo files (not written by this tool)
+pub const MUSIC: &str = "Music";
 
 /// Folder layout of a stick: `<root>\Recording\<Song>\…` and
 /// `<root>\Recording\#PLAYLISTS\<Playlist>.play`.
@@ -35,13 +42,13 @@ impl Stick {
     }
     /// `<root>\Recording`: one folder per song, plus `#PLAYLISTS`
     pub fn recording(&self) -> PathBuf {
-        self.root.join("Recording")
+        self.root.join(RECORDING)
     }
     pub fn song_dir(&self, name: &str) -> PathBuf {
         self.recording().join(name)
     }
     pub fn playlists_dir(&self) -> PathBuf {
-        self.recording().join("#PLAYLISTS")
+        self.recording().join(PLAYLISTS)
     }
     pub fn play_path(&self, playlist: &str) -> PathBuf {
         self.playlists_dir().join(format!("{}.play", playlist))
@@ -54,7 +61,7 @@ impl Stick {
                 rd.filter_map(|e| e.ok())
                     .filter(|e| e.path().is_dir())
                     .map(|e| e.file_name().to_string_lossy().into_owned())
-                    .filter(|n| n != "#PLAYLISTS")
+                    .filter(|n| n != PLAYLISTS)
                     .collect()
             })
             .unwrap_or_default();
@@ -122,8 +129,8 @@ impl Stick {
     /// Delete one song folder from the stick.
     pub fn delete_song(&self, name: &str) -> Result<(), String> {
         check_entry_name(name)?;
-        if name.eq_ignore_ascii_case("#PLAYLISTS") {
-            return Err("#PLAYLISTS is not a song".into());
+        if name.eq_ignore_ascii_case(PLAYLISTS) {
+            return Err(format!("{} is not a song", PLAYLISTS));
         }
         let dir = self.song_dir(name);
         if !dir.is_dir() {
@@ -141,6 +148,145 @@ impl Stick {
         }
         fs::remove_file(&path).map_err(|e| format!("{}: {}", path.display(), e))
     }
+
+    /// `<root>\Music` exists (the stick has the LP-16's stereo folder).
+    pub fn has_music(&self) -> bool {
+        self.root.join(MUSIC).is_dir()
+    }
+
+    /// Bytes of the files in a song folder on the stick.
+    pub fn song_size(&self, name: &str) -> u64 {
+        dir_size(&self.song_dir(name))
+    }
+
+    /// What the song.set and the WAVs of a song folder on the stick say.
+    pub fn song_info(&self, name: &str) -> StickSong {
+        let dir = self.song_dir(name);
+        let set_path = dir.join("song.set");
+        let set = fs::read_to_string(&set_path).unwrap_or_default();
+        let tag = |t: &str| plain_tag(&set, t).unwrap_or_default();
+        let sample_rate: u32 = tag("sampling_rate").parse().unwrap_or(0);
+        let bits: u32 = tag("resolution").parse().unwrap_or(0);
+        let midi_length: f64 = tag("midi_length").parse().unwrap_or(0.0);
+        // the length of the largest WAV payload
+        let max_wav = fs::read_dir(&dir)
+            .map(|rd| {
+                rd.filter_map(|e| e.ok())
+                    .filter(|e| e.path().extension().map(|x| x.eq_ignore_ascii_case("wav")).unwrap_or(false))
+                    .filter_map(|e| e.metadata().ok())
+                    .map(|m| m.len())
+                    .max()
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+        let wav_length = if sample_rate > 0 && bits > 0 {
+            max_wav.saturating_sub(STICK_WAV_HEADER_LEN) as f64 / (sample_rate as f64 * bits as f64 / 8.0)
+        } else {
+            0.0
+        };
+        StickSong {
+            sample_rate,
+            bits,
+            channels: tag("channel_count"),
+            midi_file: tag("midi_file"),
+            length: wav_length.max(midi_length),
+            size: dir_size(&dir),
+            modified: crate::mtime_ms(&set_path.to_string_lossy()),
+        }
+    }
+
+    /// What a .play on the stick says, with the size of its song folders.
+    pub fn playlist_info(&self, name: &str) -> StickPlaylist {
+        let path = self.play_path(name);
+        let text = fs::read_to_string(&path).unwrap_or_default();
+        let entries = play_entries(&text);
+        StickPlaylist {
+            length: entries.iter().map(|(_, d)| d).sum(),
+            size: entries.iter().map(|(n, _)| self.song_size(n)).sum(),
+            songs: entries.into_iter().map(|(n, _)| n).collect(),
+            modified: crate::mtime_ms(&path.to_string_lossy()),
+        }
+    }
+
+    /// The Export preview: the songs and playlists on the stick merged with
+    /// the ones `plan` would write, sorted; the action is None for the
+    /// entries the export does not touch.
+    pub fn preview(&self, plan: &SyncPlan) -> StickPreview {
+        fn merge(mut on_stick: Vec<String>, planned: Vec<(String, Action)>) -> Vec<(String, Option<Action>)> {
+            let actions: HashMap<String, Action> = planned.into_iter().collect();
+            for n in actions.keys() {
+                if !on_stick.contains(n) {
+                    on_stick.push(n.clone());
+                }
+            }
+            on_stick.sort_by_key(|n| n.to_lowercase());
+            on_stick.into_iter().map(|n| { let a = actions.get(&n).copied(); (n, a) }).collect()
+        }
+        StickPreview {
+            songs: merge(self.songs(), plan.songs.iter().map(|s| (s.plan.name.clone(), s.action)).collect()),
+            playlists: merge(self.playlists(), plan.playlists.iter().map(|p| (p.name.clone(), p.action)).collect()),
+        }
+    }
+}
+
+/// A song folder on the stick, as [`Stick::song_info`] reads it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StickSong {
+    pub sample_rate: u32,
+    pub bits: u32,
+    /// as written in song.set
+    pub channels: String,
+    pub midi_file: String,
+    /// seconds: the longer of the largest WAV and the MIDI file
+    pub length: f64,
+    pub size: u64,
+    /// ms since 1970 of the song.set (0 = missing)
+    pub modified: i64,
+}
+
+/// A .play on the stick, as [`Stick::playlist_info`] reads it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StickPlaylist {
+    /// song names in order
+    pub songs: Vec<String>,
+    /// seconds, the sum of the durations in the .play
+    pub length: f64,
+    /// bytes of the song folders it lists (missing ones count 0)
+    pub size: u64,
+    /// ms since 1970 of the .play (0 = missing)
+    pub modified: i64,
+}
+
+/// The Export preview, see [`Stick::preview`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StickPreview {
+    pub songs: Vec<(String, Option<Action>)>,
+    pub playlists: Vec<(String, Option<Action>)>,
+}
+
+fn dir_size(dir: &Path) -> u64 {
+    fs::read_dir(dir)
+        .map(|rd| {
+            rd.filter_map(|e| e.ok())
+                .filter_map(|e| e.metadata().ok())
+                .filter(|m| m.is_file())
+                .map(|m| m.len())
+                .sum()
+        })
+        .unwrap_or(0)
+}
+
+/// Name and duration (seconds) of every <song> of a .play text.
+pub fn play_entries(text: &str) -> Vec<(String, f64)> {
+    text.split("<song>")
+        .skip(1)
+        .map(|block| {
+            let block = block.split("</song>").next().unwrap_or("");
+            let name = plain_tag(block, "name").unwrap_or_default();
+            let duration = plain_tag(block, "duration").and_then(|d| d.trim().parse().ok()).unwrap_or(0.0);
+            (name, duration)
+        })
+        .collect()
 }
 
 /// The song names (<name> of each <song>) of a .play text.
@@ -642,5 +788,44 @@ mod tests {
         assert!(stick.playlists().is_empty());
         assert_eq!(stick.songs_not_in_playlists().unwrap(), vec!["A & B", "USED-CASE"]);
         let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn stick_preview_and_details_after_export() {
+        let (root, audio, prj, stick_root) = setup("sync-preview");
+        let pls = playlist(&prj);
+        let p = plan(&stick_root, &audio, &[], &pls, ExportMode::Quick);
+        run(&p, |_| true).unwrap();
+        let stick = Stick::new(&stick_root);
+        // a song folder the export does not touch
+        fs::create_dir_all(stick.song_dir("old song")).unwrap();
+
+        let again = plan(&stick_root, &audio, &[], &pls, ExportMode::Quick);
+        let pv = stick.preview(&again);
+        assert_eq!(pv.songs, vec![("old song".to_string(), None), ("Rock & Roll".to_string(), Some(Action::Skip))]);
+        assert_eq!(pv.playlists, vec![("Set".to_string(), Some(Action::Quick))]);
+        // on an empty stick the planned entries show up as New
+        let empty = Stick::new(&root.join("EMPTY").to_string_lossy());
+        assert_eq!(empty.preview(&p).songs, vec![("Rock & Roll".to_string(), Some(Action::New))]);
+
+        let song = stick.song_info("Rock & Roll");
+        assert!(song.sample_rate > 0 && song.bits > 0, "{:?}", song);
+        assert!(song.length > 0.0 && song.modified > 0, "{:?}", song);
+        assert_eq!(song.size, stick.song_size("Rock & Roll"));
+        assert!(song.size > 0);
+        assert_eq!(stick.song_info("missing"), StickSong::default());
+
+        let pl = stick.playlist_info("Set");
+        assert_eq!(pl.songs, vec!["Rock & Roll"]);
+        assert_eq!(pl.size, song.size);
+        assert!(pl.modified > 0);
+        assert!(!stick.has_music());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn play_entries_reads_names_and_durations() {
+        let text = "<playlist><playlistname>X</playlistname>            <song><name>A &amp; B</name><duration>61.500</duration></song>            <song><name>C</name><duration>x</duration></song></playlist>";
+        assert_eq!(play_entries(text), vec![("A & B".to_string(), 61.5), ("C".to_string(), 0.0)]);
+        assert_eq!(play_song_names(text), vec!["A & B", "C"]);
     }
 }

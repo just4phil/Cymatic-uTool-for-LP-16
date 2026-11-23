@@ -142,7 +142,7 @@ fn cmd_playlist(playlistprj: &str, project_lib: &str, audio_lib: &str, out_dir: 
     }
 
     let play = generate_play(&name, now_ms(), &songs, |song| load_song(&song.songprj, audio_lib).duration());
-    let file_path = Path::new(out_dir).join("#PLAYLISTS").join(format!("{}.play", name));
+    let file_path = Path::new(out_dir).join(lp16_tool::sync::PLAYLISTS).join(format!("{}.play", name));
     write(&file_path, &play);
     println!("{} song(s)", songs.len());
     println!("wrote: {}", file_path.display());

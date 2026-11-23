@@ -30,8 +30,8 @@ use lp16_tool::{
     import_songs, init_folders,
     library_songs, midi_duration, natural_cmp, newest_version, scan_import, ImportItem, ImportStatus, LibrarySong,
     now_ms, resolve, save_backup, save_config, save_mixes, save_set_pause, MAX_SET_PAUSE,
-    plain_tag, xml_unescape, unresolve, valid_fat32_name, Config,
-    PlaylistSong, ProjectTrack, SongProject, WavInfo, STICK_WAV_HEADER_LEN,
+    unresolve, valid_fat32_name, Config,
+    PlaylistSong, ProjectTrack, SongProject, WavInfo,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -464,6 +464,15 @@ pub(crate) fn key(path: &str) -> String {
     path.to_lowercase()
 }
 
+/// "\Recording" or "\Recording\<sub>": where songs and playlists go on the stick
+fn stick_location(sub: &str) -> String {
+    if sub.is_empty() {
+        format!("\\{}", sync::RECORDING)
+    } else {
+        format!("\\{}\\{}", sync::RECORDING, sub)
+    }
+}
+
 fn stem(path: &str) -> String {
     Path::new(path)
         .file_stem()
@@ -477,18 +486,6 @@ fn mtime(path: &Path) -> i64 {
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
-
-fn dir_size(dir: &Path) -> u64 {
-    fs::read_dir(dir)
-        .map(|rd| {
-            rd.filter_map(|e| e.ok())
-                .filter_map(|e| e.metadata().ok())
-                .filter(|m| m.is_file())
-                .map(|m| m.len())
-                .sum()
-        })
         .unwrap_or(0)
 }
 
@@ -730,20 +727,6 @@ fn disk_free(_path: &str) -> Option<u64> {
     None
 }
 
-
-fn xml_all(xml: &str, name: &str) -> Vec<String> {
-    let open = format!("<{}>", name);
-    let close = format!("</{}>", name);
-    let mut out = Vec::new();
-    let mut rest = xml;
-    while let Some(p) = rest.find(&open) {
-        let s = p + open.len();
-        let Some(e) = rest[s..].find(&close) else { break };
-        out.push(xml_unescape(&rest[s..s + e]));
-        rest = &rest[s + e + close.len()..];
-    }
-    out
-}
 
 fn to_pl_songs(songs: &[PlSong]) -> Vec<PlaylistSong> {
     songs
@@ -1668,11 +1651,8 @@ impl Lp16App {
             return;
         }
         let stick = sync::Stick::new(&target);
-        let rec = stick.recording();
         let target_ok = !target.trim().is_empty() && Path::new(&target).is_dir();
         let selected: u64 = prjs.iter().filter_map(|p| self.song_of(p)).map(|s| s.size).sum();
-        let mut marks: HashMap<String, Mark> = HashMap::new();
-        let mut play_marks: HashMap<String, Mark> = HashMap::new();
         let mut to_copy = 0u64;
         let mut songs: Vec<(String, Mark)> = Vec::new();
         let mut plays: Vec<(String, Mark)> = Vec::new();
@@ -1685,61 +1665,14 @@ impl Lp16App {
                 self.export_mode(),
             );
             to_copy = plan.bytes_to_copy();
-            for s in &plan.songs {
-                marks.insert(s.plan.name.clone(), song_mark(s.action));
-            }
-            for p in &plan.playlists {
-                play_marks.insert(p.name.clone(), playlist_mark(p.action));
-            }
-            let mut names: Vec<String> = fs::read_dir(&rec)
-                .map(|rd| {
-                    rd.filter_map(|e| e.ok())
-                        .filter(|e| e.path().is_dir())
-                        .map(|e| e.file_name().to_string_lossy().into_owned())
-                        .filter(|n| n != "#PLAYLISTS")
-                        .collect()
-                })
-                .unwrap_or_default();
-            for n in marks.keys() {
-                if !names.contains(n) {
-                    names.push(n.clone());
-                }
-            }
-            names.sort_by_key(|n| n.to_lowercase());
-            songs = names
-                .into_iter()
-                .map(|n| {
-                    let m = marks.get(&n).copied().unwrap_or(Mark::None);
-                    (n, m)
-                })
-                .collect();
-            let mut pnames: Vec<String> = fs::read_dir(stick.playlists_dir())
-                .map(|rd| {
-                    rd.filter_map(|e| e.ok())
-                        .map(|e| e.path())
-                        .filter(|p| p.extension().map(|x| x == "play").unwrap_or(false))
-                        .map(|p| stem(&p.to_string_lossy()))
-                        .collect()
-                })
-                .unwrap_or_default();
-            for n in play_marks.keys() {
-                if !pnames.contains(n) {
-                    pnames.push(n.clone());
-                }
-            }
-            pnames.sort_by_key(|n| n.to_lowercase());
-            plays = pnames
-                .into_iter()
-                .map(|n| {
-                    let m = play_marks.get(&n).copied().unwrap_or(Mark::None);
-                    (n, m)
-                })
-                .collect();
+            let preview = stick.preview(&plan);
+            songs = preview.songs.into_iter().map(|(n, a)| (n, a.map(song_mark).unwrap_or(Mark::None))).collect();
+            plays = preview.playlists.into_iter().map(|(n, a)| (n, a.map(playlist_mark).unwrap_or(Mark::None))).collect();
         }
         self.preview = Some(Preview {
             key: k,
             target_ok,
-            music: Path::new(&target).join("Music").is_dir(),
+            music: stick.has_music(),
             songs,
             plays,
             selected,
@@ -2175,7 +2108,7 @@ impl Lp16App {
                     }
                 });
                 ui.add_space(8.0);
-                field_box(ui, "Target Disk Location", "\\Recording");
+                field_box(ui, "Target Disk Location", &stick_location(""));
                 ui.add_space(14.0);
                 let mut srs: Vec<u32> = self.songs.iter().map(|s| s.sr).collect();
                 srs.sort();
@@ -2210,7 +2143,7 @@ impl Lp16App {
                     refresh = small_btn(ui, "Refresh", true);
                 });
                 ui.add_space(8.0);
-                field_box(ui, "Target Disk Location", "\\Recording\\#PLAYLISTS");
+                field_box(ui, "Target Disk Location", &stick_location(sync::PLAYLISTS));
                 ui.add_space(14.0);
                 ui.label(format!("This branch contains {} Playlists.", self.playlists.len()));
                 if new {
@@ -2248,7 +2181,7 @@ impl Lp16App {
                         }
                     });
                     ui.add_space(8.0);
-                    field_box(ui, "Target Disk Location", &format!("\\Recording\\{}", s.name));
+                    field_box(ui, "Target Disk Location", &stick_location(&s.name));
                     ui.add_space(14.0);
                     kv(ui, "Type", "LP-16 multitrack Song");
                     kv(ui, "Sample rate", &fmt_sr(s.sr));
@@ -2351,7 +2284,7 @@ impl Lp16App {
                         }
                     });
                     ui.add_space(8.0);
-                    field_box(ui, "Target Disk Location", "\\Recording\\#PLAYLISTS");
+                    field_box(ui, "Target Disk Location", &stick_location(sync::PLAYLISTS));
                     ui.add_space(14.0);
                     kv(ui, "Type", " multitrack Playlist");
                     kv(ui, "Song count", &pl.songs.len().to_string());
@@ -2740,15 +2673,15 @@ impl Lp16App {
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 0.0;
                     if p.music {
-                        tree_row(ui, 0, Some(false), None, "🗀", "Music", false, false, |_, _| {});
+                        tree_row(ui, 0, Some(false), None, "🗀", sync::MUSIC, false, false, |_, _| {});
                     }
                     let open_rec = self.is_open("t:rec");
-                    if tree_row(ui, 0, Some(open_rec), None, "🗀", "Recording", false, false, |_, _| {}).toggle {
+                    if tree_row(ui, 0, Some(open_rec), None, "🗀", sync::RECORDING, false, false, |_, _| {}).toggle {
                         self.toggle("t:rec");
                     }
                     if open_rec {
                         let open_pl = self.is_open("t:pl");
-                        if tree_row(ui, 1, Some(open_pl), None, "🗀", "#PLAYLISTS", false, false, |_, _| {}).toggle {
+                        if tree_row(ui, 1, Some(open_pl), None, "🗀", sync::PLAYLISTS, false, false, |_, _| {}).toggle {
                             self.toggle("t:pl");
                         }
                         if open_pl {
@@ -3299,27 +3232,8 @@ impl Lp16App {
             centered_text(ui, "No target location selected.");
             return;
         }
-        let rec = root.join("Recording");
-        let list = |dir: &Path, dirs: bool, ext: &str| -> Vec<String> {
-            let mut v: Vec<String> = fs::read_dir(dir)
-                .map(|rd| {
-                    rd.filter_map(|e| e.ok())
-                        .map(|e| e.path())
-                        .filter(|p| {
-                            if dirs {
-                                p.is_dir()
-                            } else {
-                                p.extension().map(|x| x == ext).unwrap_or(false)
-                            }
-                        })
-                        .map(|p| p.file_name().unwrap_or_default().to_string_lossy().into_owned())
-                        .filter(|n| n != "#PLAYLISTS")
-                        .collect()
-                })
-                .unwrap_or_default();
-            v.sort_by_key(|n| n.to_lowercase());
-            v
-        };
+        let stick = sync::Stick::new(&self.config.stick_root);
+        let rec = stick.recording();
         let mut clicked: Option<EtSel> = None;
         let mut find: Option<String> = None;
         let mut action: Option<EtAction> = None;
@@ -3330,7 +3244,7 @@ impl Lp16App {
             .auto_shrink([false; 2])
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
-                for (folder, k) in [("Music", "e:music"), ("Recording", "e:rec")] {
+                for (folder, k) in [(sync::MUSIC, "e:music"), (sync::RECORDING, "e:rec")] {
                     let base = root.join(folder);
                     if !base.is_dir() {
                         continue;
@@ -3352,15 +3266,13 @@ impl Lp16App {
                         continue;
                     }
                     let pk = format!("{}:pl", k);
-                    let pl_dir = base.join("#PLAYLISTS");
-                    if pl_dir.is_dir() {
+                    if base.join(sync::PLAYLISTS).is_dir() {
                         let open_pl = self.is_open(&pk);
-                        if tree_row(ui, 1, Some(open_pl), None, "🗀", "#PLAYLISTS", false, false, |_, _| {}).toggle {
+                        if tree_row(ui, 1, Some(open_pl), None, "🗀", sync::PLAYLISTS, false, false, |_, _| {}).toggle {
                             self.toggle(&pk);
                         }
                         if open_pl && base == rec {
-                            for n in list(&pl_dir, false, "play") {
-                                let s = stem(&n);
+                            for s in stick.playlists() {
                                 let sel = self.et_sel == Some(EtSel::Play(s.clone()));
                                 let r = tree_row(ui, 2, None, None, "☰", &s, sel, true, |_, _| {});
                                 if sel && scroll {
@@ -3380,7 +3292,7 @@ impl Lp16App {
                         }
                     }
                     if base == rec {
-                        for n in list(&rec, true, "") {
+                        for n in stick.songs() {
                             let sel = self.et_sel == Some(EtSel::Song(n.clone()));
                             let r = tree_row(ui, 1, None, None, "♫", &n, sel, true, |_, _| {});
                             if sel && scroll {
@@ -3483,7 +3395,7 @@ impl Lp16App {
         match stick.songs_not_in_playlists() {
             Ok(v) if v.is_empty() => self.message("Delete Songs", "Every song on the stick is in at least one playlist."),
             Ok(v) => {
-                let bytes = v.iter().map(|n| dir_size(&stick.song_dir(n))).sum();
+                let bytes = v.iter().map(|n| stick.song_size(n)).sum();
                 self.dialog = Some(Dialog::EtDeleteUnused(v, bytes));
             }
             Err(e) => self.message("Delete Songs", format!("A playlist on the stick cannot be read, nothing deleted:\n{}", e)),
@@ -3531,34 +3443,12 @@ impl Lp16App {
     }
 
     fn compute_et_details(&self, sel: &EtSel) -> EtDetails {
-        let rec = Path::new(&self.config.stick_root).join("Recording");
-        let pl_dir = rec.join("#PLAYLISTS");
+        let stick = sync::Stick::new(&self.config.stick_root);
         match sel {
             EtSel::Song(name) => {
-                let dir = rec.join(name);
-                let set = fs::read_to_string(dir.join("song.set")).unwrap_or_default();
-                let sr: u32 = plain_tag(&set, "sampling_rate").and_then(|s| s.parse().ok()).unwrap_or(0);
-                let bits: u32 = plain_tag(&set, "resolution").and_then(|s| s.parse().ok()).unwrap_or(0);
-                let midi_len: f64 = plain_tag(&set, "midi_length").and_then(|s| s.parse().ok()).unwrap_or(0.0);
-                // length from the largest WAV payload
-                let max_wav = fs::read_dir(&dir)
-                    .map(|rd| {
-                        rd.filter_map(|e| e.ok())
-                            .filter(|e| e.path().extension().map(|x| x.eq_ignore_ascii_case("wav")).unwrap_or(false))
-                            .filter_map(|e| e.metadata().ok())
-                            .map(|m| m.len())
-                            .max()
-                            .unwrap_or(0)
-                    })
-                    .unwrap_or(0);
-                let wav_len = if sr > 0 && bits > 0 {
-                    max_wav.saturating_sub(STICK_WAV_HEADER_LEN) as f64 / (sr as f64 * bits as f64 / 8.0)
-                } else {
-                    0.0
-                };
+                let info = stick.song_info(name);
                 // like FAT: a playlist naming "ABCDEFU_x" uses the folder "Abcdefu_x";
                 // a different spelling is shown, the next export renames the folder
-                let stick = sync::Stick::new(&self.config.stick_root);
                 let key = name.to_lowercase();
                 let related: Vec<String> = stick
                     .playlists()
@@ -3572,13 +3462,13 @@ impl Lp16App {
                     title: name.clone(),
                     lines: vec![
                         ("Type".into(), "LP-16 Multitrack Song".into()),
-                        ("Sample rate".into(), fmt_sr(sr)),
-                        ("Resolution".into(), format!("{}-bit", bits)),
-                        ("Channel count".into(), plain_tag(&set, "channel_count").unwrap_or_default()),
-                        ("Length".into(), fmt_len(wav_len.max(midi_len))),
-                        ("Size".into(), fmt_size(dir_size(&dir))),
-                        ("Modification date".into(), fmt_date(mtime(&dir.join("song.set")))),
-                        ("MIDI file".into(), plain_tag(&set, "midi_file").unwrap_or_default()),
+                        ("Sample rate".into(), fmt_sr(info.sample_rate)),
+                        ("Resolution".into(), format!("{}-bit", info.bits)),
+                        ("Channel count".into(), info.channels),
+                        ("Length".into(), fmt_len(info.length)),
+                        ("Size".into(), fmt_size(info.size)),
+                        ("Modification date".into(), fmt_date(info.modified)),
+                        ("MIDI file".into(), info.midi_file),
                     ],
                     list_title: "Related Playlists:".into(),
                     list: related,
@@ -3586,26 +3476,22 @@ impl Lp16App {
                 }
             }
             EtSel::Play(name) => {
-                let path = pl_dir.join(format!("{}.play", name));
-                let text = fs::read_to_string(&path).unwrap_or_default();
-                let names = xml_all(&text, "name");
-                let len: f64 = xml_all(&text, "duration").iter().filter_map(|d| d.parse::<f64>().ok()).sum();
-                let size: u64 = names.iter().map(|n| dir_size(&rec.join(n))).sum();
+                let info = stick.playlist_info(name);
                 EtDetails {
                     title: name.clone(),
                     lines: vec![
                         ("Type".into(), "LP-16 multitrackplaylist".into()),
-                        ("Song count".into(), names.len().to_string()),
+                        ("Song count".into(), info.songs.len().to_string()),
                     ],
                     list_title: String::new(),
-                    list: names
+                    list: info
+                        .songs
                         .iter()
                         .enumerate()
                         .map(|(i, n)| {
-                            let stick = sync::Stick::new(&self.config.stick_root);
                             let warn = if let Some(other) = stick.song_case_differs(n) {
                                 format!("   ⚠ folder is \"{}\"", other)
-                            } else if !rec.join(n).is_dir() {
+                            } else if !stick.song_dir(n).is_dir() {
                                 "   ⚠ not on the stick".to_string()
                             } else {
                                 String::new()
@@ -3615,9 +3501,9 @@ impl Lp16App {
                         .chain(std::iter::once(String::new()))
                         .chain(
                             [
-                                format!("Length:  {}", fmt_len(len)),
-                                format!("Size:  {}", fmt_size(size)),
-                                format!("Modification date:  {}", fmt_date(mtime(&path))),
+                                format!("Length:  {}", fmt_len(info.length)),
+                                format!("Size:  {}", fmt_size(info.size)),
+                                format!("Modification date:  {}", fmt_date(info.modified)),
                             ]
                             .into_iter(),
                         )
