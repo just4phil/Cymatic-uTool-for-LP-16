@@ -31,7 +31,7 @@ use lp16_tool::{
     library_songs, midi_duration, natural_cmp, newest_version, scan_import, ImportItem, ImportStatus, LibrarySong,
     now_ms, resolve, save_backup, save_config, save_mixes, save_set_pause, MAX_SET_PAUSE,
     unresolve, valid_fat32_name, Config,
-    PlaylistSong, ProjectTrack, SongProject, WavInfo,
+    delay_seconds, start_mode_text, PlaylistSong, ProjectTrack, SongProject, StartMode, WavInfo,
 };
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -221,6 +221,9 @@ struct PlaylistEditor {
     checked: Vec<bool>,
     /// pause between two songs (the global setting, edited here)
     pause: u32,
+    /// start mode and delay (s) that "Apply to selected rows" sets
+    start_mode: StartMode,
+    start_delay: u32,
     dirty: bool,
     avail_open: bool,
     avail_sel: Option<usize>,
@@ -281,7 +284,7 @@ fn item_label(item: &PlItem) -> String {
 
 /// A song added in the playlist editor.
 fn new_pl_song(prj: &str) -> PlSong {
-    PlSong { prj: prj.to_string(), mode: "wait_for_button_press".into(), delay: "0".into() }
+    PlSong { prj: prj.to_string(), mode: StartMode::Button.as_str().into(), delay: "0".into() }
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -400,6 +403,8 @@ struct EtDetails {
     list_title: String,
     list: Vec<String>,
     play_songs: bool,
+    /// start mode and delay of each song of a .play
+    starts: Vec<(String, String)>,
 }
 
 pub struct Lp16App {
@@ -1544,6 +1549,8 @@ impl Lp16App {
             checked: vec![false; items.len()],
             items,
             pause: self.config.set_pause,
+            start_mode: StartMode::Button,
+            start_delay: 5,
             dirty: index.is_none(),
             avail_open: true,
             avail_sel: None,
@@ -2314,7 +2321,7 @@ impl Lp16App {
                                     ui.horizontal(|ui| {
                                         ui.label(RichText::new(format!("{:>3}: {}", n, stem(&s.prj))).color(color));
                                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                            pause_widget(ui).on_hover_text(&s.mode);
+                                            mode_widget(ui, &s.mode, &s.delay);
                                             if let Some((start, end)) = times {
                                                 time_col(ui, &fmt_clock(end), TEXT);
                                                 ui.label(RichText::new("–").font(times_font.clone()).color(DIM));
@@ -3483,6 +3490,7 @@ impl Lp16App {
                     list_title: "Related Playlists:".into(),
                     list: related,
                     play_songs: false,
+                    starts: Vec::new(),
                 }
             }
             EtSel::Play(name) => {
@@ -3519,6 +3527,7 @@ impl Lp16App {
                         )
                         .collect(),
                     play_songs: true,
+                    starts: info.starts.clone(),
                 }
             }
         }
@@ -3557,10 +3566,11 @@ impl Lp16App {
         if d.play_songs {
             let n = d.list.iter().position(|l| l.is_empty()).unwrap_or(d.list.len());
             list_box(ui, |ui| {
-                for l in &d.list[..n] {
+                for (i, l) in d.list[..n].iter().enumerate() {
+                    let (mode, delay) = d.starts.get(i).cloned().unwrap_or_default();
                     ui.horizontal(|ui| {
                         ui.label(l);
-                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| pause_widget(ui));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| mode_widget(ui, &mode, &delay));
                     });
                 }
             });
@@ -3850,6 +3860,7 @@ impl Lp16App {
         // gap (0..=len) under the mouse while something is dragged over the content
         let mut gap: Option<usize> = None;
         let mut move_by: i32 = 0;
+        let mut apply_mode = false;
         ui.allocate_ui_at_rect(Rect::from_min_size(top + vec2(half + 30.0, 0.0), vec2(half, h)), |ui| {
             panel_tab(ui, "Playlist Content", false);
             panel_body(ui, true, |ui| {
@@ -3869,6 +3880,31 @@ impl Lp16App {
                         if small_btn(ui, "Up", any) {
                             move_by = -1;
                         }
+                    });
+                });
+                // start mode of the checked songs (uTool2: "Apply to selected rows")
+                let any_song = ed.items.iter().zip(&ed.checked).any(|(it, &c)| c && matches!(it, PlItem::Song(_)));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Start Mode:").size(11.5));
+                    // toggle buttons, not a ComboBox: its popup stays hidden
+                    // behind this overlay
+                    for m in StartMode::ALL {
+                        ui.selectable_value(&mut ed.start_mode, m, RichText::new(m.label()).size(11.5)).on_hover_text(start_mode_help(m));
+                    }
+                    if ed.start_mode == StartMode::Timer {
+                        ui.add(egui::DragValue::new(&mut ed.start_delay).clamp_range(0..=MAX_START_DELAY).suffix(" s"))
+                            .on_hover_text("Delay before the song starts by itself.");
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let r = ui.add_enabled(
+                            any_song,
+                            egui::Button::new(RichText::new("Apply to selected rows").size(11.5).color(TEXT))
+                                .fill(Color32::from_rgb(0x3a, 0x3a, 0x3a))
+                                .stroke(Stroke::new(1.0_f32, ORANGE))
+                                .rounding(3.0),
+                        );
+                        apply_mode = r.clicked();
+                        r.on_disabled_hover_text("Check the songs first.");
                     });
                 });
                 // header
@@ -3938,7 +3974,11 @@ impl Lp16App {
                                 n += 1;
                                 paint_check(&p, Rect::from_center_size(pos2(rect.left() + 12.0, cy), vec2(14.0, 14.0)), if ed.checked[k] { Check::On } else { Check::Off }, true);
                                 p.text(pos2(rect.left() + 22.0, cy), Align2::LEFT_CENTER, n.to_string(), FontId::proportional(13.0), color);
-                                paint_mode(&p, pos2(rect.left() + 70.0, cy), &s.mode);
+                                paint_mode(&p, pos2(rect.left() + 70.0, cy), &s.mode, &s.delay);
+                                let mode_cell = Rect::from_center_size(pos2(rect.left() + 70.0, cy), vec2(44.0, ROW_H));
+                                if ed.drag.is_none() && ui.rect_contains_pointer(mode_cell) {
+                                    egui::show_tooltip_text(ui.ctx(), egui::Id::new(("pl_mode_tip", k)), start_mode_text(&s.mode, &s.delay));
+                                }
                                 let name_clip = Rect::from_min_max(rect.min, pos2(rect.right() - COL_START - 32.0, rect.bottom()));
                                 p.with_clip_rect(name_clip).text(pos2(rect.left() + 102.0, cy), Align2::LEFT_CENTER, stem(&s.prj), FontId::proportional(13.5), color);
                                 if let Some((start, end)) = times {
@@ -4019,6 +4059,19 @@ impl Lp16App {
                     ed.dirty = true;
                 }
                 _ => {}
+            }
+        }
+        if apply_mode {
+            let mode = ed.start_mode.as_str();
+            let delay = if ed.start_mode == StartMode::Timer { ed.start_delay.to_string() } else { "0".to_string() };
+            for (it, &c) in ed.items.iter_mut().zip(&ed.checked) {
+                if let (PlItem::Song(s), true) = (it, c) {
+                    if s.mode != mode || s.delay != delay {
+                        s.mode = mode.to_string();
+                        s.delay = delay.clone();
+                        ed.dirty = true;
+                    }
+                }
             }
         }
         if let Some(i) = add {
@@ -4626,18 +4679,44 @@ impl Lp16App {
     }
 }
 
-/// start mode symbol: uTool2 shows a pause sign for "wait for button press"
-fn paint_mode(p: &egui::Painter, c: egui::Pos2, mode: &str) {
-    if mode == "wait_for_button_press" || mode.is_empty() {
-        for dx in [-3.5f32, 3.5] {
-            p.rect_filled(Rect::from_center_size(pos2(c.x + dx, c.y), vec2(4.5, 14.0)), 0.0, TEXT);
+/// longest delay the playlist editor offers (seconds)
+const MAX_START_DELAY: u32 = 600;
+
+fn start_mode_help(m: StartMode) -> &'static str {
+    match m {
+        StartMode::Button => "The LP-16 stops before this song and waits for Play.",
+        StartMode::Timer => "The LP-16 starts this song by itself after the delay.",
+        StartMode::NoWait => "The LP-16 starts this song by itself right away.",
+    }
+}
+
+/// start mode symbol: a pause sign for "wait for button press" (as in
+/// uTool2), a play sign for "no wait", a clock with the seconds for
+/// "wait for timer" and "?" for a value lp16-tool does not know
+fn paint_mode(p: &egui::Painter, c: egui::Pos2, mode: &str, delay: &str) {
+    match StartMode::parse(mode) {
+        Some(StartMode::Button) => {
+            for dx in [-3.5f32, 3.5] {
+                p.rect_filled(Rect::from_center_size(pos2(c.x + dx, c.y), vec2(4.5, 14.0)), 0.0, TEXT);
+            }
         }
-    } else {
-        p.add(egui::Shape::convex_polygon(
-            vec![pos2(c.x - 5.0, c.y - 7.0), pos2(c.x + 6.0, c.y), pos2(c.x - 5.0, c.y + 7.0)],
-            TEXT,
-            Stroke::NONE,
-        ));
+        Some(StartMode::NoWait) => {
+            p.add(egui::Shape::convex_polygon(
+                vec![pos2(c.x - 5.0, c.y - 7.0), pos2(c.x + 6.0, c.y), pos2(c.x - 5.0, c.y + 7.0)],
+                ORANGE,
+                Stroke::NONE,
+            ));
+        }
+        Some(StartMode::Timer) => {
+            let cc = pos2(c.x - 8.0, c.y);
+            p.circle_stroke(cc, 6.5, Stroke::new(1.5_f32, ORANGE));
+            p.line_segment([cc, pos2(cc.x, cc.y - 4.5)], Stroke::new(1.5_f32, ORANGE));
+            p.line_segment([cc, pos2(cc.x + 3.5, cc.y)], Stroke::new(1.5_f32, ORANGE));
+            p.text(pos2(c.x + 1.0, c.y), Align2::LEFT_CENTER, format!("{}s", delay_seconds(delay)), FontId::proportional(11.0), ORANGE);
+        }
+        None => {
+            p.text(c, Align2::CENTER_CENTER, "?", FontId::proportional(14.0), ORANGE);
+        }
     }
 }
 
@@ -4646,10 +4725,11 @@ fn time_col(ui: &mut Ui, text: &str, color: Color32) {
     ui.add_sized(vec2(52.0, 16.0), egui::Label::new(RichText::new(text).font(FontId::proportional(11.5)).color(color)));
 }
 
-fn pause_widget(ui: &mut Ui) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(16.0, 16.0), Sense::hover());
-    paint_mode(ui.painter(), rect.center(), "wait_for_button_press");
-    resp.on_hover_text("Start mode: wait for button press")
+/// the start mode symbol of a list row, with its name as tooltip
+fn mode_widget(ui: &mut Ui, mode: &str, delay: &str) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(52.0, 16.0), Sense::hover());
+    paint_mode(ui.painter(), rect.center(), mode, delay);
+    resp.on_hover_text(start_mode_text(mode, delay))
 }
 
 // ---------------------------------------------------------------------------

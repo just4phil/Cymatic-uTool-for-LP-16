@@ -392,6 +392,68 @@ pub struct PlaylistSong {
     pub delay: String,
 }
 
+/// How a playlist entry starts on the LP-16: `start_mode` of the
+/// .playlistprj, `pause_mode/mode` of the .play. The values are the ones
+/// uTool2 writes; the delay (`start_mode_delay`, `pause_mode/time`) is in
+/// seconds and only matters for [`StartMode::Timer`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StartMode {
+    /// "wait_for_button_press": the LP-16 waits for Play
+    Button,
+    /// "wait_period": starts by itself after the delay
+    Timer,
+    /// "no_wait": starts by itself right away
+    NoWait,
+}
+
+impl StartMode {
+    pub const ALL: [StartMode; 3] = [StartMode::Button, StartMode::Timer, StartMode::NoWait];
+
+    /// The mode of a file value; an empty value is [`StartMode::Button`]
+    /// (like a new song), an unknown one None.
+    pub fn parse(value: &str) -> Option<StartMode> {
+        match value.trim() {
+            "" | "wait_for_button_press" => Some(StartMode::Button),
+            "wait_period" => Some(StartMode::Timer),
+            "no_wait" => Some(StartMode::NoWait),
+            _ => None,
+        }
+    }
+
+    /// The value written to the .playlistprj and the .play.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StartMode::Button => "wait_for_button_press",
+            StartMode::Timer => "wait_period",
+            StartMode::NoWait => "no_wait",
+        }
+    }
+
+    /// The name uTool2 shows.
+    pub fn label(self) -> &'static str {
+        match self {
+            StartMode::Button => "Wait for button press",
+            StartMode::Timer => "Wait for timer",
+            StartMode::NoWait => "No wait",
+        }
+    }
+}
+
+/// Whole seconds of a `start_mode_delay` text (empty or invalid gives 0).
+pub fn delay_seconds(text: &str) -> u32 {
+    text.trim().replace(',', ".").parse::<f64>().ok().filter(|v| v.is_finite() && *v > 0.0).map(|v| v.round().min(u32::MAX as f64) as u32).unwrap_or(0)
+}
+
+/// Text for a start mode and its delay, e.g. "Wait for timer (5 s)";
+/// an unknown mode is shown as it is.
+pub fn start_mode_text(mode: &str, delay: &str) -> String {
+    match StartMode::parse(mode) {
+        Some(StartMode::Timer) => format!("Wait for timer ({} s)", delay_seconds(delay)),
+        Some(m) => m.label().to_string(),
+        None => format!("Unknown start mode \"{}\"", mode),
+    }
+}
+
 /// Song name, pause mode, pause delay and the .songprj path for each
 /// <ns0:song_project> of a .playlistprj. Durations are NOT read here;
 /// they come from SongProject::duration() of each .songprj.
@@ -2611,6 +2673,31 @@ mod tests {
         let play = generate_play("A & B", 0, &songs, |_| 1.0);
         assert!(play.contains("<playlistname>A &amp; B</playlistname>"));
         assert!(play.contains("<name>R &amp; R</name>"));
+    }
+
+    #[test]
+    fn start_modes_are_the_utool2_values() {
+        for m in StartMode::ALL {
+            assert_eq!(StartMode::parse(m.as_str()), Some(m));
+        }
+        assert_eq!(StartMode::parse(""), Some(StartMode::Button));
+        assert_eq!(StartMode::parse("auto_start"), None);
+        assert_eq!((delay_seconds("5"), delay_seconds(" 2,6 "), delay_seconds(""), delay_seconds("-3"), delay_seconds("x")), (5, 3, 0, 0, 0));
+        assert_eq!(start_mode_text("wait_period", "7"), "Wait for timer (7 s)");
+        assert_eq!(start_mode_text("no_wait", "0"), "No wait");
+        assert_eq!(start_mode_text("odd", "0"), "Unknown start mode \"odd\"");
+    }
+
+    #[test]
+    fn start_mode_and_delay_reach_the_playlistprj_and_the_play() {
+        let songs = [PlaylistSong { name: "A".into(), songprj: r"C:\lib\A.songprj".into(), mode: "wait_period".into(), delay: "5".into() }];
+        let prj = generate_playlistprj("P", 0, r"C:\lib", &songs);
+        assert!(prj.contains("<ns0:start_mode>wait_period</ns0:start_mode>"), "{}", prj);
+        assert!(prj.contains("<ns0:start_mode_delay>5</ns0:start_mode_delay>"), "{}", prj);
+        let (_, back) = parse_playlist(&prj, r"C:\lib");
+        assert_eq!((back[0].mode.as_str(), back[0].delay.as_str()), ("wait_period", "5"));
+        let play = generate_play("P", 0, &songs, |_| 1.0);
+        assert!(play.contains("<mode>wait_period</mode>") && play.contains("<time>5</time>"), "{}", play);
     }
 
     #[test]

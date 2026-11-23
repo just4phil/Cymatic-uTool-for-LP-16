@@ -34,6 +34,10 @@ The **manual** (German) covering all features is a single HTML file,
   the result on the target is checked. A cancelled export never leaves a half-written file.
 - **Check without writing:** `verify` compares a stick with the library and exits with code 0
   only if everything is up to date. Handy before every gig.
+- **Start mode per song:** in the playlist editor, check the songs, choose a start mode ("Wait for
+  button press", "Wait for timer" with a delay in seconds, "No wait") and click "Apply to selected
+  rows". The LP-16 then waits for Play or starts the song by itself. The values are the ones uTool2
+  writes (`wait_for_button_press`, `wait_period`, `no_wait`).
 - **Edit the library:** create, reorder, rename, copy and delete playlists; create songs and drag
   WAVs onto the 16 tracks in the song editor, choose the MIDI file.
 - **Clean song endings:** detects WAVs that end with digital clipping or stop abruptly (*No clean
@@ -546,7 +550,6 @@ particular songs and playlists from the reference library (see `src/lib.rs`).
 - Pan per track in the song (the [song mix](#song-mix) edits level and mute; the pan stored in the
   `.songprj` is kept).
 - Song editor: changing the name, sampling rate and resolution of an existing song
-- Playlist editor: setting start mode and delay per song (existing values are kept)
 - Undo/redo, folders in the library ("New folder")
 - Editing on the stick (Edit Target can only delete)
 - Export Batch

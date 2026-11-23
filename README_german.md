@@ -34,6 +34,10 @@ Das **Handbuch** mit dem ganzen Funktionsumfang liegt als einzelne HTML-Datei in
   nie eine halbe Datei.
 - **Prüfen ohne zu schreiben:** `verify` vergleicht einen Stick mit der Bibliothek und endet mit
   Exit-Code 0 nur, wenn alles aktuell ist. Gut vor jedem Gig.
+- **Start Mode pro Song:** im Playlist-Editor die Songs anhaken, Start Mode wählen („Wait for
+  button press“, „Wait for timer“ mit Delay in Sekunden, „No wait“) und „Apply to selected rows“.
+  Der LP-16 wartet dann auf Play oder startet den Song von selbst. Die Werte sind dieselben wie in
+  uTool2 (`wait_for_button_press`, `wait_period`, `no_wait`).
 - **Bibliothek bearbeiten:** Playlists anlegen, umsortieren, umbenennen, kopieren und löschen;
   Songs anlegen und im Song-Editor WAVs per Drag & Drop auf die 16 Spuren ziehen, MIDI-Datei
   wählen.
@@ -562,7 +566,6 @@ gibt es nur „LP-16“.
 - Panorama pro Spur im Song (der [Song-Mix](#song-mix) bearbeitet Pegel und Mute; das in der
   `.songprj` gespeicherte Panorama bleibt erhalten).
 - Song-Editor: Name, Sampling Rate und Resolution eines bestehenden Songs ändern
-- Playlist-Editor: Start Mode und Delay pro Song einstellen (vorhandene Werte bleiben erhalten)
 - Undo/Redo, Ordner in der Bibliothek („New folder“)
 - Bearbeiten auf dem Stick (Edit Target kann nur löschen)
 - Export Batch

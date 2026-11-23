@@ -201,6 +201,7 @@ impl Stick {
         let text = fs::read_to_string(&path).unwrap_or_default();
         let entries = play_entries(&text);
         StickPlaylist {
+            starts: play_starts(&text),
             length: entries.iter().map(|(_, d)| d).sum(),
             size: entries.iter().map(|(n, _)| self.song_size(n)).sum(),
             songs: entries.into_iter().map(|(n, _)| n).collect(),
@@ -249,6 +250,8 @@ pub struct StickSong {
 pub struct StickPlaylist {
     /// song names in order
     pub songs: Vec<String>,
+    /// start mode and delay (`pause_mode/mode`, `pause_mode/time`) of each song
+    pub starts: Vec<(String, String)>,
     /// seconds, the sum of the durations in the .play
     pub length: f64,
     /// bytes of the song folders it lists (missing ones count 0)
@@ -285,6 +288,18 @@ pub fn play_entries(text: &str) -> Vec<(String, f64)> {
             let name = plain_tag(block, "name").unwrap_or_default();
             let duration = plain_tag(block, "duration").and_then(|d| d.trim().parse().ok()).unwrap_or(0.0);
             (name, duration)
+        })
+        .collect()
+}
+
+/// The start mode and delay (`pause_mode/mode`, `pause_mode/time`) of
+/// each <song> of a .play text.
+pub fn play_starts(text: &str) -> Vec<(String, String)> {
+    text.split("<song>")
+        .skip(1)
+        .map(|block| {
+            let block = block.split("</song>").next().unwrap_or("");
+            (plain_tag(block, "mode").unwrap_or_default(), plain_tag(block, "time").unwrap_or_default())
         })
         .collect()
 }
@@ -827,5 +842,11 @@ mod tests {
         let text = "<playlist><playlistname>X</playlistname>            <song><name>A &amp; B</name><duration>61.500</duration></song>            <song><name>C</name><duration>x</duration></song></playlist>";
         assert_eq!(play_entries(text), vec![("A & B".to_string(), 61.5), ("C".to_string(), 0.0)]);
         assert_eq!(play_song_names(text), vec!["A & B", "C"]);
+    }
+
+    #[test]
+    fn play_starts_reads_mode_and_time() {
+        let text = "<playlist><song><name>A</name><pause_mode><mode>wait_period</mode><time>5</time></pause_mode></song>            <song><name>B</name></song></playlist>";
+        assert_eq!(play_starts(text), vec![("wait_period".to_string(), "5".to_string()), (String::new(), String::new())]);
     }
 }

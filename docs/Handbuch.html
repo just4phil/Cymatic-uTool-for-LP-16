@@ -330,6 +330,7 @@ stick_root = "F:\"</code></pre>
 <p>Der Reiter Home zeigt die Projektbibliothek: links der <strong>Project Explorer</strong> mit den Ordnern Songs und Playlists, rechts die <strong>Details</strong> des gewählten Eintrags (Format, Spuren, Länge, MIDI-Datei). Fehlende WAVs oder MIDI-Dateien werden markiert.</p>
 <ul>
   <li><strong>Playlists:</strong> anlegen, umsortieren, umbenennen, kopieren und löschen. Beim Umbenennen eines Songs zeigen die Playlists weiter auf ihn; ein Song, den eine Playlist nutzt, lässt sich nicht löschen.</li>
+  <li><strong>Start Mode pro Song:</strong> im Playlist-Editor die Songs anhaken, unter <em>Start Mode</em> „Wait for button press“ (der LP-16 wartet auf Play), „Wait for timer“ (startet nach dem Delay in Sekunden von selbst) oder „No wait“ (startet sofort) wählen und „Apply to selected rows“ klicken. Das Symbol vor dem Songnamen zeigt den Modus (Pause, Uhr mit Sekunden, Play). Der Probe-Player beachtet den Start Mode nicht, dort entscheidet „Autoplay after 5 seconds“.</li>
   <li><strong>Song-Editor:</strong> neue Songs anlegen, WAVs per Drag &amp; Drop auf die 16 Spuren ziehen, die MIDI-Datei wählen.</li>
   <li><strong>Rechtsklick → Play in Rehearsal</strong> lädt einen Song (startet ihn) oder eine Playlist (ohne zu starten) in den <a href="#rehearsal">Probe-Player</a>.</li>
   <li>Die Taste <strong>Mixer</strong> eines Songs lädt ihn in den Player und öffnet seinen <a href="#song-mix">Song-Mix</a>.</li>
@@ -645,7 +646,6 @@ lp16-tool gui</code></pre>
   <li>Stereo-Songs und -Playlists (nur Multitrack)</li>
   <li>Panorama pro Spur im Song (das gespeicherte Panorama bleibt erhalten)</li>
   <li>Song-Editor: Name, Sampling Rate und Resolution eines bestehenden Songs ändern</li>
-  <li>Playlist-Editor: Start Mode und Delay pro Song (vorhandene Werte bleiben erhalten)</li>
   <li>Undo/Redo, Ordner in der Bibliothek</li>
   <li>Bearbeiten auf dem Stick (Edit Target kann nur löschen)</li>
   <li>Export Batch und der Import von uTool2 („Split at Markers“)</li>
