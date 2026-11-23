@@ -12,11 +12,14 @@
 //! - names are valid FAT32 names and never overwrite another song/playlist
 //! - the concert markers of a playlist (`<name>.setlist`, see
 //!   [`crate::setlist`]) follow it when it is renamed, copied or deleted
+//! - a song file has two writers, the song editor and the Song Mix of the
+//!   Rehearsal tab; each one only changes its own part of the file
+//!   ([`ProjectLibrary::save_song`], [`save_song_mix`])
 
 use crate::setlist::SetMarkers;
 use crate::{
     generate_playlistprj, generate_songprj, now_ms, parse_playlist, valid_fat32_name,
-    write_bytes_atomic, PlaylistSong, SongProject,
+    write_bytes_atomic, PlaylistSong, ProjectTrack, SongProject,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -236,6 +239,18 @@ impl ProjectLibrary {
         remove_if_there(&self.markers_path(name))
     }
 
+    /// Save a song changed in the song editor (tracks, MIDI file, lengths).
+    /// The Song Mix in the file wins: it may have been changed in the
+    /// Rehearsal tab since the editor read the song. Returns what is stored.
+    pub fn save_song(&self, edited: &SongProject) -> Result<SongProject, String> {
+        let mut prj = edited.clone();
+        if let Ok(disk) = SongProject::load(&prj.path, prj.audio_lib()) {
+            copy_song_mix(&disk.tracks, &mut prj.tracks);
+        }
+        prj.save().map_err(|e| e.to_string())?;
+        Ok(prj)
+    }
+
     /// Load `song` and save it as `new_name` at `new_path`. An unreadable
     /// project is refused (it would be written empty).
     fn write_song_as(&self, song: &Path, new_name: &str, new_path: &Path) -> Result<(), String> {
@@ -317,6 +332,29 @@ fn key(path: &Path) -> String {
 
 fn stem(path: &Path) -> String {
     path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
+/// Save the Song Mix (monitor level, pan, mute) of `mixed` into its song
+/// file; everything else stays as it is in the file, so a project read
+/// before the song editor saved does not undo the editor's changes. A
+/// missing file is an error (it is not created again). Returns what is stored.
+pub fn save_song_mix(mixed: &SongProject) -> Result<SongProject, String> {
+    let mut disk = SongProject::load(&mixed.path, mixed.audio_lib()).map_err(|e| e.to_string())?;
+    copy_song_mix(&mixed.tracks, &mut disk.tracks);
+    disk.save().map_err(|e| e.to_string())?;
+    Ok(disk)
+}
+
+/// The Song Mix of `from` onto the same tracks (same WAV and WAV track) of
+/// `to`; tracks without a partner keep their values.
+fn copy_song_mix(from: &[ProjectTrack], to: &mut [ProjectTrack]) {
+    for t in to.iter_mut() {
+        if let Some(f) = from.iter().find(|f| f.audiofile == t.audiofile && f.ati == t.ati) {
+            t.monitor_level = f.monitor_level.clone();
+            t.monitor_pan = f.monitor_pan.clone();
+            t.monitor_mute = f.monitor_mute.clone();
+        }
+    }
 }
 
 #[cfg(test)]
@@ -488,6 +526,42 @@ mod tests {
         .unwrap();
         // trailing "\" in project_lib: the reference still matches
         assert_eq!(lib.playlists_using(&song).unwrap(), ["One"]);
+        let _ = fs::remove_dir_all(&root);
+    }
+    #[test]
+    fn song_editor_and_song_mix_only_write_their_own_part() {
+        let (root, lib) = setup("plib-two-writers");
+        let path = lib.song_path("Intro").to_string_lossy().into_owned();
+        let load = || SongProject::load(&path, &lib.audio_lib).unwrap();
+        // both read the song before anyone saves
+        let mut editor = load();
+        let mut rehearsal = load();
+
+        // the Rehearsal tab changes the Song Mix
+        rehearsal.tracks[1].monitor_level = "-6.0".into();
+        let stored = save_song_mix(&rehearsal).unwrap();
+        assert_eq!(stored.tracks[1].monitor_level, "-6.0");
+
+        // the editor saves later: its tracks and length, the mix from the file
+        editor.duration_seconds = 99.0;
+        editor.tracks[0].name = "Click".into();
+        let stored = lib.save_song(&editor).unwrap();
+        assert_eq!(stored.tracks[1].monitor_level, "-6.0");
+        let disk = load();
+        assert_eq!((disk.duration_seconds, disk.tracks[0].name.as_str()), (99.0, "Click"));
+        assert_eq!(disk.tracks[1].monitor_level, "-6.0");
+
+        // a Song Mix saved from the old copy does not undo the editor
+        rehearsal.tracks[0].monitor_mute = "true".into();
+        save_song_mix(&rehearsal).unwrap();
+        let disk = load();
+        assert_eq!((disk.duration_seconds, disk.tracks[0].name.as_str()), (99.0, "Click"));
+        assert_eq!(disk.tracks[0].monitor_mute, "true");
+
+        // a deleted song is not written again
+        fs::remove_file(&path).unwrap();
+        assert!(save_song_mix(&rehearsal).is_err());
+        assert!(!Path::new(&path).exists());
         let _ = fs::remove_dir_all(&root);
     }
 }

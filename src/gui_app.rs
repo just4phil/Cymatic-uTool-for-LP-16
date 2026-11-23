@@ -4152,8 +4152,9 @@ impl Lp16App {
         match clicked {
             Some(0) => {
                 self.rehearsal.session.song_changed(&path);
+                let lib = self.lib();
                 let ed = self.song_ed.as_mut().unwrap();
-                match ed.save() {
+                match ed.save(&lib) {
                     Ok(()) => {
                         self.refresh();
                         self.select_song_path(Path::new(&path));
@@ -4882,7 +4883,7 @@ impl SongEditor {
     }
 
     /// write the .songprj; keeps name, timestamp, markers and mixer values
-    fn save(&mut self) -> Result<(), String> {
+    fn save(&mut self, lib: &ProjectLibrary) -> Result<(), String> {
         let unreadable = self
             .slots
             .iter()
@@ -4905,20 +4906,10 @@ impl SongEditor {
             0.0
         };
         prj.tracks = self.slots.iter().flatten().cloned().collect();
-        // the mixer values may have been changed in the Rehearsal tab since
-        // the editor read the song: those in the file count
-        if let Ok(disk) = SongProject::load(&prj.path, "") {
-            for t in prj.tracks.iter_mut() {
-                if let Some(d) = disk.tracks.iter().find(|d| d.audiofile == t.audiofile && d.ati == t.ati) {
-                    t.monitor_level = d.monitor_level.clone();
-                    t.monitor_pan = d.monitor_pan.clone();
-                    t.monitor_mute = d.monitor_mute.clone();
-                }
-            }
-        }
         prj.duration_seconds = duration;
         prj.midi_file = self.midi.clone();
-        prj.save().map_err(|e| e.to_string())?;
+        // the Song Mix in the file wins (see ProjectLibrary::save_song)
+        let prj = lib.save_song(&prj)?;
         self.prj = prj;
         self.dirty = false;
         Ok(())

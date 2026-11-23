@@ -541,12 +541,15 @@ impl Session {
             return;
         }
         edit.dirty = None;
-        if let Err(e) = edit.project.save() {
-            self.song_error = Some(e.to_string());
-            return;
-        }
+        let project = match crate::project_lib::save_song_mix(&edit.project) {
+            Ok(p) => p,
+            Err(e) => {
+                self.song_error = Some(e);
+                return;
+            }
+        };
+        edit.project = project.clone();
         self.song_error = None;
-        let project = edit.project.clone();
         self.saved_songs.push(project.path.clone());
         let mut entries: Vec<QueueEntry> = (*self.entries).clone();
         let mut any = false;
