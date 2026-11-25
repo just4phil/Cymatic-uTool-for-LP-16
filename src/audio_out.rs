@@ -790,7 +790,7 @@ fn open_stream<S: Source>(
         Err(e) => return Err(describe(e)),
     };
     stream.play().map_err(|e| open_error(&name, e))?;
-    let claim = (host.id() == cpal::HostId::Asio).then(|| {
+    let claim = is_asio(host.id().name()).then(|| {
         let max_channels = infos.iter().map(|r| r.channels).max().unwrap_or(channels);
         AsioClaim::new(DeviceInfo { name: name.clone(), max_channels, is_default: false })
     });
