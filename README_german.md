@@ -134,6 +134,8 @@ audio_out_right = "2"
 audio_buffer = "0"
 # MIDI-Ausgang des Probe-Players (Einstellungen > MIDI-Ausgabe); leer = aus
 midi_port = ""
+# optionaler zweiter MIDI-Ausgang (z. B. virtueller Port für den LED-Show-Simulator); leer = aus
+midi_port2 = ""
 # Sprache der Oberfläche (Einstellungen > Sprache): "en" oder "de"; leer = Englisch
 language = "de"
 # Presets des Proben-Mix (vom Programm geschrieben, siehe „Proben-Mix“)
@@ -361,6 +363,14 @@ Im Bereich **MIDI-Ausgabe** des Reiters Einstellungen wählt man den MIDI-Port, 
 Songs geschickt wird. Die Wahl wird sofort als `midi_port` in `lp16-tool.toml` gespeichert (leer =
 kein MIDI-Ausgang, das ist der Standard; eine alte Datei ohne den Schlüssel bedeutet ebenfalls aus).
 
+Ein **zweiter Ausgang** (`midi_port2`, „Zweiter Ausgang (z. B. LED-Simulator)“, gleiche Liste, wird sofort
+gespeichert, leer = aus) bekommt genau dieselben Nachrichten wie der erste, zur selben Zeit: die
+MIDI-Ereignisse des Songs, das Chasing bei Start oder Sprung, All Notes Off und den Test. Der erste Port
+steuert weiter die echte Hardware; der zweite ist für den LED-Show-Simulator gedacht, der auf einem
+virtuellen MIDI-Port lauscht (einen solchen Port legt man mit loopMIDI oder dem Windows-MIDI-Services-
+Loopback an und wählt ihn hier). Ein fehlender oder gestörter zweiter Port stört weder den ersten Port
+noch das Audio.
+
 - Die Combo zeigt **(keiner)** und alle MIDI-Ausgänge des Systems (unter Windows gibt es immer
   „Microsoft GS Wavetable Synth“); **Aktualisieren** liest die Liste neu.
 - **Test senden** schickt den Zustand, den ein Gerät direkt nach dem Start des geladenen Songs
@@ -369,9 +379,10 @@ kein MIDI-Ausgang, das ist der Standard; eine alte Datei ohne den Schlüssel bed
   geladenen Song mit MIDI-Datei.
 - Der Port wird bei Play (oder beim Test) geöffnet, nicht beim Programmstart. Fehlt der gespeicherte
   Port oder lässt er sich nicht öffnen, steht im Reiter Probe und in den Einstellungen „MIDI
-  port not available: <Name>“, das Audio spielt trotzdem, und das nächste Play versucht es erneut.
+  port not available: <Name>“, das Audio spielt trotzdem, und das nächste Play versucht es erneut. Beim zweiten Port ist es genauso,
+  mit eigener Meldung; der erste Port bleibt unberührt.
 - Der Reiter Probe zeigt unter dem Audioausgang „MIDI: <Port> · <n> Events“, mit einem Punkt,
-  der bei jeder gesendeten Nachricht 150 ms aufleuchtet. „MIDI: no file“ heißt: Der Song hat keine
+  der bei jeder gesendeten Nachricht 150 ms aufleuchtet (mit zweitem Port: „MIDI: <Port> · <n> Events | 2: <Port 2>“). „MIDI: no file“ heißt: Der Song hat keine
   (lesbare) MIDI-Datei, „MIDI: off“: Es ist kein Port gewählt. Die Songliste zeigt ein MIDI-Symbol
   bei Songs mit Datei.
 

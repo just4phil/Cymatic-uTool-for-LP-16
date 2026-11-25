@@ -2196,6 +2196,9 @@ pub struct Config {
     pub audio_buffer: u32,
     /// name of the MIDI output port of the rehearsal player; empty = off
     pub midi_port: String,
+    /// optional second MIDI output (e.g. a virtual port for the LED show
+    /// simulator); gets exactly the same messages as `midi_port`; empty = off
+    pub midi_port2: String,
     /// rehearsal player: the next song starts 5 s after the end of a song
     /// (off: it waits for Play)
     pub rehearsal_autoplay: bool,
@@ -2234,6 +2237,7 @@ impl Default for Config {
             audio_out_right: 2,
             audio_buffer: 0,
             midi_port: String::new(),
+            midi_port2: String::new(),
             rehearsal_autoplay: false,
             set_pause: DEFAULT_SET_PAUSE,
             mixes: mix::MixLibrary::default(),
@@ -2286,6 +2290,7 @@ pub fn load_config(path: &std::path::Path) -> Config {
                     "audio_host" => config.audio_host = value,
                     "audio_device" => config.audio_device = value,
                     "midi_port" => config.midi_port = value,
+                    "midi_port2" => config.midi_port2 = value,
                     "language" => config.language = value,
                     "setlist_logo" => config.setlist_logo = value,
                     "rehearsal_autoplay" => {
@@ -2349,7 +2354,7 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
     let text = format!(
         "{}stick_root = \"{}\"\r\n\
          audio_host = \"{}\"\r\naudio_device = \"{}\"\r\n\
-         audio_out_left = \"{}\"\r\naudio_out_right = \"{}\"\r\naudio_buffer = \"{}\"\r\nmidi_port = \"{}\"\r\nrehearsal_autoplay = \"{}\"\r\nset_pause = \"{}\"\r\nlanguage = \"{}\"\r\nsetlist_logo = \"{}\"\r\n{}{}",
+         audio_out_left = \"{}\"\r\naudio_out_right = \"{}\"\r\naudio_buffer = \"{}\"\r\nmidi_port = \"{}\"\r\nmidi_port2 = \"{}\"\r\nrehearsal_autoplay = \"{}\"\r\nset_pause = \"{}\"\r\nlanguage = \"{}\"\r\nsetlist_logo = \"{}\"\r\n{}{}",
         paths,
         config.stick_root,
         config.audio_host,
@@ -2358,6 +2363,7 @@ pub fn save_config(path: &std::path::Path, config: &Config) -> std::io::Result<(
         config.audio_out_right,
         config.audio_buffer,
         config.midi_port,
+        config.midi_port2,
         config.rehearsal_autoplay,
         config.set_pause,
         config.language,
@@ -3325,6 +3331,7 @@ mod tests {
         assert_eq!((old.audio_host.as_str(), old.audio_device.as_str()), ("", ""));
         assert_eq!((old.audio_out_left, old.audio_out_right, old.audio_buffer), (1, 2, 0));
         assert_eq!(old.midi_port, "", "an old config without the field: MIDI is off");
+        assert_eq!(old.midi_port2, "", "an old config without the field: no second MIDI output");
         assert!(!old.rehearsal_autoplay, "an old config without the field: autoplay is off");
         assert_eq!(old.set_pause, 60, "an old config without the field: 60 s pause");
         assert_eq!(old.language, "", "an old config without the field: English");
@@ -3345,6 +3352,7 @@ mod tests {
                 audio_out_right: 3,
                 audio_buffer: 256,
                 midi_port: "MIDI \u{fc}ber USB 2".into(),
+                midi_port2: "loopMIDI Port".into(),
                 rehearsal_autoplay: true,
                 set_pause: 45,
                 mixes: mix::MixLibrary::default(),
@@ -3361,6 +3369,8 @@ mod tests {
             assert_eq!((b.audio_out_left, b.audio_out_right, b.audio_buffer), (4, 3, 256));
             assert_eq!(b.midi_port, "MIDI \u{fc}ber USB 2");
             assert!(text.contains("midi_port = \"MIDI \u{fc}ber USB 2\""));
+            assert_eq!(b.midi_port2, "loopMIDI Port");
+            assert!(text.contains("midi_port2 = \"loopMIDI Port\""));
             assert!(b.rehearsal_autoplay && text.contains("rehearsal_autoplay = \"true\""));
             assert_eq!(b.set_pause, 45);
             assert_eq!(b.language, "de");

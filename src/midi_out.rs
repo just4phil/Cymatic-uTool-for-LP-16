@@ -13,10 +13,19 @@
 //! audio stream ends (or the program does) it sends All Notes Off on them
 //! first.
 //!
+//! There are two output slots. Slot 0 is the port that drives the real
+//! hardware; slot 1 is an optional second port (e.g. a virtual port for the
+//! LED show simulator). Every byte sequence that goes to slot 0 goes to
+//! slot 1 as well, in the same call, so both see exactly the same messages
+//! at the same time (`send_all`). Slot 1 opens by the same rules, but it can
+//! only ever fail on its own: a missing or broken second port never stops
+//! the first one or the audio (its status carries the error, nothing else
+//! happens).
+//!
 //! The link outlives the audio stream: the owner (the Rehearsal tab) keeps
 //! one `MidiLink`, hands a new `MidiSink` to each stream it opens and uses
-//! it for the MIDI test of the settings. The port is only opened when it
-//! is needed (`MidiLink::open`: Play and the test), and again at the next
+//! it for the MIDI test of the settings. The ports are only opened when they
+//! are needed (`MidiLink::open`: Play and the test), and again at the next
 //! Play if that failed.
 //!
 //! Without hardware only the plain parts can be tested: `target_time`, the
@@ -176,6 +185,31 @@ impl Pump {
 // the MIDI thread
 // ---------------------------------------------------------------------------
 
+/// Anything a MIDI message can be sent to. The real port is a
+/// `MidiOutputConnection`; the tests use a plain list.
+pub trait MidiSend {
+    fn send_bytes(&mut self, bytes: &[u8]);
+}
+
+impl MidiSend for MidiOutputConnection {
+    fn send_bytes(&mut self, bytes: &[u8]) {
+        // a failing send is ignored on purpose: it must not disturb the other port
+        let _ = self.send(bytes);
+    }
+}
+
+/// Send `bytes` to every open slot, in order (slot 0 first). A closed slot
+/// (`None`) is skipped, so with only the first port set this is the same
+/// single send as before.
+pub fn send_all<C: MidiSend>(conns: &mut [Option<C>], bytes: &[u8]) {
+    for c in conns.iter_mut().flatten() {
+        c.send_bytes(bytes);
+    }
+}
+
+/// Number of output slots: 0 = first port, 1 = second port.
+const SLOTS: usize = 2;
+
 /// What the user interface shows about the port.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct PortStatus {
@@ -187,7 +221,8 @@ pub struct PortStatus {
 }
 
 enum Control {
-    SetPort(String),
+    /// (slot, port name)
+    SetPort(usize, String),
     Open,
     Send(Vec<MidiMsg>),
     Attach(Consumer<TimedMsg>),
@@ -195,62 +230,67 @@ enum Control {
 }
 
 struct Worker {
-    port: String,
-    conn: Option<MidiOutputConnection>,
+    /// the chosen port name per slot
+    ports: [String; SLOTS],
+    /// the open connection per slot
+    conns: [Option<MidiOutputConnection>; SLOTS],
     pump: Option<Pump>,
-    status: Arc<Mutex<PortStatus>>,
+    status: [Arc<Mutex<PortStatus>>; SLOTS],
 }
 
 impl Worker {
-    fn publish(&self, error: Option<String>) {
-        if let Ok(mut s) = self.status.lock() {
-            *s = PortStatus { port: self.port.clone(), open: self.conn.is_some(), error };
+    fn publish(&self, slot: usize, error: Option<String>) {
+        if let Ok(mut s) = self.status[slot].lock() {
+            *s = PortStatus { port: self.ports[slot].clone(), open: self.conns[slot].is_some(), error };
         }
     }
 
-    fn send(conn: &mut Option<MidiOutputConnection>, bytes: &[u8]) {
-        if let Some(c) = conn.as_mut() {
-            let _ = c.send(bytes);
-        }
-    }
-
-    /// Open the port if it is chosen and not open yet.
+    /// Open the ports that are chosen and not open yet. Each slot on its
+    /// own: an error of one is only published for that one.
     fn ensure_open(&mut self) {
-        if self.port.is_empty() || self.conn.is_some() {
-            return;
-        }
-        match connect(&self.port) {
-            Ok(c) => {
-                self.conn = Some(c);
-                self.publish(None);
+        for slot in 0..SLOTS {
+            if self.ports[slot].is_empty() || self.conns[slot].is_some() {
+                continue;
             }
-            Err(e) => self.publish(Some(e)),
+            match connect(&self.ports[slot]) {
+                Ok(c) => {
+                    self.conns[slot] = Some(c);
+                    self.publish(slot, None);
+                }
+                Err(e) => self.publish(slot, Some(e)),
+            }
         }
     }
 
     /// End the queue that is attached: All Notes Off for what sounds.
     fn end_pump(&mut self) {
         if let Some(mut p) = self.pump.take() {
-            let conn = &mut self.conn;
-            p.finish(&mut |b| Worker::send(conn, b));
+            let conns = &mut self.conns;
+            p.finish(&mut |b| send_all(conns, b));
         }
     }
 
     fn close(&mut self) {
         self.end_pump();
-        if let Some(c) = self.conn.take() {
-            let _ = c.close();
+        for conn in self.conns.iter_mut() {
+            if let Some(c) = conn.take() {
+                let _ = c.close();
+            }
         }
     }
 
     /// False when the thread should end.
     fn control(&mut self, c: Control) -> bool {
         match c {
-            Control::SetPort(name) => {
-                if name != self.port {
-                    self.close();
-                    self.port = name;
-                    self.publish(None);
+            Control::SetPort(slot, name) => {
+                if slot < SLOTS && name != self.ports[slot] {
+                    // the queue ends first (All Notes Off to the ports as they were)
+                    self.end_pump();
+                    if let Some(c) = self.conns[slot].take() {
+                        let _ = c.close();
+                    }
+                    self.ports[slot] = name;
+                    self.publish(slot, None);
                 }
             }
             Control::Open => {
@@ -259,7 +299,7 @@ impl Worker {
             Control::Send(msgs) => {
                 self.ensure_open();
                 for m in msgs {
-                    Worker::send(&mut self.conn, m.data());
+                    send_all(&mut self.conns, m.data());
                 }
             }
             Control::Attach(consumer) => {
@@ -281,8 +321,8 @@ impl Worker {
             let mut next = None;
             let mut gone = false;
             if let Some(p) = self.pump.as_mut() {
-                let conn = &mut self.conn;
-                next = p.pump(now, &mut |b| Worker::send(conn, b));
+                let conns = &mut self.conns;
+                next = p.pump(now, &mut |b| send_all(conns, b));
                 gone = p.abandoned() && next.is_none();
             }
             if gone {
@@ -330,11 +370,11 @@ impl Worker {
     }
 }
 
-/// The MIDI thread and its port. Dropping it sends All Notes Off for
-/// sounding notes and closes the port.
+/// The MIDI thread and its ports. Dropping it sends All Notes Off for
+/// sounding notes and closes the ports.
 pub struct MidiLink {
     tx: Sender<Control>,
-    status: Arc<Mutex<PortStatus>>,
+    status: [Arc<Mutex<PortStatus>>; SLOTS],
     handle: Option<JoinHandle<()>>,
 }
 
@@ -342,8 +382,9 @@ impl MidiLink {
     /// Start the thread; no port is open yet.
     pub fn new() -> MidiLink {
         let (tx, rx) = channel();
-        let status = Arc::new(Mutex::new(PortStatus::default()));
-        let worker = Worker { port: String::new(), conn: None, pump: None, status: status.clone() };
+        let status = [Arc::new(Mutex::new(PortStatus::default())), Arc::new(Mutex::new(PortStatus::default()))];
+        let worker =
+            Worker { ports: [String::new(), String::new()], conns: [None, None], pump: None, status: status.clone() };
         let handle = std::thread::Builder::new().name("rehearsal-midi".into()).spawn(move || worker.run(rx)).ok();
         MidiLink { tx, status, handle }
     }
@@ -351,7 +392,12 @@ impl MidiLink {
     /// Choose the port (empty = off). A port that is open and differs is
     /// closed; the new one is opened by `open`.
     pub fn set_port(&self, name: &str) {
-        let _ = self.tx.send(Control::SetPort(name.to_string()));
+        let _ = self.tx.send(Control::SetPort(0, name.to_string()));
+    }
+
+    /// Choose the second port (empty = off); same rules as `set_port`.
+    pub fn set_port2(&self, name: &str) {
+        let _ = self.tx.send(Control::SetPort(1, name.to_string()));
     }
 
     /// Open the chosen port now if it is not open (again after an error).
@@ -373,7 +419,12 @@ impl MidiLink {
     }
 
     pub fn status(&self) -> PortStatus {
-        self.status.lock().map(|s| s.clone()).unwrap_or_default()
+        self.status[0].lock().map(|s| s.clone()).unwrap_or_default()
+    }
+
+    /// The state of the second port.
+    pub fn status2(&self) -> PortStatus {
+        self.status[1].lock().map(|s| s.clone()).unwrap_or_default()
     }
 }
 
@@ -496,6 +547,69 @@ mod tests {
         assert!(!pump.abandoned());
         drop(producer);
         assert!(pump.abandoned());
+    }
+
+    /// A fake port: remembers what it got.
+    #[derive(Default)]
+    struct Fake(Vec<Vec<u8>>);
+
+    impl MidiSend for Fake {
+        fn send_bytes(&mut self, bytes: &[u8]) {
+            self.0.push(bytes.to_vec());
+        }
+    }
+
+    fn run_pump_into(conns: &mut [Option<Fake>; 2]) {
+        let (mut producer, consumer) = RingBuffer::new(16);
+        let mut pump = Pump::new(consumer);
+        let t0 = Instant::now();
+        producer.push(timed(t0, &[0xc0, 1])).unwrap();
+        producer.push(timed(t0, &[0x90, 60, 100])).unwrap();
+        pump.pump(t0, &mut |b| send_all(conns, b));
+        pump.finish(&mut |b| send_all(conns, b));
+    }
+
+    #[test]
+    fn both_ports_get_every_message_of_the_pump_and_of_finish() {
+        let mut conns = [Some(Fake::default()), Some(Fake::default())];
+        run_pump_into(&mut conns);
+        let [a, b] = conns;
+        let expect = vec![vec![0xc0, 1], vec![0x90, 60, 100], vec![0xb0, 123, 0]];
+        assert_eq!(a.unwrap().0, expect);
+        assert_eq!(b.unwrap().0, expect);
+    }
+
+    #[test]
+    fn with_only_one_port_open_only_that_one_gets_the_messages() {
+        let mut first_only = [Some(Fake::default()), None];
+        run_pump_into(&mut first_only);
+        assert_eq!(first_only[0].as_ref().unwrap().0.len(), 3);
+        // a second port without the first (e.g. the first failed to open)
+        let mut second_only = [None, Some(Fake::default())];
+        run_pump_into(&mut second_only);
+        assert_eq!(second_only[1].as_ref().unwrap().0.len(), 3);
+        // nothing open: nothing happens
+        let mut none: [Option<Fake>; 2] = [None, None];
+        run_pump_into(&mut none);
+    }
+
+    #[test]
+    fn a_missing_second_port_gives_its_own_message_and_leaves_the_first_alone() {
+        let link = MidiLink::new();
+        link.set_port2("No such MIDI port 43");
+        link.open();
+        let mut st = link.status2();
+        for _ in 0..1000 {
+            if st.error.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+            st = link.status2();
+        }
+        assert!(!st.open);
+        assert_eq!(st.error.as_deref(), Some("MIDI port not available: No such MIDI port 43"));
+        // the first port has no error and no port
+        assert_eq!(link.status(), PortStatus::default());
     }
 
     #[test]

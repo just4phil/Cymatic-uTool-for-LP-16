@@ -1,5 +1,7 @@
 //! The "MIDI output" area of the Settings tab: the port the rehearsal
-//! player sends the MIDI file of a song to, and a test button. The choice
+//! player sends the MIDI file of a song to, an optional second port that
+//! gets exactly the same messages (e.g. the LED show simulator), and a test
+//! button (it sends to both). The choice
 //! goes into `Config` (saved by the caller). The logic (ports, sending, the
 //! messages of the test) is in `lp16_tool::midi_out` and
 //! `lp16_tool::rehearsal_midi`; this only draws and keeps the list of ports.
@@ -51,9 +53,17 @@ impl MidiPanel {
         self.test_note = note;
     }
 
-    /// `can_test`: a song with a MIDI file is loaded; `status` the state of
-    /// the port (an error is shown here as well as in the Rehearsal tab).
-    pub fn ui(&mut self, ui: &mut Ui, config: &mut Config, can_test: bool, status: &PortStatus) -> MidiOutcome {
+    /// `can_test`: a song with a MIDI file is loaded; `status` / `status2`
+    /// the state of the first / second port (an error is shown here as well
+    /// as in the Rehearsal tab).
+    pub fn ui(
+        &mut self,
+        ui: &mut Ui,
+        config: &mut Config,
+        can_test: bool,
+        status: &PortStatus,
+        status2: &PortStatus,
+    ) -> MidiOutcome {
         let mut out = MidiOutcome::default();
         if !self.listed {
             self.refresh();
@@ -87,6 +97,31 @@ impl MidiPanel {
                     refresh = true;
                 }
             });
+            // the optional second output: same list, same refresh
+            let chosen2 = config.midi_port2.clone();
+            let shown2 = if chosen2.is_empty() {
+                tr!("common.none").to_string()
+            } else if self.ports.contains(&chosen2) {
+                chosen2.clone()
+            } else {
+                tr!("common.not_found", name = chosen2)
+            };
+            ui.horizontal(|ui| {
+                ui.label(tr!("midi.port2"));
+                egui::ComboBox::from_id_source("midi_port2").selected_text(shown2).width(300.0).show_ui(ui, |ui| {
+                    if ui.selectable_label(chosen2.is_empty(), tr!("common.none")).clicked() && !chosen2.is_empty() {
+                        config.midi_port2.clear();
+                        out.changed = true;
+                    }
+                    for p in &self.ports {
+                        if ui.selectable_label(chosen2 == *p, p).clicked() && chosen2 != *p {
+                            config.midi_port2 = p.clone();
+                            out.changed = true;
+                        }
+                    }
+                });
+            });
+            ui.label(RichText::new(tr!("midi.port2_tip")).size(11.0).color(DIM));
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if small_btn(ui, tr!("midi.send_test"), can_test && !config.midi_port.is_empty()) {
@@ -105,7 +140,11 @@ impl MidiPanel {
                 ui.add_space(4.0);
                 ui.label(RichText::new(n).size(12.0).color(ORANGE));
             }
-            for e in [self.list_error.as_deref(), status.error.as_deref().filter(|_| !config.midi_port.is_empty())]
+            for e in [
+                self.list_error.as_deref(),
+                status.error.as_deref().filter(|_| !config.midi_port.is_empty()),
+                status2.error.as_deref().filter(|_| !config.midi_port2.is_empty()),
+            ]
                 .into_iter()
                 .flatten()
             {

@@ -57,11 +57,14 @@ pub trait Device {
     fn open(&mut self, settings: &AudioSettings, rate: u32) -> Result<Box<dyn Output>, String>;
     /// Choose the MIDI port (empty = off).
     fn set_midi_port(&mut self, port: &str);
+    /// Choose the second MIDI port (empty = off); it gets the same messages.
+    fn set_midi_port2(&mut self, port: &str);
     /// Open the chosen port if it is not open (again after an error).
     fn open_midi(&mut self);
     /// Send messages to the port at once.
     fn send_midi(&mut self, msgs: &[MidiMsg]);
     fn midi_status(&self) -> PortStatus;
+    fn midi_status2(&self) -> PortStatus;
     /// All Notes Off for sounding notes, close the port.
     fn shutdown(&mut self);
 }
@@ -104,6 +107,9 @@ impl Device for CpalDevice {
     fn set_midi_port(&mut self, port: &str) {
         self.midi.set_port(port);
     }
+    fn set_midi_port2(&mut self, port: &str) {
+        self.midi.set_port2(port);
+    }
     fn open_midi(&mut self) {
         self.midi.open();
     }
@@ -112,6 +118,9 @@ impl Device for CpalDevice {
     }
     fn midi_status(&self) -> PortStatus {
         self.midi.status()
+    }
+    fn midi_status2(&self) -> PortStatus {
+        self.midi.status2()
     }
     fn shutdown(&mut self) {
         self.midi.shutdown();
@@ -200,6 +209,8 @@ pub struct Session {
     names_for: Option<usize>,
     /// the port chosen in the settings (empty = MIDI is off)
     midi_port: String,
+    /// the optional second port (empty = none)
+    midi_port2: String,
     /// "Autoplay after 5 seconds"; sent again to every new stream
     autoplay: bool,
     /// the mixer edits the song mix of the loaded song
@@ -239,6 +250,7 @@ impl Session {
             track_names: Default::default(),
             names_for: None,
             midi_port: String::new(),
+            midi_port2: String::new(),
             autoplay: false,
             song_mode: false,
             song_edit: None,
@@ -270,6 +282,21 @@ impl Session {
 
     pub fn midi_port(&self) -> &str {
         &self.midi_port
+    }
+
+    /// The second MIDI output port of the settings (empty = none). Opened
+    /// together with the first one; it gets exactly the same messages.
+    pub fn set_midi_port2(&mut self, port: &str) {
+        self.midi_port2 = port.to_string();
+        self.device.set_midi_port2(port);
+    }
+
+    pub fn midi_port2(&self) -> &str {
+        &self.midi_port2
+    }
+
+    pub fn midi_status2(&self) -> PortStatus {
+        self.device.midi_status2()
     }
 
     pub fn midi_status(&self) -> PortStatus {
@@ -1091,6 +1118,7 @@ pub mod memory {
         opened: Vec<u32>,
         open_streams: usize,
         midi_port: String,
+        midi_port2: String,
         midi_opened: usize,
         midi_sent: Vec<MidiMsg>,
         shut_down: bool,
@@ -1248,6 +1276,9 @@ pub mod memory {
         fn set_midi_port(&mut self, port: &str) {
             self.state.borrow_mut().midi_port = port.to_string();
         }
+        fn set_midi_port2(&mut self, port: &str) {
+            self.state.borrow_mut().midi_port2 = port.to_string();
+        }
         fn open_midi(&mut self) {
             self.state.borrow_mut().midi_opened += 1;
         }
@@ -1256,6 +1287,10 @@ pub mod memory {
         }
         fn midi_status(&self) -> PortStatus {
             let port = self.state.borrow().midi_port.clone();
+            PortStatus { open: !port.is_empty(), port, error: None }
+        }
+        fn midi_status2(&self) -> PortStatus {
+            let port = self.state.borrow().midi_port2.clone();
             PortStatus { open: !port.is_empty(), port, error: None }
         }
         fn shutdown(&mut self) {

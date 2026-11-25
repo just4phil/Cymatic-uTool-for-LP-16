@@ -630,10 +630,11 @@ stick_root = "F:\"</code></pre>
 <h3 id="midi">MIDI-Ausgabe</h3>
 <p>Wählt den MIDI-Port, an den die MIDI-Datei des Songs synchron zum Audio geschickt wird (Tempowechsel eingerechnet). <strong>(keiner)</strong> = kein MIDI (Standard).</p>
 <ul>
+  <li><strong>Zweiter Ausgang</strong> (z. B. LED-Simulator): optional, gleiche Portliste, wird sofort gespeichert (<code>midi_port2</code>, leer = aus). Er bekommt genau dieselben Nachrichten wie der erste Port zur selben Zeit (Song-Ereignisse, Chasing, All Notes Off, Test). Der erste Port steuert weiter die echte Hardware; der zweite ist für den LED-Show-Simulator gedacht, der auf einem virtuellen MIDI-Port lauscht (loopMIDI oder Windows-MIDI-Services-Loopback). Ein fehlender oder gestörter zweiter Port stört weder den ersten Port noch das Audio; er meldet seinen Fehler getrennt („MIDI-Port nicht verfügbar: &lt;Name&gt;“).</li>
   <li><strong>Test senden</strong> schickt den Zustand vom Songanfang des geladenen Songs: Bank Select, Program Change und die Controller ganz am Anfang.</li>
   <li><strong>Chasing:</strong> Beim Start mitten im Song und bei jedem Sprung wird zuerst der MIDI-Zustand an dieser Stelle gesendet (Bank Select, letztes Program Change, letzter Wert jedes Controllers). So stimmt z. B. der Snapshot eines Line-6-Modelers (CC69) auch nach dem Springen.</li>
   <li><strong>All Notes Off</strong> geht bei Stop, Pause, Sprung, Songwechsel und Programmende auf jeden Kanal, auf dem die Datei Noten hat.</li>
-  <li>Der Reiter Probe zeigt „MIDI: &lt;Port&gt; · &lt;n&gt; Events“ mit einem Punkt, der bei jeder Nachricht aufleuchtet. Fehlt der Port, spielt das Audio trotzdem.</li>
+  <li>Der Reiter Probe zeigt „MIDI: &lt;Port&gt; · &lt;n&gt; Events“ mit einem Punkt, der bei jeder Nachricht aufleuchtet. Mit zweitem Port steht dahinter „| 2: &lt;Port&gt;“. Fehlt ein Port, spielt das Audio trotzdem.</li>
 </ul>
 </section>
 
@@ -674,6 +675,7 @@ lp16-tool gui</code></pre>
   <tr><td><code>audio_out_left</code>, <code>audio_out_right</code></td><td>Ausgangskanäle (ab 1)</td><td>Einstellungen</td></tr>
   <tr><td><code>audio_buffer</code></td><td>Puffer in Frames, 0 = Treiber-Standard</td><td>Einstellungen</td></tr>
   <tr><td><code>midi_port</code></td><td>MIDI-Port, leer = aus</td><td>Einstellungen</td></tr>
+  <tr><td><code>midi_port2</code></td><td>zweiter MIDI-Port (z. B. LED-Simulator), leer = aus</td><td>Einstellungen</td></tr>
   <tr><td><code>language</code></td><td>Sprache der Oberfläche: <code>de</code> oder <code>en</code>, leer = Englisch</td><td>Einstellungen</td></tr>
   <tr><td><code>setlist_logo</code></td><td>Bandlogo der gedruckten Setlist (PNG/JPEG), leer = keins</td><td>Setlist drucken</td></tr>
   <tr><td><code>rehearsal_autoplay</code></td><td><code>true</code>/<code>false</code></td><td>Probe</td></tr>

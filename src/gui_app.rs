@@ -1228,6 +1228,7 @@ impl Lp16App {
         };
         app.rehearsal.session.set_settings(AudioSettings::from(&app.config));
         app.rehearsal.session.set_midi_port(&app.config.midi_port);
+        app.rehearsal.session.set_midi_port2(&app.config.midi_port2);
         app.rehearsal.session.set_autoplay(app.config.rehearsal_autoplay);
         app.rehearsal.session.set_mix(app.config.mixes.active().params());
         app.refresh();
@@ -3782,10 +3783,12 @@ impl Lp16App {
     /// at the next Play.
     fn midi_output(&mut self, ui: &mut Ui) {
         let status = self.rehearsal.session.midi_status();
+        let status2 = self.rehearsal.session.midi_status2();
         let can_test = self.rehearsal.session.has_midi_file();
-        let out = self.midi.ui(ui, &mut self.config, can_test, &status);
+        let out = self.midi.ui(ui, &mut self.config, can_test, &status, &status2);
         if out.changed {
             self.rehearsal.session.set_midi_port(&self.config.midi_port);
+            self.rehearsal.session.set_midi_port2(&self.config.midi_port2);
             if let Err(e) = save_config(&config_path(), &self.config) {
                 self.message(tr!("common.settings"), tr!("common.cannot_save", path = config_path().display(), err = e));
             }

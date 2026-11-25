@@ -351,6 +351,8 @@ audio.saved_note = Saved in lp16-tool.toml. A running stream is opened again wit
 midi.title = MIDI output
 common.none = (none)
 midi.port = Port:
+midi.port2 = Second output (e.g. LED simulator):
+midi.port2_tip = Gets exactly the same MIDI messages as the first port, at the same time. For example a virtual port (loopMIDI) for the LED show simulator.
 midi.send_test = Send test
 midi.choose_port = Choose a port first.
 midi.load_song = Load a song with a MIDI file in the Rehearsal tab first.
@@ -397,6 +399,7 @@ rehearsal.no_output = No audio output open – Play opens it. Song: {song} Hz
 rehearsal.midi_off = MIDI: off
 rehearsal.midi_no_file = MIDI: no file
 rehearsal.midi_events = MIDI: {port} · {n} events
+rehearsal.midi_port2 = | 2: {port}
 
 # Mixer console
 mixer.song_mix_tip = Edit the mixer values of "{name}" (the uTool2 mixer of the song, exported to the LP-16). In the rehearsal they add to the rehearsal mix, for this song only.

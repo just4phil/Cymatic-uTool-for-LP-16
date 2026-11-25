@@ -445,7 +445,7 @@ impl RehearsalPanel {
     /// "MIDI: <Port> - <n> events" with an indicator that lights up for
     /// 150 ms at every message; "MIDI: no file" / "MIDI: off" otherwise.
     fn midi_line(&self, ui: &mut Ui, st: &Status) {
-        let (text, lit) = midi_summary(self.session.midi_port(), st);
+        let (text, lit) = midi_summary(self.session.midi_port(), self.session.midi_port2(), st);
         ui.horizontal(|ui| {
             ui.add_space(((ui.available_width() - 260.0) / 2.0).max(0.0));
             let (rect, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
@@ -461,11 +461,16 @@ impl RehearsalPanel {
                 ui.add(egui::Label::new(RichText::new(e).size(13.0).color(ORANGE)).wrap(true));
             }
         }
+        if !self.session.midi_port2().is_empty() {
+            if let Some(e) = self.session.midi_status2().error {
+                ui.add(egui::Label::new(RichText::new(e).size(13.0).color(ORANGE)).wrap(true));
+            }
+        }
     }
 }
 
 /// The MIDI line of the status, and how much longer the indicator is lit.
-fn midi_summary(port: &str, st: &Status) -> (String, Option<Duration>) {
+fn midi_summary(port: &str, port2: &str, st: &Status) -> (String, Option<Duration>) {
     if port.is_empty() {
         return (tr!("rehearsal.midi_off").to_string(), None);
     }
@@ -473,7 +478,11 @@ fn midi_summary(port: &str, st: &Status) -> (String, Option<Duration>) {
         return (tr!("rehearsal.midi_no_file").to_string(), None);
     }
     let lit = st.midi.last_event.and_then(|t| MIDI_FLASH.checked_sub(t.elapsed())).filter(|d| !d.is_zero());
-    (tr!("rehearsal.midi_events", port = port, n = st.midi.events_sent), lit)
+    let mut text = tr!("rehearsal.midi_events", port = port, n = st.midi.events_sent);
+    if !port2.is_empty() {
+        text.push_str(&tr!("rehearsal.midi_port2", port = port2));
+    }
+    (text, lit)
 }
 
 fn sized_button(ui: &mut Ui, text: &str, enabled: bool, width: f32, font: f32, height: f32) -> egui::Response {

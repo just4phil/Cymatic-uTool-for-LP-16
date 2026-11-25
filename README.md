@@ -134,6 +134,8 @@ audio_out_right = "2"
 audio_buffer = "0"
 # MIDI output port of the rehearsal player (Settings > MIDI output); empty = off
 midi_port = ""
+# optional second MIDI output (e.g. a virtual port for the LED show simulator); empty = off
+midi_port2 = ""
 # language of the user interface (Settings > Language): "en" or "de"; empty = English
 language = "en"
 # rehearsal mix presets (written by the program, see "Rehearsal mix")
@@ -357,6 +359,13 @@ The **MIDI output** area of the Settings tab chooses the MIDI port the MIDI file
 sent to. The choice is saved at once as `midi_port` in `lp16-tool.toml` (empty = no MIDI output,
 the default; an old file without the key also means off).
 
+A **second output** (`midi_port2`, "Second output (e.g. LED simulator)", same list, saved at once, empty =
+off) gets exactly the same messages as the first one at the same time: the song's MIDI events, the
+chasing at a start or jump, All Notes Off and the test. The first port keeps driving the real hardware;
+the second one is meant for the LED show simulator, which listens on a virtual MIDI port (create one
+with loopMIDI or Windows MIDI Services loopback and choose it here). A missing or failing second port
+never disturbs the first port or the audio.
+
 - The combo lists **(none)** and all MIDI output ports of the system (on Windows there is always
   "Microsoft GS Wavetable Synth"); **Refresh** reads the list again.
 - **Send test** sends the state the loaded song would give a device right after its start: bank
@@ -365,9 +374,10 @@ the default; an old file without the key also means off).
   loaded song with a MIDI file.
 - The port is opened with Play (or with the test), not at program start. If the saved port is
   missing or cannot be opened, the Rehearsal tab and the settings say "MIDI port not available:
-  <name>", the audio plays anyway, and the next Play tries again.
+  <name>", the audio plays anyway, and the next Play tries again. The same goes for the second port, with its
+  own message; the first port is not affected.
 - The Rehearsal tab shows "MIDI: <port> · <n> events" under the audio output, with a dot that
-  lights up for 150 ms at every message sent. "MIDI: no file" means the song has no (readable) MIDI
+  lights up for 150 ms at every message sent (with a second port: "MIDI: <port> · <n> events | 2: <port 2>"). "MIDI: no file" means the song has no (readable) MIDI
   file, "MIDI: off" that no port is chosen. The song list shows a MIDI symbol for songs that have a
   file.
 
