@@ -219,6 +219,7 @@ footer { margin-top: 64px; padding-top: 16px; border-top: 1px solid var(--line);
     <li><a href="#home">Start: die Bibliothek</a></li>
     <li><a href="#export">Export auf den Stick</a>
       <ol>
+        <li><a href="#stick-format">Der Stick muss FAT32 sein</a></li>
         <li><a href="#neu-exportiert">Wann ein Song neu exportiert wird</a></li>
       </ol>
     </li>
@@ -366,6 +367,19 @@ stick_root = "F:\"</code></pre>
   <li>Die <code>.play</code> einer ausgewählten Playlist wird bei jedem Export geschrieben. Auf dem Stick wird nichts gelöscht.</li>
   <li>Ein Bericht zeigt am Ende jede Zeile mit Ergebnis und die Gesamtdauer.</li>
 </ul>
+
+<h3 id="stick-format">Der Stick muss FAT32 sein</h3>
+<p>Der LP-16 liest nur Sticks mit dem Dateisystem <strong>FAT32</strong>. Einen Stick mit exFAT oder NTFS lehnt er mit der Meldung ab, das Format sei falsch.</p>
+<p>lp16-tool prüft das beim Export: In der Laufwerksliste steht hinter solchen Laufwerken ein ⚠, unter der Zeile mit den Größen erscheint ein roter Hinweis, und ein Klick auf Exportieren fragt nach, ob trotzdem exportiert werden soll. Der Export bleibt möglich, etwa in einen Ordner auf der Festplatte. Auch FAT (FAT16) gilt als nicht lesbar, weil ungetestet. <code>lp16-tool verify</code> meldet ein falsches Dateisystem und endet dann mit Exit-Code 1.</p>
+<div class="callout warn">
+  <p><strong>Formatieren löscht den ganzen Stick.</strong> Vorher sichern, was noch gebraucht wird.</p>
+</div>
+<ul>
+  <li><strong>Stick bis 32 GB:</strong> im Explorer Rechtsklick auf den Stick, <em>Formatieren…</em>, Dateisystem <em>FAT32</em>, <em>Schnellformatierung</em>, Starten.</li>
+  <li><strong>Stick über 32 GB:</strong> Windows bietet im Formatieren-Dialog dann kein FAT32 an, nur exFAT und NTFS. Abhilfe schafft das kostenlose Programm <a href="https://rufus.ie">Rufus</a>: Stick wählen, Startart <em>Nicht bootfähig</em>, Dateisystem <em>FAT32</em>, Start.</li>
+  <li>Eine einzelne Datei darf auf FAT32 höchstens 4 GB groß sein. Für die WAVs eines Songs reicht das in der Praxis immer.</li>
+</ul>
+<p>Danach den Stick als Ziel wählen und mit <em>Alles überschreiben</em> neu befüllen.</p>
 
 <h3 id="neu-exportiert">Wann ein Song neu exportiert wird</h3>
 <p>Der Schnell-Export schreibt einen Song, wenn</p>
@@ -636,7 +650,7 @@ lp16-tool gui</code></pre>
   <tr><td><code>song</code></td><td>schreibt <code>&lt;ausgabe&gt;\&lt;Song&gt;\song.set</code> und zeigt den <code>validationcode</code></td></tr>
   <tr><td><code>playlist</code></td><td>schreibt <code>&lt;ausgabe&gt;\#PLAYLISTS\&lt;Playlist&gt;.play</code></td></tr>
   <tr><td><code>export</code></td><td>bringt eine Playlist mit allen Songs auf den Stick; <code>--dry-run</code> zeigt nur an, <code>--force</code> = Alles überschreiben</td></tr>
-  <tr><td><code>verify</code></td><td>prüft den Stick nur lesend; Exit-Code 0 = aktuell</td></tr>
+  <tr><td><code>verify</code></td><td>prüft den Stick nur lesend; Exit-Code 0 = aktuell und FAT32</td></tr>
   <tr><td><code>gui</code></td><td>startet die Oberfläche (wie ohne Argumente)</td></tr>
 </table></div>
 <p><code>audio-lib</code> ersetzt <code>{$AudioLib}</code> in der <code>.songprj</code>, <code>project-lib</code> ersetzt <code>{$ProjectLib}</code> in der <code>.playlistprj</code>. Beispiel:</p>

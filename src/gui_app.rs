@@ -196,6 +196,8 @@ enum Dialog {
     FixTail { song: usize, tracks: Vec<(String, String, TailReport)>, trim_ms: f64 },
     /// export: songs to export end without a clean fade-out, export anyway?
     ExportTails(String),
+    /// export: the target has a file system the LP-16 cannot read (e.g. "exFAT"), export anyway?
+    ExportFs(String),
     /// Edit Target: delete a song folder from the stick (`playlists` still list it)
     EtDeleteSong { name: String, playlists: Vec<String> },
     /// Edit Target: delete a .play from the stick
@@ -378,6 +380,8 @@ struct Preview {
     selected: u64,
     to_copy: u64,
     free: Option<u64>,
+    /// file system of the target if the LP-16 cannot read it (e.g. "exFAT")
+    wrong_fs: Option<String>,
 }
 
 /// Background export job (progress + report).
@@ -610,16 +614,6 @@ mod win {
     extern "system" {
         pub fn GetLogicalDrives() -> u32;
         pub fn GetDriveTypeW(root: *const u16) -> u32;
-        pub fn GetVolumeInformationW(
-            root: *const u16,
-            name: *mut u16,
-            name_len: u32,
-            serial: *mut u32,
-            max_comp: *mut u32,
-            flags: *mut u32,
-            fs_name: *mut u16,
-            fs_len: u32,
-        ) -> i32;
         pub fn GetDiskFreeSpaceExW(
             dir: *const u16,
             avail: *mut u64,
@@ -631,10 +625,6 @@ mod win {
     }
     pub fn wide(s: &str) -> Vec<u16> {
         s.encode_utf16().chain(std::iter::once(0)).collect()
-    }
-    pub fn from_wide(buf: &[u16]) -> String {
-        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-        String::from_utf16_lossy(&buf[..end])
     }
 }
 
@@ -672,7 +662,7 @@ pub(crate) fn local_time(ms: i64) -> (i64, u32, u32, u32, u32) {
 }
 
 /// (root, display) of the drives that can be a target, e.g.
-/// ("D:\\", "D: LP16 (FAT32)")
+/// ("D:\\", "D: LP16 (FAT32)"); a file system the LP-16 cannot read gets a ⚠
 #[cfg(windows)]
 fn list_drives() -> Vec<(String, String)> {
     let mut out = Vec::new();
@@ -688,30 +678,16 @@ fn list_drives() -> Vec<(String, String)> {
         if kind != 2 && kind != 3 {
             continue; // removable or fixed only
         }
-        let mut name = [0u16; 128];
-        let mut fsn = [0u16; 64];
-        let ok = unsafe {
-            win::GetVolumeInformationW(
-                w.as_ptr(),
-                name.as_mut_ptr(),
-                name.len() as u32,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                fsn.as_mut_ptr(),
-                fsn.len() as u32,
-            )
-        };
-        let display = if ok != 0 {
-            let label = win::from_wide(&name);
-            let fs_name = win::from_wide(&fsn);
-            if label.is_empty() {
-                format!("{}: ({})", letter, fs_name)
-            } else {
-                format!("{}: {} ({})", letter, label, fs_name)
+        let display = match lp16_tool::volume::volume_info(&root) {
+            Some((label, fs_name)) => {
+                let warn = if lp16_tool::volume::lp16_readable(&fs_name) { "" } else { " ⚠" };
+                if label.is_empty() {
+                    format!("{}: ({}){}", letter, fs_name, warn)
+                } else {
+                    format!("{}: {} ({}){}", letter, label, fs_name, warn)
+                }
             }
-        } else {
-            format!("{}:", letter)
+            None => format!("{}:", letter),
         };
         out.push((root, display));
     }
@@ -1704,6 +1680,7 @@ impl Lp16App {
             selected,
             to_copy,
             free: if target_ok { disk_free(&target) } else { None },
+            wrong_fs: if target_ok { lp16_tool::volume::wrong_file_system(&target) } else { None },
         });
     }
 
@@ -1731,6 +1708,17 @@ impl Lp16App {
             self.message(tr!("tab.export"), tr!("export.nothing_selected"));
             return;
         }
+        if let Some(fs) = lp16_tool::volume::wrong_file_system(&target) {
+            self.dialog = Some(Dialog::ExportFs(fs));
+            return;
+        }
+        self.export_tail_check();
+    }
+
+    /// Queues the check of the endings of the songs to export; the export
+    /// starts when it is done (`tail_check_tick`).
+    fn export_tail_check(&mut self) {
+        let (prjs, _) = self.export_selection();
         let keys = prjs.iter().map(|p| key(p)).collect();
         self.tail_queue.push((TailCheckKind::Export, Some(keys)));
     }
@@ -2554,6 +2542,12 @@ impl Lp16App {
                 });
             });
             self.force = force;
+            if let Some(fs) = &p.wrong_fs {
+                ui.horizontal(|ui| {
+                    ui.add_space(20.0);
+                    ui.label(RichText::new(tr!("export.wrong_fs", fs = fs)).color(RED));
+                });
+            }
         });
         ui.add_space(10.0);
         let h = ui.available_height() - 46.0;
@@ -4388,6 +4382,25 @@ impl Lp16App {
                     Some(0) => {
                         close = true;
                         self.start_export(ctx);
+                    }
+                    Some(_) => close = true,
+                    None => {}
+                }
+            }
+            Dialog::ExportFs(fs) => {
+                let text = tr!("dlg.export_wrong_fs_q", fs = fs);
+                match overlay(
+                    ctx,
+                    "dlg",
+                    order,
+                    tr!("tab.export"),
+                    vec2(920.0, 420.0),
+                    |ui| centered_text(ui, &text),
+                    &[(tr!("dlg.export_anyway"), true), (tr!("common.no_cancel"), true)],
+                ) {
+                    Some(0) => {
+                        close = true;
+                        self.export_tail_check();
                     }
                     Some(_) => close = true,
                     None => {}

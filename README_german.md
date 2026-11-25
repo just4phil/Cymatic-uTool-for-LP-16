@@ -160,6 +160,11 @@ gelesen.
 
 Vor dem ersten Export auf einen echten Stick `Recording\` sichern.
 
+Der LP-16 liest nur Sticks mit **FAT32**; exFAT und NTFS lehnt er als falsches Format ab. Bei Sticks über
+32 GB bietet Windows kein FAT32 an; dafür [Rufus](https://rufus.ie) nehmen (Dateisystem FAT32,
+Startart „Nicht bootfähig“). Formatieren löscht den Stick. Der Reiter Export warnt bei einem Ziel, das
+nicht FAT32 ist, und fragt vor dem Export nach; `verify` meldet es und endet mit Exit-Code 1.
+
 ## Probe-Player
 
 Der Player spielt einen Song der Projektbibliothek über den **Audioausgang** ab, den man im Reiter Einstellungen wählt (WASAPI oder ASIO), zum Proben zu Hause. Er schickt außerdem die MIDI-Datei des Songs an einen
@@ -448,7 +453,7 @@ lp16-tool gui
 | `song` | schreibt `<ausgabe>\<Song>\song.set` und zeigt den `validationcode` |
 | `playlist` | schreibt `<ausgabe>\#PLAYLISTS\<Playlist>.play` |
 | `export` | bringt eine Playlist mit allen Songs auf den Stick (`<stick>\Recording\…`); `--dry-run` zeigt nur an, `--force` = Alles überschreiben |
-| `verify` | prüft den Stick nur lesend; Exit-Code 0 = aktuell |
+| `verify` | prüft den Stick nur lesend; Exit-Code 0 = aktuell und FAT32 |
 
 - `audio-lib` ersetzt `{$AudioLib}` in der `.songprj` (bei uTool2 `AudioFileLibraryPath` in
   `%APPDATA%\Cymatic Audio uTool2\Cymatic Audio uTool2.settings`).

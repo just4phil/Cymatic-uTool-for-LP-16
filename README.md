@@ -159,6 +159,11 @@ Older files with separate paths (`audio_lib`, `project_lib`, `import_lib`) are s
 
 Back up `Recording\` before the first export to a real stick.
 
+The LP-16 only reads **FAT32** sticks; it rejects exFAT and NTFS as the wrong format. Windows does not
+offer FAT32 for sticks over 32 GB; use [Rufus](https://rufus.ie) for those (file system FAT32,
+boot selection "Non bootable"). Formatting erases the stick. The Export tab warns about a target that is
+not FAT32 and asks before exporting; `verify` reports it and exits with code 1.
+
 ## Rehearsal player
 
 The player plays a song of the project library on the **audio output** you choose in the
@@ -441,7 +446,7 @@ lp16-tool gui
 | `song` | writes `<out-dir>\<Song>\song.set` and prints the `validationcode` |
 | `playlist` | writes `<out-dir>\#PLAYLISTS\<Playlist>.play` |
 | `export` | puts a playlist with all its songs onto the stick (`<stick>\Recording\…`); `--dry-run` only shows what would happen, `--force` = Force Overwrite |
-| `verify` | checks the stick read-only; exit code 0 = up to date |
+| `verify` | checks the stick read-only; exit code 0 = up to date and FAT32 |
 
 - `audio-lib` replaces `{$AudioLib}` in the `.songprj` (in uTool2: `AudioFileLibraryPath` in
   `%APPDATA%\Cymatic Audio uTool2\Cymatic Audio uTool2.settings`).

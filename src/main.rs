@@ -168,9 +168,26 @@ fn plan_playlist(
     plan
 }
 
+/// Warns on stderr if the LP-16 cannot read the file system of `stick_root`
+/// (it only reads FAT32). Returns true if it warned.
+fn warn_file_system(stick_root: &str) -> bool {
+    match lp16_tool::volume::wrong_file_system(stick_root) {
+        Some(fs) => {
+            eprintln!(
+                "WARNING {} is formatted {}: the LP-16 only reads FAT32 sticks and will reject it",
+                stick_root, fs
+            );
+            true
+        }
+        None => false,
+    }
+}
+
 /// verify: read-only check of a stick against the project library.
-/// Exit code 0 only if every song and the .play are up to date.
+/// Exit code 0 only if every song and the .play are up to date and the
+/// stick is FAT32 (or its file system is unknown).
 fn cmd_verify(playlistprj: &str, project_lib: &str, audio_lib: &str, stick_root: &str) {
+    let wrong_fs = warn_file_system(stick_root);
     let plan = plan_playlist(playlistprj, project_lib, audio_lib, stick_root, ExportMode::Quick);
     for s in &plan.songs {
         let marker = if s.plan.needs_export { "UPDATE" } else { "OK   " };
@@ -197,6 +214,10 @@ fn cmd_verify(playlistprj: &str, project_lib: &str, audio_lib: &str, stick_root:
         println!("{} problem(s) found", outdated);
         exit(1);
     }
+    if wrong_fs {
+        println!("stick is up to date, but not FAT32: the LP-16 will reject it");
+        exit(1);
+    }
     println!("stick is up to date");
 }
 
@@ -211,6 +232,7 @@ fn cmd_export(
     // Quick Export writes only new/changed songs; Force Overwrite
     // rewrites everything (uTool2 fnd_23).
     let mode = if force { ExportMode::Force } else { ExportMode::Quick };
+    warn_file_system(stick_root);
     let plan = plan_playlist(playlistprj, project_lib, audio_lib, stick_root, mode);
     if !plan.problems.is_empty() {
         die(format!("{} song project(s) missing, aborting", plan.problems.len()));

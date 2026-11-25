@@ -37,6 +37,7 @@ pub mod rehearsal_midi;
 #[cfg(feature = "player")]
 pub mod midi_out;
 pub mod sync;
+pub mod volume;
 pub mod wav_tail;
 
 // ---------------------------------------------------------------------------

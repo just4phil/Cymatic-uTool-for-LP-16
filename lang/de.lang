@@ -142,6 +142,7 @@ export.finished = Export erfolgreich abgeschlossen.
 export.finished_errors = Export mit Fehlern beendet.
 export.total_time = Gesamtdauer: {time}
 export.note_speed = Hinweis: Die Kopierdauer hängt direkt vom externen Laufwerk ab. Ein USB-Stick ist deutlich langsamer als eine normale USB-Festplatte.
+export.wrong_fs = ⚠ Das Ziel ist {fs} formatiert. Der LP-16 liest nur FAT32-Sticks und lehnt diesen Stick ab. Siehe Handbuch: „Der Stick muss FAT32 sein“.
 
 # Import
 import.done = {n} Song(s) in die Project Library importiert.
@@ -262,6 +263,7 @@ tail.explain = „{fade}“ blendet nur das Ende aus, „{cut}“ entfernt zuers
 tail.originals_note = Die Originale bleiben als *.orig.wav erhalten. Eine WAV, die mehrere Songs verwenden, ändert sich für alle.
 tail.cut_btn = Schneiden + Ausblenden
 dlg.export_anyway = Ja, trotzdem exportieren
+dlg.export_wrong_fs_q = Das Ziel ist {fs} formatiert.\n\nDer LP-16 liest nur Sticks mit FAT32 und lehnt diesen Stick mit „falsches Format“ ab.\nDen Stick vorher mit FAT32 formatieren (siehe Handbuch: „Der Stick muss FAT32 sein“).\n\nTrotzdem exportieren?
 dlg.import_q = Diese {n} Song(s) in der Project Library anlegen?\n\n{list}
 dlg.yes_import = Ja, importieren
 dlg.delete_song_q = Soll der Song „{name}“ gelöscht werden?\n(nur das Song-Projekt in der Bibliothek, die Audiodateien bleiben)

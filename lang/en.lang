@@ -142,6 +142,7 @@ export.finished = Export operation successfully finished.
 export.finished_errors = Export finished with errors.
 export.total_time = Total time: {time}
 export.note_speed = Note: Copy to external disk depends directly on the type of external disk unit. A USB Thumb Drive (Flash key) offers very poor performance compared to regular USB Hard Disk.
+export.wrong_fs = ⚠ The target is formatted {fs}. The LP-16 only reads FAT32 sticks and will reject this one. See the manual: "The stick must be FAT32".
 
 # Import
 import.done = {n} Song(s) imported into the Project Library.
@@ -262,6 +263,7 @@ tail.explain = "{fade}" only fades the end out, "{cut}" removes the broken end f
 tail.originals_note = The originals are kept as *.orig.wav. A WAV used by several songs changes for all of them.
 tail.cut_btn = Cut + fade-out
 dlg.export_anyway = Yes, export anyway
+dlg.export_wrong_fs_q = The target is formatted {fs}.\n\nThe LP-16 only reads FAT32 sticks and rejects this one as the wrong format.\nFormat the stick as FAT32 first (see the manual: "The stick must be FAT32").\n\nExport anyway?
 dlg.import_q = Create these {n} Song(s) in the Project Library?\n\n{list}
 dlg.yes_import = Yes, import
 dlg.delete_song_q = Do you want to delete the Song "{name}"?\n(only the song project in the library, the audio files stay)
